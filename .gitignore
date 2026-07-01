@@ -1,0 +1,32 @@
+node_modules
+.next
+dist
+build
+coverage
+.env
+.env.local
+.env.*.local
+# Cloud Run deploy secrets (keep the .example template only)
+env.server.yaml
+*.log
+.DS_Store
+.vscode
+.idea
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Playwright MCP session dumps
+.playwright-mcp/
+
+# Local build artifacts & review/screenshot scratch (not source)
+/builds/
+/twa-build/
+/mobile-ui-audit-*/
+/ui-consistency-review-*/
+/.gradle/
+/rn-*.png
+/web-*.png
+# Stray empty root expo manifest (the real one is apps/mobile/app.json)
+/app.json
+

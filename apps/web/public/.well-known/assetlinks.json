@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.apex.coaching",
+      "sha256_cert_fingerprints": [
+        "14:72:55:9B:B4:83:81:B9:24:9E:DD:A1:42:06:C1:FA:E8:08:33:80:27:B3:75:91:67:8F:0B:89:99:FD:45:3A"
+      ]
+    }
+  }
+]

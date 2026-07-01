@@ -1,0 +1,82 @@
+import dotenv from "dotenv";
+import path from "path";
+
+// Prefer the server package env file even when the process is launched from the
+// monorepo root. dotenv does not override existing vars, so CI/prod env still
+// wins when variables are already provided by the host.
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+
+function required(name: string, fallback?: string): string {
+  const value = process.env[name] ?? fallback;
+  if (value === undefined || value === "") {
+    throw new Error(`Missing required env var: ${name}`);
+  }
+  return value;
+}
+
+const nodeEnv = process.env.NODE_ENV ?? "development";
+const isProduction = nodeEnv === "production";
+
+const mongoUri = required(
+  "MONGODB_URI",
+  isProduction ? undefined : "mongodb://localhost:27017/sports_coaching"
+);
+
+/**
+ * A remote DB (Atlas `mongodb+srv://` or any non-localhost host) almost always
+ * means real data. Placeholder JWT secrets must never guard real data — a known
+ * signing key lets anyone forge tokens — so we treat secrets strictly whenever
+ * the DB is remote, not only when NODE_ENV=production.
+ */
+function isRemoteMongo(uri: string): boolean {
+  if (/^mongodb\+srv:\/\//i.test(uri)) return true;
+  const host = uri.replace(/^mongodb:\/\//i, "").split("/")[0] ?? "";
+  return !/(^|@|,)(localhost|127\.0\.0\.1|0\.0\.0\.0)(:|$)/i.test(host) && host !== "";
+}
+
+const strictSecrets = isProduction || isRemoteMongo(mongoUri);
+
+function requiredSecret(name: string, fallback: string): string {
+  const value = process.env[name] ?? (strictSecrets ? undefined : fallback);
+  if (strictSecrets && (!value || value === fallback)) {
+    throw new Error(
+      `Refusing to start: ${name} is missing or set to the placeholder value ` +
+        `while pointing at a production/remote database. Set a strong unique secret.`
+    );
+  }
+  if (!value) {
+    throw new Error(`Missing required env var: ${name}`);
+  }
+  return value;
+}
+
+function csv(name: string, fallback: string): string[] {
+  return (process.env[name] ?? fallback)
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+export const env = {
+  nodeEnv,
+  port: Number(process.env.PORT ?? 4000),
+  mongoUri,
+  corsOrigins: csv("CORS_ORIGIN", "http://localhost:3000,http://localhost:8081"),
+  // Google OAuth client ID(s) for "Sign in with Google". Empty = feature disabled
+  // (the endpoint 503s and the web button hides itself). May be a comma-separated
+  // list to accept tokens from multiple clients (e.g. the web client used by the
+  // browser/PWA AND the Android client used by the mobile app, whose ID tokens
+  // carry that client as the audience). The first entry is the canonical web ID.
+  googleClientId: (process.env.GOOGLE_CLIENT_ID ?? "").split(",")[0]?.trim() ?? "",
+  googleClientIds: (process.env.GOOGLE_CLIENT_ID ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+  jwt: {
+    accessSecret: requiredSecret("JWT_ACCESS_SECRET", "change_me_access"),
+    refreshSecret: requiredSecret("JWT_REFRESH_SECRET", "change_me_refresh"),
+    accessTtl: process.env.JWT_ACCESS_TTL ?? "15m",
+    refreshTtl: process.env.JWT_REFRESH_TTL ?? "30d",
+  },
+};

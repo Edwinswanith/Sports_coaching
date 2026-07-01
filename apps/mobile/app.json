@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "Apex",
+    "slug": "sports-coaching-platform",
+    "owner": "edwinswanith",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "apex",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "icon": "./assets/expo.icon"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0f1410",
+        "foregroundImage": "./assets/images/adaptive-icon.png"
+      },
+      "package": "app.apex.coaching",
+      "versionCode": 2,
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0f1410",
+          "android": {
+            "image": "./assets/images/splash-icon.png",
+            "imageWidth": 160
+          }
+        }
+      ],
+      "expo-secure-store",
+      "expo-web-browser",
+      "@react-native-google-signin/google-signin",
+      "expo-audio",
+      "expo-video",
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["central"],
+          "bluetoothAlwaysPermission": "Allow Apex to connect to heart-rate and fitness sensors."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "ab675667-d989-44d0-a0a1-003ca852cf4c"
+      }
+    }
+  }
+}

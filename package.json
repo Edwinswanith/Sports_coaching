@@ -1,0 +1,33 @@
+{
+  "name": "sports-coaching-platform",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "server"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace apps/web",
+    "dev:web:after-api": "node scripts/wait-for-api.mjs && npm run dev:web",
+    "dev:server": "npm run dev --workspace server",
+    "dev:mobile": "npm run start --workspace apps/mobile",
+    "predev": "node scripts/dev-clean.mjs",
+    "dev": "npm-run-all --parallel dev:server dev:web:after-api",
+    "typecheck:web": "npm run typecheck --workspace apps/web",
+    "typecheck:server": "npm run typecheck --workspace server",
+    "typecheck:mobile": "npm run typecheck --workspace apps/mobile",
+    "typecheck": "npm-run-all typecheck:web typecheck:server typecheck:mobile",
+    "test": "npm test --workspace server",
+    "build:web": "npm run build --workspace apps/web",
+    "build:server": "npm run build --workspace server",
+    "build": "npm-run-all build:web build:server"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/material": "^9.1.0"
+  }
+}
