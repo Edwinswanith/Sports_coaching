@@ -93,7 +93,14 @@ export function AppFrame({
                   </View>
                 ) : null}
               </View>
-              <Text style={[styles.tabText, active ? { color: theme.accentStrong } : null]}>{item.label}</Text>
+              <Text
+                style={[styles.tabText, active ? { color: theme.accentStrong } : null]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.8}
+              >
+                {item.label}
+              </Text>
             </Pressable>
           );
         })}

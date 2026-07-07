@@ -145,7 +145,7 @@
   }
   /* Bottom tab-bar item (athlete/guardian mobile). */
   .tab-item {
-    @apply flex flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1.5 text-[10px] font-semibold
+    @apply flex flex-1 flex-col items-center justify-center gap-0.5 whitespace-nowrap rounded-xl py-1.5 text-[10px] font-semibold
            uppercase tracking-wide text-ink-faint transition;
   }
   .tab-item--active {

@@ -2927,13 +2927,13 @@ function SessionLogSection({
             </View>
 
             <View style={{ marginTop: 12 }}>
-              <CompactScale label="Effort" value={activeForm.effortRating} onChange={(v) => updateSession(activeSlot, { effortRating: v, rpe: v })} lowHint="Easy" highHint="Max" min={1} max={10} />
+              <CompactScale label="Effort" value={activeForm.effortRating} onChange={(v) => updateSession(activeSlot, { effortRating: v })} lowHint="Easy" highHint="Max" min={1} max={10} />
             </View>
             <View style={{ marginTop: 12 }}>
               <CompactScale label="Planned intensity" value={activeForm.plannedIntensityPercent} onChange={(v) => updateSession(activeSlot, { plannedIntensityPercent: v })} lowHint="0%" highHint="100%" min={0} max={100} step={5} />
             </View>
             <View style={{ marginTop: 12 }}>
-              <CompactScale label="Session RPM" value={activeForm.rpe} onChange={(v) => updateSession(activeSlot, { rpe: v, effortRating: v })} lowHint="Rest" highHint="Max" min={0} max={10} />
+              <CompactScale label="Session RPM" value={activeForm.rpe} onChange={(v) => updateSession(activeSlot, { rpe: v })} lowHint="Rest" highHint="Max" min={0} max={10} />
             </View>
 
             <View style={{ marginTop: 12 }}>
