@@ -2,13 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Card } from "../../../components/Card";
-import { Ring, bandFor } from "../../../components/Ring";
-import { Chip, StatTile, dash, Icon } from "../../../components/ui";
+import { Icon, CompactDatePicker } from "../../../components/ui";
+import { ProfileMenu } from "../../../components/ProfileMenu";
+import { Gauge } from "../../../components/Gauge";
 import { AppShell, type NavItem } from "../../../components/AppShell";
-import { PerformanceTrendPanel, WellnessTrendPanel } from "../../../components/charts/panels";
-import { ChartTabs } from "../../../components/charts/ChartTabs";
-import { Timeline, type FeedItem } from "../../../components/Timeline";
 import {
   apiFetch,
   clearSession,
@@ -17,41 +14,81 @@ import {
   logout as apiLogout,
   type StoredUser,
 } from "../../../lib/api";
-import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../../lib/sessions";
 
 type AthleteSummary = { athleteId: string; name: string; sport: string; position: string | null };
 
-type DailyCard = {
-  athleteId: string;
-  name: string;
-  attendance: { status: string | null };
-  sessions: Record<SessionSlot, { status: string | null; type: string | null }>;
-  readinessScore: number | null;
-  sleep: { hours: number | null; quality: number | null };
-  soreness: number | null;
-  recovery: { status: string | null; score: number | null };
-  injury: { active: boolean; bodyPart: string | null; restriction: string | null };
-  rpe: {
-    sessionType: SessionSlot;
-    rpe: number;
-    calculatedTrainingLoad: number;
-    riskFlag: "green" | "amber" | "red";
-    riskReasons?: string[];
-  } | null;
+type GuardianSummary = {
+  date: string;
+  sleep: { quality: number | null; hours: number | null };
+  attendance: { status: string | null; note: string | null };
+  water: { totalMl: number; goalMl: number };
 };
 
-type CoachComment = { _id: string; body: string };
+type Band = "green" | "amber" | "red" | "neutral";
 
+const BAND_STYLE: Record<Band, { badge: string; fill: string; ring: string }> = {
+  green: { badge: "bg-ok/10 text-ok", fill: "bg-ok", ring: "ring-ok/15" },
+  amber: { badge: "bg-warn/10 text-warn", fill: "bg-warn", ring: "ring-warn/15" },
+  red: { badge: "bg-bad/10 text-bad", fill: "bg-bad", ring: "ring-bad/15" },
+  neutral: { badge: "bg-surface-inset text-ink-faint", fill: "bg-line-strong", ring: "ring-line" },
+};
+
+function litres(ml: number) {
+  return (ml / 1000).toFixed(ml % 1000 === 0 ? 0 : 1);
+}
+
+function sleepBand(quality: number | null): Band {
+  if (quality === null) return "neutral";
+  if (quality <= 2) return "red";
+  if (quality === 3) return "amber";
+  return "green";
+}
+
+function sleepLabel(quality: number | null): string {
+  if (quality === null) return "No check-in yet";
+  return ["", "Poor", "Fair", "Good", "Great", "Excellent"][quality] ?? "—";
+}
+
+function waterBand(pct: number, hasGoal: boolean): Band {
+  if (!hasGoal) return "neutral";
+  if (pct >= 90) return "green";
+  if (pct >= 50) return "amber";
+  return "red";
+}
+
+function attendanceBand(status: string | null): Band {
+  if (status === null) return "neutral";
+  if (status === "present" || status === "rest") return "green";
+  if (status === "late" || status === "excused") return "amber";
+  return "red";
+}
+
+function attendanceLabel(status: string | null) {
+  if (status === null) return "Not logged";
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "GU";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+/**
+ * Guardian dashboard — deliberately narrow. Guardians may see ONLY three
+ * data points for their linked athlete: Sleep quality, Water intake, and
+ * Attendance for a given day. No readiness, training load, injuries, coach
+ * feedback, or messages — see server/src/routes/guardian.ts for the matching
+ * server-side restriction (the API itself never returns anything else).
+ */
 export default function GuardianDashboardPage() {
   const router = useRouter();
-  const [section, setSection] = useState<"today" | "trends" | "feedback">("today");
   const [user, setUser] = useState<StoredUser | null>(null);
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [athletes, setAthletes] = useState<AthleteSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [card, setCard] = useState<DailyCard | null>(null);
-  const [comments, setComments] = useState<CoachComment[]>([]);
-  const [activity, setActivity] = useState<FeedItem[]>([]);
+  const [summary, setSummary] = useState<GuardianSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -97,28 +134,18 @@ export default function GuardianDashboardPage() {
 
   useEffect(() => {
     if (!selectedId) {
-      setCard(null);
-      setComments([]);
+      setSummary(null);
       return;
     }
     let cancelled = false;
     (async () => {
       setError(null);
       try {
-        const [cardRes, commentsRes, activityRes] = await Promise.all([
-          apiFetch(`/api/guardian/athletes/${selectedId}/daily-card?date=${date}`),
-          apiFetch(`/api/guardian/athletes/${selectedId}/coach-comments?date=${date}`),
-          apiFetch(`/api/guardian/athletes/${selectedId}/activity?limit=30`),
-        ]);
-        if (guard(cardRes.status) || guard(commentsRes.status) || guard(activityRes.status))
-          return;
-        const cardJson = (await cardRes.json()) as { card?: DailyCard };
-        const commentsJson = (await commentsRes.json()) as { comments?: CoachComment[] };
-        const activityJson = (await activityRes.json()) as { items?: FeedItem[] };
+        const res = await apiFetch(`/api/guardian/athletes/${selectedId}/summary?date=${date}`);
+        if (guard(res.status)) return;
+        const json = (await res.json()) as GuardianSummary;
         if (cancelled) return;
-        setCard(cardJson.card ?? null);
-        setComments(commentsJson.comments ?? []);
-        setActivity(activityJson.items ?? []);
+        setSummary(json);
       } catch {
         if (!cancelled) setError("Unable to load athlete summary.");
       }
@@ -133,174 +160,169 @@ export default function GuardianDashboardPage() {
     router.replace("/");
   }
 
-  const selectedName = athletes.find((a) => a.athleteId === selectedId)?.name;
-  const band = bandFor(card?.readinessScore ?? null);
-
-  const nav: NavItem[] = [
-    { key: "today", label: "Today", icon: <Icon.home /> },
-    { key: "trends", label: "Trends", icon: <Icon.chart /> },
-    { key: "feedback", label: "Feedback", icon: <Icon.message />, badge: comments.length || undefined },
-  ];
+  const selectedName = athletes.find((a) => a.athleteId === selectedId)?.name ?? "Athlete";
+  const nav: NavItem[] = [{ key: "today", label: "Summary", icon: <Icon.home /> }];
+  const hasGoal = Boolean(summary && summary.water.goalMl > 0);
+  const waterPct = summary && hasGoal ? Math.min(100, Math.round((summary.water.totalMl / summary.water.goalMl) * 100)) : 0;
 
   return (
     <AppShell
       role="guardian"
-      title={selectedName ?? "My athlete"}
+      title={selectedName}
       userName={user?.name}
       nav={nav}
-      activeKey={section}
-      onNavigate={(k) => setSection(k as typeof section)}
+      activeKey="today"
+      onNavigate={() => undefined}
       onSignOut={logout}
-      headerActions={
-        <input
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          type="date"
-          aria-label="Date"
-          className="field h-9 w-[8.5rem] text-xs"
-        />
+      hideProfileMenu
+      titleSlot={
+        <div className="flex items-center gap-3">
+          <ProfileMenu userName={user?.name} role="guardian" onSignOut={logout} avatarClassName="h-[50px] w-[50px] text-base" />
+          <div className="min-w-0">
+            <p className="label text-accent-strong">Guardian</p>
+            <p className="truncate font-display text-lg font-bold leading-tight text-ink">{selectedName}</p>
+            <p className="truncate text-[11px] text-ink-muted">Sleep, water &amp; attendance only</p>
+          </div>
+        </div>
       }
+      headerIcon={<CompactDatePicker value={date} onChange={setDate} label="Date" />}
     >
       <div className="space-y-3">
         {error ? (
           <div className="rounded-xl border border-bad/30 bg-bad/10 px-3 py-2.5 text-sm text-bad">{error}</div>
         ) : null}
 
-        {/* Linked-athlete switcher — visible across sections when there's more than one. */}
+        {/* Linked-athlete switcher — visible when there's more than one. */}
         {athletes.length > 1 ? (
           <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
-            {athletes.map((a) => (
-              <button
-                key={a.athleteId}
-                onClick={() => setSelectedId(a.athleteId)}
-                className={`h-9 shrink-0 rounded-full border px-3 text-xs font-semibold transition ${
-                  selectedId === a.athleteId
-                    ? "border-accent bg-accent text-accent-ink"
-                    : "border-line bg-surface-inset text-ink-muted hover:text-ink"
-                }`}
-              >
-                {a.name}
-              </button>
-            ))}
+            {athletes.map((a) => {
+              const active = a.athleteId === selectedId;
+              return (
+                <button
+                  key={a.athleteId}
+                  onClick={() => setSelectedId(a.athleteId)}
+                  className={`flex h-9 shrink-0 items-center gap-2 rounded-full border pl-1.5 pr-3 text-xs font-semibold transition ${
+                    active
+                      ? "border-accent bg-accent text-accent-ink"
+                      : "border-line bg-surface-inset text-ink-muted hover:text-ink"
+                  }`}
+                >
+                  <span
+                    className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold ${
+                      active ? "bg-white/25 text-accent-ink" : "bg-accent-soft text-accent-strong"
+                    }`}
+                  >
+                    {initialsOf(a.name)}
+                  </span>
+                  {a.name}
+                </button>
+              );
+            })}
           </div>
         ) : null}
 
         {loading ? (
-          <div className="surface-card h-40 animate-pulse" />
+          <div className="space-y-3">
+            <div className="surface-card h-24 animate-pulse" />
+            <div className="surface-card h-24 animate-pulse" />
+            <div className="surface-card h-24 animate-pulse" />
+          </div>
         ) : athletes.length === 0 ? (
-          <Card>
+          <div className="surface-card p-5 text-center">
             <p className="text-sm text-ink-muted">No linked athletes yet. Ask the academy to link your account.</p>
-          </Card>
+          </div>
+        ) : !summary ? (
+          <div className="surface-card p-5 text-center">
+            <p className="text-sm text-ink-muted">No data for this date.</p>
+          </div>
         ) : (
-          <>
-            {section === "today" ? (
-              <div className="space-y-3 animate-rise">
-                {card ? (
-                  <>
-                    {card.injury.active ? (
-                      <div className="flex items-center gap-2 rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
-                        <Icon.shield />
-                        <span>
-                          {card.injury.bodyPart}
-                          {card.injury.restriction ? ` — ${card.injury.restriction}` : ""}
-                        </span>
-                      </div>
-                    ) : null}
-
-                    <div className="hero-card p-5">
-                      <div className="flex flex-col items-center text-center">
-                        <Ring value={card.readinessScore} size={150} stroke={12} label="readiness" band={band} />
-                        <p className="mt-3 max-w-xs text-xs text-ink-muted">
-                          {card.readinessScore === null
-                            ? "No check-in logged yet for this date."
-                            : "Readiness indicator from today's check-in."}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <StatTile label="Sleep" value={dash(card.sleep.hours)} sub={`quality ${dash(card.sleep.quality)}/5`} icon={<Icon.moon />} />
-                      <StatTile label="Recovery" value={dash(card.recovery.score)} sub={card.recovery.status ?? "no data"} icon={<Icon.pulse />} />
-                    </div>
-
-                    <Card title="Today's sessions">
-                      <p className="mb-2 text-[11px] text-ink-muted">
-                        Attendance <span className="font-semibold text-ink">{dash(card.attendance.status)}</span>
-                      </p>
-                      <div className="grid grid-cols-3 gap-2">
-                        {SESSION_SLOTS.map((slot) => (
-                          <StatTile
-                            key={slot}
-                            label={SLOT_LABEL[slot]}
-                            value={dash(card.sessions[slot].status)}
-                            sub={card.sessions[slot].type ?? undefined}
-                          />
-                        ))}
-                      </div>
-
-                      {card.rpe ? (
-                        <div className="mt-3 border-t border-line pt-3">
-                          <div className="flex items-center gap-2">
-                            <Chip band={card.rpe.riskFlag}>{card.rpe.riskFlag}</Chip>
-                            <span className="nums font-display text-lg font-bold text-ink">{card.rpe.calculatedTrainingLoad}</span>
-                            <span className="ml-auto text-[11px] text-ink-faint">RPE {card.rpe.rpe} · {SLOT_LABEL[card.rpe.sessionType]}</span>
-                          </div>
-                          {card.rpe.riskReasons && card.rpe.riskReasons.length > 0 ? (
-                            <ul className="mt-1 space-y-0.5 text-[11px] text-ink-muted">
-                              {card.rpe.riskReasons.map((r, i) => (
-                                <li key={i}>· {r}</li>
-                              ))}
-                            </ul>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </Card>
-                  </>
-                ) : (
-                  <Card>
-                    <p className="text-sm text-ink-muted">No data for this date.</p>
-                  </Card>
-                )}
-              </div>
-            ) : null}
-
-            {section === "trends" ? (
-              <div className="animate-rise">
-                {selectedId ? (
-                  <ChartTabs
-                    tabs={[
-                      { key: "readiness", label: "Readiness", node: <PerformanceTrendPanel base={`/api/guardian/athletes/${selectedId}`} /> },
-                      { key: "wellness", label: "Wellness", node: <WellnessTrendPanel base={`/api/guardian/athletes/${selectedId}`} /> },
-                    ]}
-                  />
-                ) : null}
-              </div>
-            ) : null}
-
-            {section === "feedback" ? (
-              <div className="space-y-3 animate-rise">
-                <Card title="Coach feedback">
-                  {comments.length === 0 ? (
-                    <p className="text-xs text-ink-faint">No comments for this date.</p>
-                  ) : (
-                    <ul className="space-y-2">
-                      {comments.map((c) => (
-                        <li key={c._id} className="rounded-xl border-l-2 border-ink-faint bg-surface-inset px-3 py-2 text-sm text-ink">
-                          {c.body}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </Card>
-
-                <Card title="Recent activity">
-                  <Timeline items={activity} />
-                </Card>
-              </div>
-            ) : null}
-          </>
+          <div className="animate-rise space-y-3">
+            <SleepCard quality={summary.sleep.quality} hours={summary.sleep.hours} />
+            <WaterCard totalMl={summary.water.totalMl} goalMl={summary.water.goalMl} pct={waterPct} hasGoal={hasGoal} />
+            <AttendanceCard status={summary.attendance.status} note={summary.attendance.note} />
+          </div>
         )}
       </div>
     </AppShell>
+  );
+}
+
+function MetricIcon({ band, children }: { band: Band; children: React.ReactNode }) {
+  return (
+    <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ring-4 ${BAND_STYLE[band].badge} ${BAND_STYLE[band].ring}`}>
+      {children}
+    </span>
+  );
+}
+
+function Badge({ band, children }: { band: Band; children: React.ReactNode }) {
+  return (
+    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ${BAND_STYLE[band].badge}`}>
+      {children}
+    </span>
+  );
+}
+
+function SleepCard({ quality, hours }: { quality: number | null; hours: number | null }) {
+  const band = sleepBand(quality);
+  const pct = quality !== null ? (quality / 5) * 100 : 0;
+  return (
+    <div className="surface-card overflow-hidden p-4">
+      <div className="flex items-center gap-4">
+        <Gauge pct={pct} band={band} displayValue={quality ?? "—"} displayUnit="/ 5" />
+        <div className="min-w-0 flex-1">
+          <p className="label text-ink-muted">Sleep quality</p>
+          <p className="mt-1 font-display text-base font-bold text-ink">{sleepLabel(quality)}</p>
+          {hours != null ? <p className="mt-0.5 text-xs text-ink-muted">{hours}h of sleep logged</p> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WaterCard({
+  totalMl,
+  goalMl,
+  pct,
+  hasGoal,
+}: {
+  totalMl: number;
+  goalMl: number;
+  pct: number;
+  hasGoal: boolean;
+}) {
+  const band = waterBand(pct, hasGoal);
+  return (
+    <div className="surface-card overflow-hidden p-4">
+      <div className="flex items-center gap-4">
+        <Gauge pct={pct} band={band} displayValue={`${pct}%`} />
+        <div className="min-w-0 flex-1">
+          <p className="label text-ink-muted">Water intake</p>
+          <p className="mt-1 flex items-baseline gap-1">
+            <span className="nums font-display text-base font-bold text-ink">{litres(totalMl)}</span>
+            <span className="text-xs text-ink-faint">/ {litres(goalMl)} L goal</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AttendanceCard({ status, note }: { status: string | null; note: string | null }) {
+  const band = attendanceBand(status);
+  return (
+    <div className="surface-card overflow-hidden p-4">
+      <div className="flex items-center gap-4">
+        <MetricIcon band={band}>
+          <Icon.check />
+        </MetricIcon>
+        <div className="min-w-0 flex-1">
+          <p className="label text-ink-muted">Attendance</p>
+          <p className="mt-1 font-display text-base font-bold text-ink">{attendanceLabel(status)}</p>
+          {note ? <p className="mt-0.5 truncate text-xs text-ink-muted">{note}</p> : null}
+        </div>
+        <Badge band={band}>{status ?? "—"}</Badge>
+      </div>
+    </div>
   );
 }

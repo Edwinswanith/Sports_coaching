@@ -81,7 +81,7 @@ export default function CoachChatPage() {
         </button>
       }
     >
-      <MessageThread base={`/api/coach/athletes/${athleteId}/messages`} onAuthFailure={authGuard} />
+      <MessageThread base={`/api/coach/athletes/${athleteId}/messages`} role="coach" onAuthFailure={authGuard} />
     </AppShell>
   );
 }

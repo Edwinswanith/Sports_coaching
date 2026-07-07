@@ -10,6 +10,11 @@ import { summarizeTrend, fmtValue, fmtMagnitude } from "./trendStats";
 import { TrendBadge, TrendTile } from "./TrendBadge";
 import { Sparkline } from "./Sparkline";
 
+/** Wellness sub-scores are stored on a 1–5 scale but shown out of 10. */
+function wellnessTen(v: number): string {
+  return String(Math.max(1, Math.min(10, Math.round(1 + ((v - 1) * 9) / 4))));
+}
+
 /** Pull one metric's column out of a series array (preserving null gaps). */
 function column<T extends Record<string, unknown>>(series: T[], key: keyof T): Array<number | null> {
   return series.map((p) => {
@@ -231,8 +236,8 @@ export function WellnessTrendPanel({ base }: { base: string }) {
                 <Sparkline values={col} color={sparkColor} width="100%" />
               </div>
               <p className="nums ml-auto w-12 shrink-0 text-right font-display text-base font-bold text-ink">
-                {now === null ? "—" : fmtValue(now)}
-                <span className="text-[10px] font-medium text-ink-faint">{sig.unit ?? "/5"}</span>
+                {now === null ? "—" : sig.unit ? fmtValue(now) : wellnessTen(now)}
+                <span className="text-[10px] font-medium text-ink-faint">{sig.unit ?? "/10"}</span>
               </p>
               <div className="w-[92px] shrink-0 text-right">
                 <TrendBadge summary={sum} showMagnitude={false} />

@@ -3,6 +3,7 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {
+    "@expo-google-fonts/inter": "^0.4.2",
     "@expo/ui": "~56.0.18",
     "@expo/vector-icons": "^15.0.2",
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -10,6 +11,7 @@
     "expo": "~56.0.12",
     "expo-audio": "~56.0.12",
     "expo-auth-session": "~56.0.14",
+    "expo-blur": "~56.0.3",
     "expo-constants": "~56.0.18",
     "expo-crypto": "~56.0.4",
     "expo-device": "~56.0.4",
@@ -34,6 +36,7 @@
     "react-dom": "19.2.3",
     "react-native": "0.85.3",
     "react-native-ble-plx": "^3.5.1",
+    "react-native-chart-kit": "^7.0.1",
     "react-native-gesture-handler": "~2.31.1",
     "react-native-reanimated": "4.3.1",
     "react-native-safe-area-context": "~5.7.0",

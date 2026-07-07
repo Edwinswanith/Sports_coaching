@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Card } from "../../../components/Card";
 import { bandFor } from "../../../components/Ring";
 import { Chip, dash, Icon } from "../../../components/ui";
+import { Avatar, type AvatarInfo } from "../../../components/Avatar";
 import { AppShell } from "../../../components/AppShell";
 import { coachNav, coachNavigate } from "../../../lib/coachNav";
 import {
@@ -24,6 +25,7 @@ type Athlete = {
   email: string;
   sport: string;
   position: string | null;
+  avatar?: AvatarInfo;
 };
 
 type DailySummary = {
@@ -246,22 +248,6 @@ export default function CoachRosterPage() {
 
 function RosterRow({ athlete, summary }: { athlete: Athlete; summary?: DailySummary }) {
   const band = summary ? bandFor(summary.readinessScore) : null;
-  const text =
-    band === "red"
-      ? "text-bad"
-      : band === "amber"
-      ? "text-warn"
-      : band === "green"
-      ? "text-ok"
-      : "text-accent-strong";
-  const ring =
-    band === "red"
-      ? "border-bad/40"
-      : band === "amber"
-      ? "border-warn/40"
-      : band === "green"
-      ? "border-ok/40"
-      : "border-accent/20";
   const flagged = attentionRank(summary) < 2;
   const edge =
     flagged && summary?.rpe?.riskFlag === "red"
@@ -275,8 +261,22 @@ function RosterRow({ athlete, summary }: { athlete: Athlete; summary?: DailySumm
       href={`/coach/athletes/${athlete.athleteId}`}
       className={`surface-card animate-rise flex items-center gap-3 p-3 transition hover:border-accent/40 hover:shadow-glow ${edge}`}
     >
-      <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 font-display text-sm font-bold ${ring} ${text}`}>
-        {summary ? summary.readinessScore ?? "-" : initials(athlete.name)}
+      <span className="relative inline-block h-10 w-10 shrink-0">
+        <Avatar
+          avatar={athlete.avatar}
+          name={athlete.name}
+          className="h-10 w-10"
+          photoPath={`/api/coach/athletes/${athlete.athleteId}/avatar/file`}
+        />
+        {summary?.readinessScore != null ? (
+          <span
+            className={`absolute -bottom-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-surface px-0.5 font-display text-[9px] font-bold text-white ${
+              band === "red" ? "bg-bad" : band === "amber" ? "bg-warn" : band === "green" ? "bg-ok" : "bg-accent"
+            }`}
+          >
+            {summary.readinessScore}
+          </span>
+        ) : null}
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-1.5">
@@ -306,11 +306,4 @@ function RosterRow({ athlete, summary }: { athlete: Athlete; summary?: DailySumm
       </span>
     </Link>
   );
-}
-
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }

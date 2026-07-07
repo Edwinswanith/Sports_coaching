@@ -1,5 +1,5 @@
 // Single source of truth for the athlete bottom navigation. The dashboard hosts
-// the today/trends/log/coach sections in-page (state-driven), while "Chat" is a
+// the today/progress/log/coach sections in-page (state-driven), while "Chat" is a
 // real route (/athlete/messages). Shared here so the tab bar stays identical
 // across the dashboard and the messages pages.
 
@@ -7,7 +7,7 @@ import { Icon } from "../components/ui";
 import type { NavItem } from "../components/AppShell";
 
 /** In-page dashboard sections (everything except the routed "messages" tab). */
-export const ATHLETE_SECTIONS = ["today", "achievements", "hydration", "trends", "log", "coach"] as const;
+export const ATHLETE_SECTIONS = ["today", "progress", "log", "coach"] as const;
 export type AthleteSection = (typeof ATHLETE_SECTIONS)[number];
 
 export function isAthleteSection(v: string): v is AthleteSection {
@@ -22,9 +22,7 @@ export function athleteNav(opts?: {
 }): NavItem[] {
   return [
     { key: "today", label: "Today", icon: <Icon.home /> },
-    { key: "achievements", label: "Goals", icon: <Icon.trophy /> },
-    { key: "hydration", label: "Water", icon: <Icon.water /> },
-    { key: "trends", label: "Trends", icon: <Icon.chart /> },
+    { key: "progress", label: "Progress", icon: <Icon.chart /> },
     { key: "log", label: "Log", icon: <Icon.plus /> },
     {
       key: "coach",

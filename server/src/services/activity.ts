@@ -101,7 +101,7 @@ export async function buildActivityFeed(
       id: `rpe:${String(r._id)}`,
       at: whenOf(r, ["updatedAt", "date"]),
       kind: "rpe",
-      title: `RPE ${r.rpe} · ${slotLabel(r.sessionType)}`,
+      title: `RPM ${r.rpe} · ${slotLabel(r.sessionType)}`,
       detail: `load ${r.calculatedTrainingLoad} · ${str(r.trainingCategory) ?? ""}`.trim(),
       band: recoveryBand(r.riskFlag),
     });

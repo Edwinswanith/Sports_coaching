@@ -2,6 +2,8 @@ import { Types } from "mongoose";
 import { Message, type MessageDoc, type MessageSenderRole } from "../models/Message";
 import { AthleteProfile } from "../models/AthleteProfile";
 import { User } from "../models/User";
+import { WorkoutMedia, type WorkoutMediaDoc } from "../models/WorkoutMedia";
+import { serializeMedia, type MediaView } from "./media";
 import { createNotification } from "./notifications";
 
 /** Shape returned to the client for one message. `mine` is viewer-relative. */
@@ -12,9 +14,16 @@ export type MessageView = {
   mine: boolean;
   read: boolean;
   createdAt: string;
+  /** Present when this message is a coach-shared image (see WorkoutMedia). */
+  media: MediaView | null;
 };
 
-export function serializeMessage(m: MessageDoc, viewerRole: MessageSenderRole): MessageView {
+/** Builds the client-facing view for one message given its (already-resolved) media doc, if any. */
+export function messageView(
+  m: MessageDoc,
+  viewerRole: MessageSenderRole,
+  media: WorkoutMediaDoc | null
+): MessageView {
   return {
     id: m._id.toString(),
     body: m.body,
@@ -22,7 +31,28 @@ export function serializeMessage(m: MessageDoc, viewerRole: MessageSenderRole): 
     mine: m.senderRole === viewerRole,
     read: m.readAt != null,
     createdAt: (m.createdAt as Date).toISOString(),
+    media: media ? serializeMedia(media) : null,
   };
+}
+
+function serializeMessage(
+  m: MessageDoc,
+  viewerRole: MessageSenderRole,
+  mediaById: Map<string, WorkoutMediaDoc>
+): MessageView {
+  const mediaId = (m.mediaId as Types.ObjectId | null | undefined)?.toString();
+  const media = mediaId ? mediaById.get(mediaId) ?? null : null;
+  return messageView(m, viewerRole, media);
+}
+
+/** Batch-loads the WorkoutMedia docs referenced by a page of messages. */
+async function loadMediaFor(rows: MessageDoc[]): Promise<Map<string, WorkoutMediaDoc>> {
+  const ids = rows
+    .map((r) => (r.mediaId as Types.ObjectId | null | undefined)?.toString())
+    .filter((id): id is string => Boolean(id));
+  if (ids.length === 0) return new Map();
+  const docs = await WorkoutMedia.find({ _id: { $in: ids } }).lean<WorkoutMediaDoc[]>();
+  return new Map(docs.map((d) => [d._id.toString(), d]));
 }
 
 export function clampMsgLimit(raw: unknown, fallback = 30, max = 100): number {
@@ -58,28 +88,40 @@ export async function fetchThread(args: {
   const hasMore = rows.length > args.limit;
   const page = hasMore ? rows.slice(0, args.limit) : rows;
   page.reverse(); // chronological
+  const mediaById = await loadMediaFor(page);
   return {
-    messages: page.map((m) => serializeMessage(m, args.viewerRole)),
+    messages: page.map((m) => serializeMessage(m, args.viewerRole, mediaById)),
     hasMore,
   };
 }
 
 /**
  * Create a message and fire one in-app notification to the recipient. Best-effort
- * notification (never throws). Returns the persisted message.
+ * notification (never throws). Returns the persisted message plus its resolved
+ * media doc (if `mediaId` was given), so callers can build the view without a
+ * second lookup.
  */
 export async function sendMessage(args: {
   coachId: Types.ObjectId;
   athleteId: Types.ObjectId;
   senderRole: MessageSenderRole;
-  body: string;
-}): Promise<MessageDoc> {
+  body?: string;
+  mediaId?: Types.ObjectId;
+}): Promise<{ message: MessageDoc; media: WorkoutMediaDoc | null }> {
+  const body = args.body?.trim() ?? "";
+  const media = args.mediaId
+    ? await WorkoutMedia.findById(args.mediaId).lean<WorkoutMediaDoc>()
+    : null;
+
   const created = await Message.create({
     coachId: args.coachId,
     athleteId: args.athleteId,
     senderRole: args.senderRole,
-    body: args.body,
+    body,
+    mediaId: args.mediaId ?? null,
   });
+
+  const notifBody = body ? preview(body) : media ? "Sent you an image." : "";
 
   // Resolve the recipient user + a friendly sender name for the notification.
   if (args.senderRole === "coach") {
@@ -92,7 +134,7 @@ export async function sendMessage(args: {
         recipientUserId: profile.userId as Types.ObjectId,
         type: "message",
         title: `New message from ${(coach?.name as string) || "your coach"}`,
-        body: preview(args.body),
+        body: notifBody,
         priority: "medium",
         link: `/athlete/dashboard?section=coach&coachId=${args.coachId.toString()}`,
         academyId: (profile.academyId as Types.ObjectId | undefined) ?? null,
@@ -109,14 +151,14 @@ export async function sendMessage(args: {
       recipientUserId: args.coachId,
       type: "message",
       title: `New message from ${(athleteUser?.name as string) || "your athlete"}`,
-      body: preview(args.body),
+      body: notifBody,
       priority: "medium",
       link: `/coach/messages?athleteId=${args.athleteId.toString()}`,
       academyId: (profile?.academyId as Types.ObjectId | undefined) ?? null,
     });
   }
 
-  return created;
+  return { message: created, media };
 }
 
 function preview(body: string): string {

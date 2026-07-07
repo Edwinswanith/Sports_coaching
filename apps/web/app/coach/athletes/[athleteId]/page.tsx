@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card } from "../../../../components/Card";
+import { AuthImage } from "../../../../components/AuthImage";
 import { Ring, bandFor } from "../../../../components/Ring";
-import { Chip, StatTile, dash, Icon } from "../../../../components/ui";
+import { Chip, StatTile, dash, wellnessTen, Icon } from "../../../../components/ui";
 import { AppShell } from "../../../../components/AppShell";
 import { coachNav, coachNavigate } from "../../../../lib/coachNav";
 import type { TrendPoint } from "../../../../components/Trend";
@@ -27,6 +28,14 @@ import {
 } from "../../../../lib/api";
 import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../../../lib/sessions";
 
+type SessionPhoto = {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedAt: string;
+};
+
 type DailyCard = {
   athleteId: string;
   name: string;
@@ -34,7 +43,7 @@ type DailyCard = {
   position: string | null;
   date: string;
   attendance: { status: string | null; note: string | null };
-  sessions: Record<SessionSlot, { status: string | null; type: string | null }>;
+  sessions: Record<SessionSlot, { status: string | null; type: string | null; photos?: SessionPhoto[] }>;
   readinessScore: number | null;
   sleep: { hours: number | null; quality: number | null };
   soreness: number | null;
@@ -86,18 +95,18 @@ type PerfEntry = {
   context?: string | null;
 };
 
-type Tab = "overview" | "training" | "rpe" | "performance" | "activity";
+type Tab = "overview" | "training" | "rpe" | "performance" | "media" | "activity";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "training", label: "Training" },
-  { key: "rpe", label: "RPE" },
+  { key: "rpe", label: "RPM" },
   { key: "performance", label: "Performance" },
+  { key: "media", label: "Media" },
   { key: "activity", label: "Activity" },
 ];
 
 const ATTENDANCE_OPTIONS = ["present", "late", "absent", "excused"] as const;
-const SESSION_STATUS_OPTIONS = ["planned", "in_progress", "completed", "skipped"] as const;
 
 export default function CoachAthleteDetailPage() {
   const router = useRouter();
@@ -278,6 +287,8 @@ export default function CoachAthleteDetailPage() {
             }}
             onError={setError}
           />
+        ) : tab === "media" ? (
+          <MediaTab athleteId={athleteId} guard={guard} onError={setError} />
         ) : (
           <Card title="Recent activity">
             <Timeline items={activity} />
@@ -308,7 +319,7 @@ function Overview({ card, athleteId, band }: { card: DailyCard; athleteId: strin
             <StatTile
               label="Sleep"
               value={dash(card.sleep.hours)}
-              sub={`quality ${dash(card.sleep.quality)}/5`}
+              sub={`quality ${wellnessTen(card.sleep.quality)}/10`}
               icon={<Icon.moon />}
             />
             <StatTile
@@ -353,7 +364,7 @@ function Overview({ card, athleteId, band }: { card: DailyCard; athleteId: strin
               <Chip band={card.rpe.riskFlag}>{card.rpe.riskFlag}</Chip>
               <span className="nums font-display text-2xl font-bold text-ink">{card.rpe.calculatedTrainingLoad}</span>
               <span className="ml-auto text-[11px] text-ink-faint">
-                RPE {card.rpe.rpe} · {SLOT_LABEL[card.rpe.sessionType]}
+                RPM {card.rpe.rpe} · {SLOT_LABEL[card.rpe.sessionType]}
               </span>
             </div>
             <p className="mt-1 text-[11px] text-ink-muted">
@@ -368,7 +379,7 @@ function Overview({ card, athleteId, band }: { card: DailyCard; athleteId: strin
             ) : null}
           </div>
         ) : (
-          <p className="text-xs text-ink-faint">No RPE logged for this date.</p>
+          <p className="text-xs text-ink-faint">No RPM logged for this date.</p>
         )}
       </Card>
 
@@ -419,14 +430,55 @@ function TrainingTab({
   onSaved: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
+  // Athlete-style single-active-slot picker: one compact 3-up row to choose
+  // AM/Afternoon/PM, and only that slot's form below — avoids stacking three
+  // full session cards (status + notes + photos + save) end to end.
+  const [activeSlot, setActiveSlot] = useState<SessionSlot>(SESSION_SLOTS[0]);
+
   return (
     <div className="space-y-4">
       <Card title="Attendance">
         <AttendanceRecorder athleteId={athleteId} date={date} current={card.attendance.status} guard={guard} onSaved={onSaved} onError={onError} />
       </Card>
-      {SESSION_SLOTS.map((slot) => (
-        <SlotEditor key={slot} slot={slot} athleteId={athleteId} date={date} card={card} guard={guard} onSaved={onSaved} onError={onError} />
-      ))}
+      <Card title="Training">
+        <div className="grid grid-cols-3 gap-2">
+          {SESSION_SLOTS.map((slot) => {
+            const session = card.sessions[slot];
+            const selected = activeSlot === slot;
+            const done = Boolean(session.status && session.status !== "planned");
+            return (
+              <button
+                key={slot}
+                type="button"
+                onClick={() => setActiveSlot(slot)}
+                className={`min-w-0 rounded-xl border p-3 text-left transition ${
+                  selected
+                    ? "border-accent bg-accent-soft"
+                    : done
+                      ? "border-ok/30 bg-ok/5"
+                      : "border-line bg-surface-inset hover:bg-surface-raised"
+                }`}
+              >
+                <p className={`label ${selected ? "text-accent-strong" : ""}`}>{SLOT_LABEL[slot]}</p>
+                <p className="mt-1 truncate text-sm font-semibold text-ink">{session.type || "Not set"}</p>
+                <p className="mt-1 text-[11px] font-semibold text-ink-muted capitalize">{session.status ?? "—"}</p>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-3 rounded-xl border border-line bg-surface-raised p-3">
+          <SlotEditor
+            key={activeSlot}
+            slot={activeSlot}
+            athleteId={athleteId}
+            date={date}
+            card={card}
+            guard={guard}
+            onSaved={onSaved}
+            onError={onError}
+          />
+        </div>
+      </Card>
     </div>
   );
 }
@@ -509,11 +561,47 @@ function SlotEditor({
   const slotLabel = SLOT_LABEL[slot];
   const [form, setForm] = useState<SlotForm>(() => emptySlotForm(card, slot));
   const [busy, setBusy] = useState(false);
+  const [photos, setPhotos] = useState<SessionPhoto[]>(() => card.sessions[slot].photos ?? []);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
 
   // Re-sync when the card (date) changes.
   useEffect(() => {
     setForm(emptySlotForm(card, slot));
+    setPhotos(card.sessions[slot].photos ?? []);
   }, [card, slot]);
+
+  async function uploadPhoto(file: File) {
+    setUploadingPhoto(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      body.append("date", date);
+      const res = await apiFetch(`/api/coach/athletes/${athleteId}/training/${slot}/photos`, {
+        method: "POST",
+        body,
+      });
+      if (guard(res.status)) return;
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        onError(
+          j.error === "unsupported_file_type"
+            ? "Unsupported file type — use JPG, PNG, WEBP, or GIF."
+            : j.error === "file_too_large"
+              ? "File is too large."
+              : "Could not attach photo."
+        );
+        return;
+      }
+      const json = (await res.json()) as { photo: SessionPhoto };
+      setPhotos((prev) => [...prev, json.photo]);
+    } catch {
+      onError("Network error.");
+    } finally {
+      setUploadingPhoto(false);
+      if (photoInputRef.current) photoInputRef.current.value = "";
+    }
+  }
 
   async function save() {
     setBusy(true);
@@ -543,8 +631,9 @@ function SlotEditor({
   }
 
   return (
-    <Card title={`${slotLabel} session`}>
-      <div className="grid gap-3">
+    <div>
+      <p className="text-sm font-semibold text-ink">{slotLabel} session</p>
+      <div className="mt-3 grid gap-3">
         <label className="block">
           <span className="label">Category / type</span>
           <select
@@ -559,36 +648,13 @@ function SlotEditor({
           </select>
         </label>
         <label className="block">
-          <span className="label">Status</span>
-          <select
-            value={form.status}
-            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-            className="field mt-1.5 capitalize"
-          >
-            {SESSION_STATUS_OPTIONS.map((s) => (
-              <option key={s} value={s}>{s.replace("_", " ")}</option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="label">Duration (min)</span>
-          <input
-            value={form.durationMin}
-            onChange={(e) => setForm((f) => ({ ...f, durationMin: e.target.value }))}
-            type="number"
-            min={0}
-            placeholder="e.g. 90"
-            className="field mt-1.5 nums"
-          />
-        </label>
-        <label className="block">
-          <span className="label">Intensity RPE (1–10)</span>
+          <span className="label">Intensity RPM (1–100)</span>
           <input
             value={form.intensityRpe}
             onChange={(e) => setForm((f) => ({ ...f, intensityRpe: e.target.value }))}
             type="number"
             min={1}
-            max={10}
+            max={100}
             placeholder="optional"
             className="field mt-1.5 nums"
           />
@@ -603,20 +669,54 @@ function SlotEditor({
           placeholder="Plan detail or coaching note…"
         />
       </label>
+
+      <div className="mt-3">
+        <span className="label">Photos</span>
+        <div className="mt-1.5 flex flex-wrap gap-2">
+          {photos.map((p) => (
+            <AuthImage
+              key={p.id}
+              src={`/api/coach/athletes/${athleteId}/training/${slot}/photos/${p.id}/file`}
+              alt={p.originalName}
+              className="h-16 w-16 rounded-lg border border-line object-cover"
+            />
+          ))}
+          <input
+            ref={photoInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void uploadPhoto(file);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => photoInputRef.current?.click()}
+            disabled={uploadingPhoto}
+            className="flex h-16 w-16 items-center justify-center rounded-lg border border-dashed border-line text-ink-faint transition hover:border-accent/40 hover:text-ink disabled:opacity-50"
+            aria-label="Add photo"
+          >
+            {uploadingPhoto ? "…" : <Icon.plus />}
+          </button>
+        </div>
+      </div>
+
       <button onClick={save} disabled={busy} className="btn-primary mt-3 w-full">
         {busy ? "Saving…" : `Save ${slotLabel} session`}
       </button>
-    </Card>
+    </div>
   );
 }
 
-/* ---------------- RPE tab ---------------- */
+/* ---------------- RPM tab ---------------- */
 
 function RpeTab({ entries }: { entries: RpeEntry[] }) {
   if (entries.length === 0) {
     return (
       <Card>
-        <p className="text-sm text-ink-muted">No RPE entries for this date.</p>
+        <p className="text-sm text-ink-muted">No RPM entries for this date.</p>
       </Card>
     );
   }
@@ -628,7 +728,7 @@ function RpeTab({ entries }: { entries: RpeEntry[] }) {
             <Chip band={e.riskFlag}>{e.riskFlag}</Chip>
             <span className="nums font-display text-2xl font-bold text-ink">{e.calculatedTrainingLoad}</span>
             <span className="ml-auto text-[11px] text-ink-faint">
-              RPE {e.rpe} · {e.plannedIntensityPercent}%
+              RPM {e.rpe} · {e.plannedIntensityPercent}%
             </span>
           </div>
 
@@ -642,10 +742,10 @@ function RpeTab({ entries }: { entries: RpeEntry[] }) {
           ) : null}
 
           <div className="mt-3 grid grid-cols-4 gap-2">
-            <StatTile label="Sleep" value={`${e.sleepQuality}/5`} />
-            <StatTile label="Soreness" value={`${e.muscleSoreness}/5`} />
-            <StatTile label="Fatigue" value={`${e.fatigue}/5`} />
-            <StatTile label="Mood" value={`${e.moodMotivation}/5`} />
+            <StatTile label="Sleep" value={`${wellnessTen(e.sleepQuality)}/10`} />
+            <StatTile label="Soreness" value={`${wellnessTen(e.muscleSoreness)}/10`} />
+            <StatTile label="Fatigue" value={`${wellnessTen(e.fatigue)}/10`} />
+            <StatTile label="Mood" value={`${wellnessTen(e.moodMotivation)}/10`} />
           </div>
 
           {typeof e.restingHeartRate === "number" ? (
@@ -869,4 +969,244 @@ function FeedbackComposer({
 function Banner({ tone, children }: { tone: "ok" | "bad"; children: React.ReactNode }) {
   const cls = tone === "ok" ? "border-ok/30 bg-ok/10 text-ok" : "border-bad/30 bg-bad/10 text-bad";
   return <div className={`rounded-xl border px-3 py-2.5 text-sm ${cls}`}>{children}</div>;
+}
+
+/* ---------------- Media ---------------- */
+
+type WorkoutTableRow = {
+  name: string;
+  sets?: string;
+  reps?: string;
+  distance?: string;
+  duration?: string;
+  intensity?: string;
+  notes?: string;
+};
+
+type MediaItem = {
+  id: string;
+  context: "athlete" | "workout" | "training_plan";
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  sent: boolean;
+  sentAt: string | null;
+  conversion: {
+    status: "none" | "pending" | "completed" | "failed";
+    table: WorkoutTableRow[];
+    convertedAt: string | null;
+    error: string | null;
+  };
+  createdAt: string;
+};
+
+const MEDIA_CONTEXTS: { value: MediaItem["context"]; label: string }[] = [
+  { value: "workout", label: "Workout" },
+  { value: "training_plan", label: "Training plan" },
+  { value: "athlete", label: "Athlete photo" },
+];
+
+function WorkoutTable({ rows }: { rows: WorkoutTableRow[] }) {
+  return (
+    <div className="mt-3 overflow-x-auto">
+      <table className="w-full text-left text-xs">
+        <thead>
+          <tr className="text-ink-faint">
+            <th className="py-1 pr-2 font-semibold">Exercise</th>
+            <th className="py-1 pr-2 font-semibold">Sets</th>
+            <th className="py-1 pr-2 font-semibold">Reps</th>
+            <th className="py-1 pr-2 font-semibold">Distance</th>
+            <th className="py-1 pr-2 font-semibold">Duration</th>
+            <th className="py-1 pr-2 font-semibold">Intensity</th>
+            <th className="py-1 font-semibold">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-t border-line">
+              <td className="py-1.5 pr-2 font-semibold text-ink">{r.name}</td>
+              <td className="py-1.5 pr-2 text-ink-muted">{r.sets || "—"}</td>
+              <td className="py-1.5 pr-2 text-ink-muted">{r.reps || "—"}</td>
+              <td className="py-1.5 pr-2 text-ink-muted">{r.distance || "—"}</td>
+              <td className="py-1.5 pr-2 text-ink-muted">{r.duration || "—"}</td>
+              <td className="py-1.5 pr-2 text-ink-muted">{r.intensity || "—"}</td>
+              <td className="py-1.5 text-ink-muted">{r.notes || "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MediaTab({
+  athleteId,
+  guard,
+  onError,
+}: {
+  athleteId: string;
+  guard: (status: number) => boolean;
+  onError: (msg: string) => void;
+}) {
+  const [items, setItems] = useState<MediaItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [context, setContext] = useState<MediaItem["context"]>("workout");
+  const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await apiFetch(`/api/coach/athletes/${athleteId}/media`);
+      if (guard(res.status)) return;
+      const json = (await res.json()) as { media?: MediaItem[] };
+      setItems(json.media ?? []);
+    } finally {
+      setLoading(false);
+    }
+  }, [athleteId, guard]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function upload() {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("context", context);
+      const res = await apiFetch(`/api/coach/athletes/${athleteId}/media`, {
+        method: "POST",
+        body: form,
+      });
+      if (guard(res.status)) return;
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        onError(
+          j.error === "unsupported_file_type"
+            ? "Unsupported file type — use JPG, PNG, WEBP, or GIF."
+            : j.error === "file_too_large"
+              ? "File is too large."
+              : "Upload failed."
+        );
+        return;
+      }
+      setFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      await load();
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function send(id: string) {
+    setBusyId(id);
+    try {
+      const res = await apiFetch(`/api/coach/media/${id}/send`, { method: "POST" });
+      if (guard(res.status)) return;
+      if (!res.ok) {
+        onError("Could not send image.");
+        return;
+      }
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function convert(id: string) {
+    setBusyId(id);
+    try {
+      const res = await apiFetch(`/api/coach/media/${id}/convert`, { method: "POST" });
+      if (guard(res.status)) return;
+      if (!res.ok) {
+        onError("Could not convert image.");
+        return;
+      }
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <Card title="Upload image">
+        <div className="space-y-2">
+          <select
+            value={context}
+            onChange={(e) => setContext(e.target.value as MediaItem["context"])}
+            className="field"
+          >
+            {MEDIA_CONTEXTS.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            className="field"
+          />
+          <button onClick={upload} disabled={!file || uploading} className="btn-primary w-full">
+            {uploading ? "Uploading…" : "Upload"}
+          </button>
+        </div>
+      </Card>
+
+      {loading ? (
+        <div className="surface-card h-24 animate-pulse" />
+      ) : items.length === 0 ? (
+        <Card>
+          <p className="text-sm text-ink-muted">No images uploaded yet.</p>
+        </Card>
+      ) : (
+        items.map((m) => (
+          <Card
+            key={m.id}
+            title={m.originalName}
+            action={<Chip band={m.sent ? "green" : "amber"}>{m.sent ? "Sent" : "Draft"}</Chip>}
+          >
+            <AuthImage
+              src={`/api/coach/media/${m.id}/file`}
+              alt={m.originalName}
+              className="h-40 w-full rounded-lg object-cover"
+            />
+            <p className="mt-2 text-[11px] text-ink-faint">
+              {MEDIA_CONTEXTS.find((c) => c.value === m.context)?.label} · {(m.sizeBytes / 1024).toFixed(0)} KB
+            </p>
+            <div className="mt-3 flex gap-2">
+              {m.sent ? (
+                <Link href={`/coach/messages/${athleteId}`} className="btn-secondary flex-1 text-center">
+                  Sent — open chat
+                </Link>
+              ) : (
+                <button onClick={() => send(m.id)} disabled={busyId === m.id} className="btn-secondary flex-1">
+                  Send to athlete's chat
+                </button>
+              )}
+              <button
+                onClick={() => convert(m.id)}
+                disabled={busyId === m.id || m.conversion.status === "pending"}
+                className="btn-secondary flex-1"
+              >
+                {m.conversion.status === "completed" ? "Re-convert" : "Convert to table"}
+              </button>
+            </div>
+            {m.conversion.status === "failed" ? (
+              <p className="mt-2 text-xs text-bad">Conversion failed: {m.conversion.error}</p>
+            ) : null}
+            {m.conversion.table.length > 0 ? <WorkoutTable rows={m.conversion.table} /> : null}
+          </Card>
+        ))
+      )}
+    </div>
+  );
 }

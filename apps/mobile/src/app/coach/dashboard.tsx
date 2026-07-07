@@ -1,14 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { Text } from "../../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -88,10 +80,10 @@ function attentionRank(card: DailyCard): number {
 }
 
 function attentionReason(card: DailyCard): string {
-  if (card.rpe?.riskFlag === "red") return "High RPE risk";
+  if (card.rpe?.riskFlag === "red") return "High RPM risk";
   if (card.injury?.active) return card.injury.bodyPart ? `Injury - ${card.injury.bodyPart}` : "Injury";
   if (card.readinessScore !== null && card.readinessScore < 60) return `Low readiness ${card.readinessScore}`;
-  if (card.rpe?.riskFlag === "amber") return "RPE caution";
+  if (card.rpe?.riskFlag === "amber") return "RPM caution";
   if (card.readinessScore !== null && card.readinessScore < 80) return `Readiness ${card.readinessScore}`;
   return "Check in";
 }
@@ -463,7 +455,7 @@ function RosterRow({ card, onPress }: { card: DailyCard; onPress: () => void }) 
               <Text style={styles.loadLabel}>load</Text>
             </>
           ) : (
-            <Text style={styles.noRpe}>No RPE</Text>
+            <Text style={styles.noRpe}>No RPM</Text>
           )}
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.inkFaint} />

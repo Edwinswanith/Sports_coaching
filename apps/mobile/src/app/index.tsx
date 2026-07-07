@@ -1,4 +1,5 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Text } from "../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -6,7 +7,7 @@ import { ROLE_THEME_LIST, colors, radius } from "../lib/theme";
 import { H1, Muted } from "../components/ui";
 
 const FEATURES: { icon: keyof typeof Ionicons.glyphMap; title: string; sub: string }[] = [
-  { icon: "flash", title: "Daily check-in & RPE", sub: "Log training load, sleep, soreness in seconds" },
+  { icon: "flash", title: "Daily check-in & RPM", sub: "Log training load, sleep, soreness in seconds" },
   { icon: "speedometer-outline", title: "Readiness & risk flags", sub: "Green / amber / red, computed for you" },
   { icon: "chatbubble-ellipses-outline", title: "Coach feedback", sub: "Notes and guidance, right where you train" },
   { icon: "trending-up-outline", title: "Trends & history", sub: "Watch every number move over time" },

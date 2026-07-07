@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Area, AreaChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { apiFetch } from "../lib/api";
 import { Card } from "./Card";
 
@@ -214,7 +215,19 @@ export function HydrationModule({ date }: { date: string }) {
   );
 
   return (
-    <div className="space-y-3 animate-rise">
+    // Recolor the whole hydration module to the water blue so it matches the
+    // mobile app's water screen (overriding the role accent just for this scope
+    // cascades to every `var(--accent)` / bg-accent / border-accent below).
+    <div
+      className="space-y-3 animate-rise"
+      style={
+        {
+          "--accent-rgb": "47 125 246",
+          "--accent-strong-rgb": "37 99 235",
+          "--accent-ink-rgb": "255 255 255",
+        } as CSSProperties
+      }
+    >
       <Card title="Water goal">
         <div className="flex flex-col items-center gap-4">
           <div
@@ -426,25 +439,62 @@ function MetricTile({ label, value, good }: { label: string; value: string; good
 }
 
 function HydrationBars({ series, goalMl }: { series: WaterPoint[]; goalMl: number }) {
-  const max = Math.max(goalMl, ...series.map((point) => point.totalMl ?? 0), 1);
+  const max = Math.max(goalMl, ...series.map((point) => point.totalMl ?? 0), 1) * 1.12;
   if (series.length === 0) return <p className="text-xs text-ink-faint">No chart data yet.</p>;
+
+  const data = series.map((point) => {
+    const total = point.totalMl ?? 0;
+    return {
+      date: point.date,
+      amount: total,
+      label: shortDate(point.date),
+      met: total >= goalMl,
+      missing: point.totalMl === null,
+    };
+  });
+
   return (
     <div>
-      <div className="flex h-44 items-end gap-1.5 border-b border-line">
-        {series.map((point) => {
-          const total = point.totalMl ?? 0;
-          const met = total >= goalMl;
-          const height = Math.max(4, Math.round((total / max) * 100));
-          return (
-            <div key={point.date} className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1">
-              <div
-                title={`${point.date}: ${total} ml`}
-                className={`w-full rounded-t-md ${met ? "bg-ok" : "bg-accent"}`}
-                style={{ height: `${height}%`, opacity: point.totalMl === null ? 0.25 : 1 }}
-              />
-            </div>
-          );
-        })}
+      <div className="h-44 border-b border-line">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={data} margin={{ top: 8, right: 4, bottom: 0, left: 4 }}>
+            <defs>
+              <linearGradient id="waterArea" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.35} />
+                <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <XAxis dataKey="label" hide />
+            <YAxis hide domain={[0, max]} />
+            {/* Dashed goal line — days above it hit the target. */}
+            <ReferenceLine y={goalMl} stroke="var(--ok)" strokeDasharray="4 4" strokeOpacity={0.75} />
+            <Tooltip
+              cursor={{ stroke: "rgb(var(--accent-rgb) / 0.4)", strokeWidth: 1 }}
+              content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const item = payload[0].payload as (typeof data)[number];
+                return (
+                  <div className="rounded-lg border border-line bg-surface-raised px-2.5 py-2 text-[11px] shadow-pop">
+                    <p className="font-semibold text-ink">{item.date}</p>
+                    <p className="mt-0.5 text-ink-muted">
+                      {item.amount} ml{item.met ? " · goal met" : ""}
+                    </p>
+                  </div>
+                );
+              }}
+            />
+            <Area
+              type="monotone"
+              dataKey="amount"
+              stroke="var(--accent)"
+              strokeWidth={2.5}
+              fill="url(#waterArea)"
+              dot={{ r: 3, stroke: "var(--accent)", strokeWidth: 2, fill: "var(--surface-raised)" }}
+              activeDot={{ r: 5 }}
+              connectNulls
+            />
+          </AreaChart>
+        </ResponsiveContainer>
       </div>
       <div className="mt-2 flex justify-between gap-1 text-[10px] text-ink-faint">
         <span>{shortDate(series[0].date)}</span>

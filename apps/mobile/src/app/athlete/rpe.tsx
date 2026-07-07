@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Text } from "../../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { apiFetch } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
@@ -65,7 +66,7 @@ export default function Rpe() {
         }),
       });
       if (!res.ok) throw new Error();
-      setMsg({ kind: "ok", text: "Session RPE logged. Your training load is updated." });
+      setMsg({ kind: "ok", text: "Session RPM logged. Your training load is updated." });
       return true;
     } catch {
       setMsg({ kind: "error", text: "Couldn't save. Check your connection and try again." });
@@ -78,7 +79,7 @@ export default function Rpe() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>Session RPE</Text>
+        <Text style={styles.title}>Session RPM</Text>
         <Muted style={{ marginBottom: 16 }}>Log a training session’s effort and how you felt.</Muted>
 
         <Card style={{ gap: 18 }}>
@@ -111,7 +112,7 @@ export default function Rpe() {
           </View>
 
           <Stepper label="Planned intensity" value={intensity} onChange={setIntensity} step={5} min={0} max={100} unit="%" accent={theme.accentStrong} />
-          <Stepper label="RPE (effort)" value={rpe} onChange={setRpe} step={1} min={0} max={10} accent={theme.accentStrong} />
+          <Stepper label="RPM (effort)" value={rpe} onChange={setRpe} step={1} min={0} max={10} accent={theme.accentStrong} />
           <Scale label="Sleep quality" value={sleepQuality} onChange={setSleepQuality} accent={theme.accentStrong} lowHint="Poor" highHint="Great" />
           <Scale label="Soreness" value={soreness} onChange={setSoreness} accent={theme.accentStrong} lowHint="None" highHint="Severe" />
           <Scale label="Fatigue" value={fatigue} onChange={setFatigue} accent={theme.accentStrong} lowHint="Fresh" highHint="Spent" />
@@ -131,7 +132,7 @@ export default function Rpe() {
         ) : null}
 
         <View style={{ marginTop: 16 }}>
-          <PrimaryButton label="Log session RPE" onPress={save} loading={saving} successLabel="Logged" accent={theme.accent} accentInk={theme.accentInk} />
+          <PrimaryButton label="Log session RPM" onPress={save} loading={saving} successLabel="Logged" accent={theme.accent} accentInk={theme.accentInk} />
         </View>
       </ScrollView>
     </SafeAreaView>

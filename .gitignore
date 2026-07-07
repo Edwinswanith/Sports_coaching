@@ -30,3 +30,6 @@ env.server.yaml
 # Stray empty root expo manifest (the real one is apps/mobile/app.json)
 /app.json
 
+# Coach-uploaded media (local disk storage) — never committed, never publicly served
+/server/uploads/
+

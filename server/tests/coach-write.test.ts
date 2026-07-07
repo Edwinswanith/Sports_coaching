@@ -149,7 +149,7 @@ describe("Coach training plan write", () => {
     const badRpe = await request(app)
       .post(`/api/coach/athletes/${profile._id}/training/AM`)
       .set("Authorization", `Bearer ${token}`)
-      .send({ date: TODAY_STR, intensityRpe: 99 });
+      .send({ date: TODAY_STR, intensityRpe: 101 });
     expect(badRpe.status).toBe(400);
     expect(badRpe.body.error).toBe("invalid_intensityRpe");
   });

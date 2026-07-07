@@ -21,6 +21,7 @@ export type StoredUser = {
   role: string;
   mustChangePassword?: boolean;
   isAcademyOwner?: boolean;
+  avatar?: { kind: "photo" | "default" | null; defaultId: string | null };
 };
 
 type AuthPayload = {
@@ -100,9 +101,25 @@ function nativeHeaders(extra?: HeadersInit): HeadersInit {
   };
 }
 
+/**
+ * `fetch` has no built-in timeout — on a dead/blackholed connection (bad wifi,
+ * captive portal, corporate firewall) it can hang far longer than a user will
+ * wait, with no error ever surfacing. Bound every request so a bad network
+ * fails fast with a clear error instead of spinning forever.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function login(email: string, password: string): Promise<LoginResult> {
   try {
-    const res = await fetch(`${API_BASE}/api/auth/login`, {
+    const res = await fetchWithTimeout(`${API_BASE}/api/auth/login`, {
       method: "POST",
       headers: nativeHeaders(),
       body: JSON.stringify({ email: email.trim(), password, client: "native" }),
@@ -121,7 +138,7 @@ export async function login(email: string, password: string): Promise<LoginResul
 /** Exchange a Google ID token for a session. First-time users use requestedRole. */
 export async function googleLogin(idToken: string, requestedRole: string): Promise<LoginResult> {
   try {
-    const res = await fetch(`${API_BASE}/api/auth/google`, {
+    const res = await fetchWithTimeout(`${API_BASE}/api/auth/google`, {
       method: "POST",
       headers: nativeHeaders(),
       body: JSON.stringify({ credential: idToken, requestedRole, client: "native" }),
@@ -146,7 +163,7 @@ export async function registerAthlete(fields: {
   position?: string;
 }): Promise<LoginResult> {
   try {
-    const res = await fetch(`${API_BASE}/api/auth/register-athlete`, {
+    const res = await fetchWithTimeout(`${API_BASE}/api/auth/register-athlete`, {
       method: "POST",
       headers: nativeHeaders(),
       body: JSON.stringify({ ...fields, client: "native" }),
@@ -168,7 +185,7 @@ let refreshing: Promise<boolean> | null = null;
 async function tryRefresh(): Promise<boolean> {
   if (!refreshToken) return false;
   if (!refreshing) {
-    refreshing = fetch(`${API_BASE}/api/auth/refresh`, {
+    refreshing = fetchWithTimeout(`${API_BASE}/api/auth/refresh`, {
       method: "POST",
       headers: nativeHeaders(),
       body: JSON.stringify({ refreshToken, client: "native" }),
@@ -196,22 +213,36 @@ async function tryRefresh(): Promise<boolean> {
 
 /** Authenticated fetch: attaches the Bearer token and retries once on 401. */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  // FormData bodies (file uploads) must NOT get a manual Content-Type — the
+  // runtime sets one with the correct multipart boundary itself.
+  const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
   const build = (): RequestInit => ({
     ...init,
     headers: {
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      ...(init.body && !isFormData ? { "Content-Type": "application/json" } : {}),
       "X-Client-Type": "native",
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       ...(init.headers ?? {}),
     },
   });
 
-  let res = await fetch(`${API_BASE}${path}`, build());
+  // Longer budget than auth calls — this also carries multipart file uploads.
+  let res = await fetchWithTimeout(`${API_BASE}${path}`, build(), 30000);
   if (res.status === 401) {
     const refreshed = await tryRefresh();
-    if (refreshed) res = await fetch(`${API_BASE}${path}`, build());
+    if (refreshed) res = await fetchWithTimeout(`${API_BASE}${path}`, build(), 30000);
   }
   return res;
+}
+
+/** Current access token — for building authenticated <Image> source headers. */
+export function getAccessToken(): string | null {
+  return accessToken;
+}
+
+/** Persists an updated user profile (e.g. after an avatar change) without touching tokens. */
+export async function persistUser(user: StoredUser): Promise<void> {
+  await setStoredItem(USER_KEY, JSON.stringify(user));
 }
 
 export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {

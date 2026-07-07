@@ -8,21 +8,19 @@ import {
 } from "../middleware/coachAthleteAccess";
 import { AthleteProfile } from "../models/AthleteProfile";
 import { User } from "../models/User";
-import { CoachComment } from "../models/CoachComment";
-import { buildDailyCardForAthlete, dayRange } from "../services/dashboard";
-import { buildTrendSeries, clampDays } from "../services/trends";
-import { buildActivityFeed, clampLimit } from "../services/activity";
-import {
-  buildWellnessSeries,
-  buildAttendanceSeries,
-  buildSessionSeries,
-  buildPerformanceSeries,
-} from "../services/analytics";
+import { Wellness } from "../models/Wellness";
+import { Attendance } from "../models/Attendance";
+import { WaterIntake } from "../models/WaterIntake";
+import { dayRange } from "../services/dashboard";
 import { parseDateOrNull } from "../lib/trainingCategories";
 
 const router = Router();
 
-// Guardians only — read-only access to their linked athletes' summaries.
+// Guardians only — deliberately narrow. A guardian may see ONLY three data
+// points for a linked athlete: Sleep quality, Water intake, and Attendance for
+// a given day. No readiness, training load, injuries, coach feedback, notes,
+// or messages are ever exposed here — do not add broader endpoints to this
+// router without an explicit ask.
 router.use(requireAuth, requireRole("guardian"), loadScope);
 
 function linkedIds(req: Request): Types.ObjectId[] {
@@ -76,114 +74,43 @@ router.get("/athletes", async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/guardian/athletes/:athleteId/daily-card?date=YYYY-MM-DD
- * Read-only daily summary for a linked athlete.
+ * GET /api/guardian/athletes/:athleteId/summary?date=YYYY-MM-DD
+ * The ONLY per-athlete data guardians can see: Sleep quality, Water intake,
+ * and Attendance for the given day.
  */
 router.get(
-  "/athletes/:athleteId/daily-card",
-  requireAthleteAccess("athleteId"),
-  async (req: Request, res: Response) => {
-    const start = strictDate(req.query.date, res);
-    if (!start) return;
-    const card = await buildDailyCardForAthlete(
-      new Types.ObjectId(req.params.athleteId),
-      start
-    );
-    if (!card) {
-      res.status(404).json({ error: "athlete_not_found" });
-      return;
-    }
-    res.json({ card });
-  }
-);
-
-/**
- * GET /api/guardian/athletes/:athleteId/trends?days=7
- * Read-only trailing trend series for a linked athlete.
- */
-router.get(
-  "/athletes/:athleteId/trends",
-  requireAthleteAccess("athleteId"),
-  async (req: Request, res: Response) => {
-    const days = clampDays(req.query.days);
-    const series = await buildTrendSeries(
-      new Types.ObjectId(req.params.athleteId),
-      days
-    );
-    res.json({ days, series });
-  }
-);
-
-/**
- * GET /api/guardian/athletes/:athleteId/activity?limit=40
- * Read-only recent-activity timeline for a linked athlete.
- */
-router.get(
-  "/athletes/:athleteId/activity",
-  requireAthleteAccess("athleteId"),
-  async (req: Request, res: Response) => {
-    const limit = clampLimit(req.query.limit);
-    const items = await buildActivityFeed(new Types.ObjectId(req.params.athleteId), limit);
-    res.json({ items });
-  }
-);
-
-/**
- * Read-only per-athlete analytics series for a linked athlete (charts).
- *   GET /api/guardian/athletes/:athleteId/analytics/{wellness,attendance,sessions,performance}
- */
-router.get(
-  "/athletes/:athleteId/analytics/wellness",
-  requireAthleteAccess("athleteId"),
-  async (req: Request, res: Response) => {
-    const days = clampDays(req.query.days, 30, 90);
-    res.json({ days, series: await buildWellnessSeries(new Types.ObjectId(req.params.athleteId), days) });
-  }
-);
-router.get(
-  "/athletes/:athleteId/analytics/attendance",
-  requireAthleteAccess("athleteId"),
-  async (req: Request, res: Response) => {
-    const days = clampDays(req.query.days, 30, 90);
-    res.json({ days, ...(await buildAttendanceSeries(new Types.ObjectId(req.params.athleteId), days)) });
-  }
-);
-router.get(
-  "/athletes/:athleteId/analytics/sessions",
-  requireAthleteAccess("athleteId"),
-  async (req: Request, res: Response) => {
-    const days = clampDays(req.query.days, 30, 90);
-    res.json({ days, series: await buildSessionSeries(new Types.ObjectId(req.params.athleteId), days) });
-  }
-);
-router.get(
-  "/athletes/:athleteId/analytics/performance",
-  requireAthleteAccess("athleteId"),
-  async (req: Request, res: Response) => {
-    const days = clampDays(req.query.days, 90, 90);
-    const metric = typeof req.query.metric === "string" ? req.query.metric : undefined;
-    res.json({ days, ...(await buildPerformanceSeries(new Types.ObjectId(req.params.athleteId), metric, days)) });
-  }
-);
-
-/**
- * GET /api/guardian/athletes/:athleteId/coach-comments?date=YYYY-MM-DD
- * Coach feedback visible to the guardian for a linked athlete.
- */
-router.get(
-  "/athletes/:athleteId/coach-comments",
+  "/athletes/:athleteId/summary",
   requireAthleteAccess("athleteId"),
   async (req: Request, res: Response) => {
     const start = strictDate(req.query.date, res);
     if (!start) return;
     const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
-    const comments = await CoachComment.find({
-      athleteId: new Types.ObjectId(req.params.athleteId),
-      date: { $gte: start, $lt: end },
-    })
-      .sort({ createdAt: -1 })
-      .lean();
-    res.json({ comments });
+    const athleteId = new Types.ObjectId(req.params.athleteId);
+
+    const [wellness, attendance, waterEntries, profile] = await Promise.all([
+      Wellness.findOne({ athleteId, date: start }).select("sleepQuality sleepHours").lean(),
+      Attendance.findOne({ athleteId, date: start }).select("status note").lean(),
+      WaterIntake.find({ athleteId, date: { $gte: start, $lt: end } }).select("amountMl").lean(),
+      AthleteProfile.findById(athleteId).select("hydrationGoalMl").lean(),
+    ]);
+
+    const totalMl = waterEntries.reduce((sum, entry) => sum + (entry.amountMl as number), 0);
+
+    res.json({
+      date: start.toISOString().slice(0, 10),
+      sleep: {
+        quality: (wellness?.sleepQuality as number | undefined) ?? null,
+        hours: (wellness?.sleepHours as number | undefined) ?? null,
+      },
+      attendance: {
+        status: (attendance?.status as string | undefined) ?? null,
+        note: (attendance?.note as string | undefined) ?? null,
+      },
+      water: {
+        totalMl,
+        goalMl: (profile?.hydrationGoalMl as number | undefined) ?? 3000,
+      },
+    });
   }
 );
 

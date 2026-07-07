@@ -1,7 +1,9 @@
-import { ActivityIndicator, Pressable, ScrollView, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleProp, StyleSheet, TextInput, View, ViewStyle } from "react-native";
+import { Text } from "./AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius } from "../lib/theme";
 import { Card, Muted } from "./ui";
+import { ChatMediaBubble, type ChatMedia } from "./ChatMediaBubble";
 
 export type MessageSenderRole = "coach" | "athlete";
 
@@ -12,6 +14,8 @@ export type MessageView = {
   mine: boolean;
   read: boolean;
   createdAt: string;
+  /** Set when a coach shared an image on this message (view-only). */
+  media?: ChatMedia | null;
 };
 
 export type MessageParty = {
@@ -34,8 +38,12 @@ type MessageCenterProps = {
   error?: string | null;
   draft: string;
   sending: boolean;
+  /** Which side is viewing — picks the authenticated media-file endpoint for images. */
+  role: MessageSenderRole;
   accent: string;
   accentInk: string;
+  /** Darker accent for text on a light tint (falls back to `accent`) — used for the sender's own bubble. */
+  accentStrong?: string;
   emptyPartiesText: string;
   emptyThreadText: string;
   onSelect: (id: string) => void;
@@ -64,8 +72,10 @@ export function MessageCenter({
   error,
   draft,
   sending,
+  role,
   accent,
   accentInk,
+  accentStrong = accent,
   emptyPartiesText,
   emptyThreadText,
   onSelect,
@@ -146,11 +156,31 @@ export function MessageCenter({
             ) : messages.length > 0 ? (
               messages.map((message) => (
                 <View key={message.id} style={[styles.messageRow, message.mine ? styles.messageRowMine : null]}>
-                  <View style={[styles.bubble, message.mine ? { backgroundColor: accent } : null]}>
-                    <Text style={[styles.bubbleText, message.mine ? { color: accentInk } : null]}>{message.body}</Text>
-                    <Text style={[styles.bubbleTime, message.mine ? { color: `${accentInk}bb` } : null]}>
-                      {messageTime(message.createdAt)}
-                    </Text>
+                  <View
+                    style={[
+                      styles.bubble,
+                      message.media ? styles.bubbleMedia : null,
+                      !message.media && message.mine ? { backgroundColor: `${accent}1f`, borderColor: `${accent}40` } : null,
+                    ]}
+                  >
+                    {message.media ? (
+                      <ChatMediaBubble media={message.media} role={role} mine={message.mine} imageStyle={styles.mediaImage} />
+                    ) : null}
+                    <View style={message.media ? styles.mediaCaption : null}>
+                      {message.body ? (
+                        <Text style={[styles.bubbleText, !message.media && message.mine ? { color: accentStrong } : null]}>
+                          {message.body}
+                        </Text>
+                      ) : null}
+                      <Text
+                        style={[
+                          styles.bubbleTime,
+                          !message.media && message.mine ? { color: `${accentStrong}b3` } : null,
+                        ]}
+                      >
+                        {messageTime(message.createdAt)}
+                      </Text>
+                    </View>
                   </View>
                 </View>
               ))
@@ -236,6 +266,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 9,
   },
+  // Media messages carry no card border/fill of their own — just the image and a plain caption/time.
+  bubbleMedia: { padding: 0, borderWidth: 0, backgroundColor: "transparent" },
+  mediaCaption: { paddingHorizontal: 4, paddingTop: 5 },
+  mediaImage: { width: 220, borderRadius: radius.md },
   bubbleText: { color: colors.ink, fontSize: 14, lineHeight: 19 },
   bubbleTime: { alignSelf: "flex-end", marginTop: 5, color: colors.inkFaint, fontSize: 10, fontWeight: "700" },
   composer: { minHeight: 56, flexDirection: "row", alignItems: "flex-end", gap: 8 },

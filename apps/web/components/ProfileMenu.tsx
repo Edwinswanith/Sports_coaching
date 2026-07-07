@@ -3,16 +3,10 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Icon } from "./ui";
+import { Avatar, type AvatarInfo } from "./Avatar";
 import { getStoredUser } from "../lib/api";
 import { ROLE_THEMES } from "../lib/roleThemes";
 import type { Role } from "../lib/roles";
-
-function initialsOf(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
 
 /**
  * Single avatar button in the header that opens a menu with everything about the
@@ -23,20 +17,25 @@ export function ProfileMenu({
   userName,
   role,
   onSignOut,
+  avatarClassName = "h-9 w-9",
 }: {
   userName?: string;
   role: Role;
   onSignOut: () => void;
+  /** Override the trigger avatar's size (default matches the header's other icon buttons). */
+  avatarClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [storedName, setStoredName] = useState("");
+  const [avatar, setAvatar] = useState<AvatarInfo>(undefined);
 
   useEffect(() => {
     const u = getStoredUser();
     if (u) {
       setEmail(u.email ?? "");
       setStoredName(u.name ?? "");
+      setAvatar(u.avatar);
     }
   }, []);
 
@@ -51,7 +50,6 @@ export function ProfileMenu({
 
   const name = userName || storedName || "Your account";
   const roleLabel = ROLE_THEMES[role]?.label ?? role;
-  const initials = initialsOf(name);
 
   return (
     <div className="relative">
@@ -59,9 +57,9 @@ export function ProfileMenu({
         onClick={() => setOpen((o) => !o)}
         aria-label="Profile and account"
         aria-expanded={open}
-        className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-soft text-xs font-bold text-accent-strong ring-1 ring-accent/20 transition hover:brightness-95"
+        className={`flex items-center justify-center rounded-full ring-1 ring-accent/20 transition hover:brightness-95 ${avatarClassName}`}
       >
-        {initials}
+        <Avatar avatar={avatar} name={name} className={avatarClassName} />
       </button>
 
       {open ? (
@@ -74,9 +72,7 @@ export function ProfileMenu({
           />
           <div className="surface-card absolute right-0 top-full z-40 mt-2 w-60 p-3 shadow-pop">
             <div className="flex items-center gap-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent-soft text-sm font-bold text-accent-strong">
-                {initials}
-              </span>
+              <Avatar avatar={avatar} name={name} className="h-10 w-10" />
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold text-ink">{name}</p>
                 {email ? <p className="truncate text-[11px] text-ink-muted">{email}</p> : null}

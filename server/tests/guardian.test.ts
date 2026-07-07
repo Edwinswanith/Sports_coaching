@@ -5,8 +5,9 @@ import request from "supertest";
 import { User } from "../src/models/User";
 import { AthleteProfile } from "../src/models/AthleteProfile";
 import { GuardianAthleteLink } from "../src/models/GuardianAthleteLink";
-import { CoachComment } from "../src/models/CoachComment";
 import { Wellness } from "../src/models/Wellness";
+import { Attendance } from "../src/models/Attendance";
+import { WaterIntake } from "../src/models/WaterIntake";
 import guardianRouter from "../src/routes/guardian";
 import { signAccessToken } from "../src/lib/tokens";
 
@@ -106,56 +107,78 @@ describe("Guardian auth gate", () => {
   });
 });
 
-describe("Guardian daily-card access", () => {
-  test("linked child card → 200; unlinked → 403", async () => {
+describe("Guardian summary access", () => {
+  test("linked child summary → 200 with only sleep/water/attendance; unlinked → 403", async () => {
     const { guardian, child } = await guardianWithChild();
     const { profile: stranger } = await makeAthlete("stranger");
+    const day = new Date(`${TODAY_STR}T00:00:00.000Z`);
     await Wellness.create({
       athleteId: child._id,
-      date: new Date(`${TODAY_STR}T00:00:00.000Z`),
+      date: day,
+      sleepHours: 8,
       sleepQuality: 4,
       mood: 4,
       stress: 2,
       soreness: 2,
       fatigue: 2,
     });
+    await Attendance.create({ athleteId: child._id, date: day, status: "present" });
+    await WaterIntake.create({ athleteId: child._id, date: day, amountMl: 500, loggedAt: new Date() });
+    await WaterIntake.create({ athleteId: child._id, date: day, amountMl: 750, loggedAt: new Date() });
+
     const app = buildApp();
     const token = tokenFor(guardian._id, "guardian");
 
     const ok = await request(app)
-      .get(`/api/guardian/athletes/${child._id}/daily-card?date=${TODAY_STR}`)
+      .get(`/api/guardian/athletes/${child._id}/summary?date=${TODAY_STR}`)
       .set("Authorization", `Bearer ${token}`);
     expect(ok.status).toBe(200);
-    expect(ok.body.card.athleteId).toBe(child._id.toString());
+    expect(ok.body.sleep.quality).toBe(4);
+    expect(ok.body.attendance.status).toBe("present");
+    expect(ok.body.water.totalMl).toBe(1250);
+    // Only these three data points — no readiness/training/coach data leaks through.
+    expect(ok.body).not.toHaveProperty("readinessScore");
+    expect(ok.body).not.toHaveProperty("sessions");
+    expect(ok.body).not.toHaveProperty("injury");
 
     const forbidden = await request(app)
-      .get(`/api/guardian/athletes/${stranger._id}/daily-card?date=${TODAY_STR}`)
+      .get(`/api/guardian/athletes/${stranger._id}/summary?date=${TODAY_STR}`)
       .set("Authorization", `Bearer ${token}`);
     expect(forbidden.status).toBe(403);
     expect(forbidden.body.error).toBe("not_linked_guardian");
   });
 
-  test("guardian reads coach comments for a linked child", async () => {
+  test("no data logged yet → nulls, not an error", async () => {
     const { guardian, child } = await guardianWithChild();
-    const coach = await makeUser("coach", "kumar");
-    await CoachComment.create({
-      athleteId: child._id,
-      coachId: coach._id,
-      date: new Date(`${TODAY_STR}T00:00:00.000Z`),
-      body: "Great progress this week.",
-    });
     const res = await request(buildApp())
-      .get(`/api/guardian/athletes/${child._id}/coach-comments?date=${TODAY_STR}`)
+      .get(`/api/guardian/athletes/${child._id}/summary?date=${TODAY_STR}`)
       .set("Authorization", `Bearer ${tokenFor(guardian._id, "guardian")}`);
     expect(res.status).toBe(200);
-    expect(res.body.comments).toHaveLength(1);
-    expect(res.body.comments[0].body).toBe("Great progress this week.");
+    expect(res.body.sleep.quality).toBeNull();
+    expect(res.body.attendance.status).toBeNull();
+    expect(res.body.water.totalMl).toBe(0);
+  });
+
+  test("removed endpoints are gone (daily-card, coach-comments → 404)", async () => {
+    const { guardian, child } = await guardianWithChild();
+    const token = tokenFor(guardian._id, "guardian");
+    const app = buildApp();
+
+    const dailyCard = await request(app)
+      .get(`/api/guardian/athletes/${child._id}/daily-card?date=${TODAY_STR}`)
+      .set("Authorization", `Bearer ${token}`);
+    expect(dailyCard.status).toBe(404);
+
+    const comments = await request(app)
+      .get(`/api/guardian/athletes/${child._id}/coach-comments?date=${TODAY_STR}`)
+      .set("Authorization", `Bearer ${token}`);
+    expect(comments.status).toBe(404);
   });
 
   test("guardian has no write endpoint (POST → 404)", async () => {
     const { guardian, child } = await guardianWithChild();
     const res = await request(buildApp())
-      .post(`/api/guardian/athletes/${child._id}/daily-card`)
+      .post(`/api/guardian/athletes/${child._id}/summary`)
       .set("Authorization", `Bearer ${tokenFor(guardian._id, "guardian")}`)
       .send({ foo: "bar" });
     expect(res.status).toBe(404);

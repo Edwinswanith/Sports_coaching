@@ -30,6 +30,10 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/server/dist ./server/dist
 COPY package.json ./package.json
 COPY server/package.json ./server/package.json
+# Coach/avatar media uploads are written under here at runtime (services/media.ts
+# mkdirSync's it on import) — must exist and be writable by the non-root user
+# *before* USER switches, since /app itself is root-owned.
+RUN mkdir -p /app/uploads && chown -R app:app /app/uploads
 USER app
 EXPOSE 4000
 # Reads config from env (MONGODB_URI, JWT_*, CORS_ORIGIN, PORT) — see server/src/config/env.ts

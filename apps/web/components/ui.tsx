@@ -13,23 +13,64 @@ export function Chip({ band, children }: { band: Band; children: ReactNode }) {
   return <span className={`chip ${CHIP_CLASS[band]}`}>{children}</span>;
 }
 
+/**
+ * Icon-only date picker — same footprint as the header's bell/avatar buttons
+ * so it can sit inline with them. Shows just a calendar glyph; the native
+ * date input is stretched invisibly over the whole button, so any click on
+ * the icon opens the OS/browser date picker instead of a visible text box.
+ */
+export function CompactDatePicker({
+  value,
+  onChange,
+  label = "Pick a date",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  label?: string;
+}) {
+  return (
+    <span className="btn-ghost relative h-9 w-9 px-0">
+      <Icon.calendar />
+      <input
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={label}
+        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+      />
+    </span>
+  );
+}
+
 /** Compact metric tile — a label over a tabular value, with an optional sub-line. */
 export function StatTile({
   label,
   value,
   sub,
   icon,
+  onClick,
+  tint,
 }: {
   label: string;
   value: ReactNode;
   sub?: ReactNode;
   icon?: ReactNode;
+  onClick?: () => void;
+  /** Optional tinted background (hex), overriding the default neutral inset. */
+  tint?: string;
 }) {
   // Numbers stay big and prominent; long status words (e.g. "completed",
   // "in_progress") shrink so they fit the narrow tile instead of clipping.
   const isLongText = typeof value === "string" && value.length > 6;
+  const Tag = onClick ? "button" : "div";
   return (
-    <div className="min-w-0 rounded-xl border border-line bg-surface-inset p-3">
+    <Tag
+      onClick={onClick}
+      style={tint ? { backgroundColor: tint } : undefined}
+      className={`min-w-0 rounded-xl border border-line p-3 text-left ${tint ? "" : "bg-surface-inset"} ${
+        onClick ? "transition hover:border-accent/40 hover:bg-accent-soft/40 active:scale-[0.98]" : ""
+      }`}
+    >
       <div className="flex items-center gap-1.5">
         {icon ? <span className="text-ink-faint">{icon}</span> : null}
         <p className="label">{label}</p>
@@ -42,12 +83,18 @@ export function StatTile({
         {value}
       </p>
       {sub ? <p className="mt-1 text-[11px] text-ink-muted">{sub}</p> : null}
-    </div>
+    </Tag>
   );
 }
 
 export function dash(v: string | number | null | undefined) {
   return v === null || v === undefined || v === "" ? "—" : String(v);
+}
+
+/** Wellness signals are stored on a 1–5 scale but shown out of 10 everywhere. */
+export function wellnessTen(v: number | null | undefined): string {
+  if (v === null || v === undefined || !Number.isFinite(Number(v))) return "—";
+  return String(Math.max(1, Math.min(10, Math.round(1 + ((Number(v) - 1) * 9) / 4))));
 }
 
 /* ---------- Inline SVG icon set (no dependency) ---------- */
@@ -70,6 +117,13 @@ function svg(path: ReactNode, size = 14) {
 }
 
 export const Icon = {
+  sun: () =>
+    svg(
+      <>
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+      </>
+    ),
   moon: () => svg(<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />),
   spark: () =>
     svg(<path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13l0-8Z" />),

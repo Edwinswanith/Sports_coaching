@@ -49,13 +49,36 @@ import {
 import {
   fetchThread,
   sendMessage,
+  messageView,
   markThreadRead,
   buildAthleteThreads,
   athleteTotalUnread,
   clampMsgLimit,
 } from "../services/messaging";
+import { WorkoutMedia, type WorkoutMediaDoc } from "../models/WorkoutMedia";
+import { mediaUpload, mediaFilePath, serializeMedia } from "../services/media";
+import { notifyGuardiansOfAthleteUpdate } from "../services/notifications";
+import multer from "multer";
+import fs from "fs";
 
 const router = Router();
+
+/**
+ * Fire-and-forget: tell every guardian linked to this athlete that a new
+ * Sleep/Water/Attendance data point was logged — the only things a guardian's
+ * dashboard shows. Never awaited by callers so it can't slow down the
+ * athlete's own response; failures are swallowed by notifyGuardiansOfAthleteUpdate.
+ */
+function notifyGuardians(profileId: Types.ObjectId, actorUserId: Types.ObjectId, label: string) {
+  User.findById(actorUserId)
+    .select("name")
+    .lean()
+    .then((user) => {
+      const name = (user?.name as string | undefined) || "Your athlete";
+      return notifyGuardiansOfAthleteUpdate(profileId, `${name} — ${label}`, `${name} just logged ${label.toLowerCase()}.`);
+    })
+    .catch((err) => console.error("[guardian-notify] failed:", (err as Error).message));
+}
 
 router.use(requireAuth, requireRole("athlete"), loadScope);
 // Throttle daily-submission writes per athlete (reads are unaffected).
@@ -478,6 +501,9 @@ router.post("/wellness", async (req: Request, res: Response) => {
     { upsert: true, runValidators: true }
   );
   const saved = await Wellness.findOne({ athleteId: profileId, date }).lean();
+  if (fields.sleepQuality !== undefined && req.actor) {
+    notifyGuardians(profileId, req.actor.userId, "Sleep check-in");
+  }
   res.json({ wellness: saved });
 });
 
@@ -582,6 +608,7 @@ router.post("/water", async (req: Request, res: Response) => {
   const date = parseDateStrict(req.body?.date, res);
   if (!date) return;
   await WaterIntake.create({ athleteId: profileId, date, amountMl: amount, loggedAt: new Date() });
+  if (req.actor) notifyGuardians(profileId, req.actor.userId, "Water intake");
   res.status(201).json(await waterDayResponse(profileId, date));
 });
 
@@ -645,6 +672,7 @@ router.post("/attendance", async (req: Request, res: Response) => {
     { upsert: true, runValidators: true }
   );
   const saved = await Attendance.findOne({ athleteId: profileId, date }).lean();
+  notifyGuardians(profileId, req.actor.userId, "Attendance");
   res.json({ attendance: saved });
 });
 
@@ -689,6 +717,31 @@ router.post("/rest-day", async (req: Request, res: Response) => {
 
   const saved = await Attendance.findOne({ athleteId: profileId, date }).lean();
   res.json({ attendance: saved, isRestDay: saved?.status === "rest" });
+});
+
+/**
+ * GET /api/athlete/training/:slot?date=YYYY-MM-DD
+ * One session's full record (incl. attached photos) for the caller's own day.
+ */
+router.get("/training/:slot", async (req: Request, res: Response) => {
+  const profileId = selfAthleteId(req);
+  if (!profileId) {
+    res.status(404).json({ error: "athlete_profile_not_found" });
+    return;
+  }
+  const slot = req.params.slot as (typeof SESSION_SLOTS)[number];
+  if (!SESSION_SLOTS.includes(slot)) {
+    res.status(400).json({ error: "invalid_slot" });
+    return;
+  }
+  const date = parseDateStrict(req.query.date, res);
+  if (!date) return;
+  const session = await TrainingSession.findOne({ athleteId: profileId, date, slot }).lean();
+  res.json({
+    session: session
+      ? { ...session, photos: (session.photos ?? []).map(serializeSessionPhoto) }
+      : null,
+  });
 });
 
 /**
@@ -774,12 +827,132 @@ router.post("/training/:slot", async (req: Request, res: Response) => {
     },
     { upsert: true, runValidators: true }
   );
+
+  // Completing a session is ground-truth evidence the athlete showed up —
+  // auto-mark the day's Attendance as present so the coach dashboard's
+  // "Present" count reflects real training completion, not a separate step.
+  if (($set.attended === true || $set.status === "completed") && req.actor) {
+    await Attendance.updateOne(
+      { athleteId: profileId, date },
+      {
+        $set: { athleteId: profileId, date, status: "present", recordedBy: req.actor.userId },
+      },
+      { upsert: true, runValidators: true }
+    );
+  }
+
   const saved = await TrainingSession.findOne({
     athleteId: profileId,
     date,
     slot,
   }).lean();
   res.json({ session: saved });
+});
+
+function serializeSessionPhoto(p: {
+  _id: Types.ObjectId;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedAt?: Date;
+}) {
+  return {
+    id: p._id.toString(),
+    originalName: p.originalName,
+    mimeType: p.mimeType,
+    sizeBytes: p.sizeBytes,
+    uploadedAt: (p.uploadedAt ?? new Date()).toISOString(),
+  };
+}
+
+/**
+ * POST /api/athlete/training/:slot/photos  multipart, field "file", body: { date }
+ * Attaches a photo to a session's notes — visible to the coach immediately
+ * (no send gate), same as the coach-side upload; scoped to selfAthleteId so an
+ * athlete can only ever attach to their own session.
+ */
+router.post(
+  "/training/:slot/photos",
+  (req: Request, res: Response, next) => {
+    mediaUpload.single("file")(req, res, (err: unknown) => {
+      if (!err) {
+        next();
+        return;
+      }
+      if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+        res.status(400).json({ error: "file_too_large" });
+        return;
+      }
+      res.status(400).json({ error: "unsupported_file_type" });
+    });
+  },
+  async (req: Request, res: Response) => {
+    const profileId = selfAthleteId(req);
+    if (!profileId) {
+      res.status(404).json({ error: "athlete_profile_not_found" });
+      return;
+    }
+    const slot = req.params.slot as (typeof SESSION_SLOTS)[number];
+    if (!SESSION_SLOTS.includes(slot)) {
+      res.status(400).json({ error: "invalid_slot" });
+      return;
+    }
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({ error: "file_required" });
+      return;
+    }
+    const date = parseDateStrict(req.body?.date, res);
+    if (!date) {
+      await fs.promises.unlink(file.path).catch(() => undefined);
+      return;
+    }
+    const photo = {
+      _id: new Types.ObjectId(),
+      storedFilename: file.filename,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      sizeBytes: file.size,
+      uploadedAt: new Date(),
+    };
+    await TrainingSession.updateOne(
+      { athleteId: profileId, date, slot },
+      { $push: { photos: photo }, $setOnInsert: { athleteId: profileId, date, slot } },
+      { upsert: true, runValidators: true }
+    );
+    res.status(201).json({ photo: serializeSessionPhoto(photo) });
+  }
+);
+
+/**
+ * GET /api/athlete/training/:slot/photos/:photoId/file — view a photo the
+ * coach (or the athlete themself) attached to one of their own sessions.
+ * Scoped to selfAthleteId so an athlete can never reach another athlete's
+ * session photo.
+ */
+router.get("/training/:slot/photos/:photoId/file", async (req: Request, res: Response) => {
+  const profileId = selfAthleteId(req);
+  if (!profileId) {
+    res.status(404).json({ error: "athlete_profile_not_found" });
+    return;
+  }
+  const session = await TrainingSession.findOne(
+    { athleteId: profileId, "photos._id": req.params.photoId },
+    { "photos.$": 1 }
+  ).lean();
+  const photo = session?.photos?.[0];
+  if (!photo) {
+    res.status(404).json({ error: "photo_not_found" });
+    return;
+  }
+  const filePath = mediaFilePath(photo);
+  res.type(photo.mimeType);
+  res.setHeader("Cache-Control", "private, max-age=0, no-store");
+  res.sendFile(filePath, (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).json({ error: "file_missing" });
+    }
+  });
 });
 
 /**
@@ -1225,22 +1398,13 @@ router.post("/messages/:coachId", async (req: Request, res: Response) => {
     res.status(400).json({ error: "message_too_long" });
     return;
   }
-  const created = await sendMessage({
+  const { message: created } = await sendMessage({
     coachId,
     athleteId: profileId,
     senderRole: "athlete",
     body,
   });
-  res.status(201).json({
-    message: {
-      id: created._id.toString(),
-      body: created.body,
-      senderRole: "athlete",
-      mine: true,
-      read: false,
-      createdAt: (created.createdAt as Date).toISOString(),
-    },
-  });
+  res.status(201).json({ message: messageView(created, "athlete", null) });
 });
 
 /** POST /api/athlete/messages/:coachId/read — mark coach msgs read. */
@@ -1258,6 +1422,70 @@ router.post("/messages/:coachId/read", async (req: Request, res: Response) => {
     readerRole: "athlete",
   });
   res.json({ marked });
+});
+
+/**
+ * Media a coach has shared with this athlete. Only rows with `sentAt` set are
+ * visible — an uploaded-but-not-yet-sent image never leaks to the athlete,
+ * and only the OWN athlete's rows are ever returned (scoped by athleteId =
+ * selfAthleteId(req), never a client-supplied id).
+ */
+
+/** GET /api/athlete/media — images sent to me, newest first. */
+router.get("/media", async (req: Request, res: Response) => {
+  const profileId = selfAthleteId(req);
+  if (!profileId) {
+    res.status(404).json({ error: "athlete_profile_not_found" });
+    return;
+  }
+  const rows = await WorkoutMedia.find({ athleteId: profileId, sentAt: { $ne: null } })
+    .sort({ sentAt: -1 })
+    .lean<WorkoutMediaDoc[]>();
+  res.json({ media: rows.map((m) => serializeMedia(m as WorkoutMediaDoc)) });
+});
+
+async function loadSentMedia(req: Request, res: Response): Promise<WorkoutMediaDoc | null> {
+  const profileId = selfAthleteId(req);
+  if (!profileId) {
+    res.status(404).json({ error: "athlete_profile_not_found" });
+    return null;
+  }
+  const raw = req.params.mediaId;
+  if (!raw || !Types.ObjectId.isValid(raw)) {
+    res.status(400).json({ error: "invalid_media_id" });
+    return null;
+  }
+  const media = await WorkoutMedia.findOne({
+    _id: raw,
+    athleteId: profileId,
+    sentAt: { $ne: null },
+  });
+  if (!media) {
+    res.status(404).json({ error: "media_not_found" });
+    return null;
+  }
+  return media;
+}
+
+/** GET /api/athlete/media/:mediaId — one sent media's metadata (incl. workout table). */
+router.get("/media/:mediaId", async (req: Request, res: Response) => {
+  const media = await loadSentMedia(req, res);
+  if (!media) return;
+  res.json({ media: serializeMedia(media) });
+});
+
+/** GET /api/athlete/media/:mediaId/file — streams the raw image bytes. */
+router.get("/media/:mediaId/file", async (req: Request, res: Response) => {
+  const media = await loadSentMedia(req, res);
+  if (!media) return;
+  const filePath = mediaFilePath(media);
+  res.type(media.mimeType);
+  res.setHeader("Cache-Control", "private, max-age=0, no-store");
+  res.sendFile(filePath, (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).json({ error: "file_missing" });
+    }
+  });
 });
 
 export default router;

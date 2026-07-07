@@ -205,19 +205,19 @@ describe("coach analytics (scoped)", () => {
   });
 });
 
-describe("guardian analytics (scoped)", () => {
-  test("linked → 200, unlinked → 403", async () => {
+describe("guardian analytics (removed)", () => {
+  test("guardians have no analytics access — endpoint doesn't exist", async () => {
+    // Guardians are scoped to Sleep quality / Water intake / Attendance only
+    // (see server/src/routes/guardian.ts); analytics/chart endpoints were
+    // deliberately removed from the guardian router.
     const guardian = await makeUser("guardian", "parent");
     const child = await makeAthlete("child");
-    const stranger = await makeAthlete("stranger");
     await GuardianAthleteLink.create({ guardianId: guardian._id, athleteId: child.profile._id });
     const app = buildApp();
     const t = tokenFor(guardian._id, "guardian");
 
-    const ok = await request(app).get(`/api/guardian/athletes/${child.profile._id}/analytics/wellness`).set("Authorization", `Bearer ${t}`);
-    expect(ok.status).toBe(200);
-    const denied = await request(app).get(`/api/guardian/athletes/${stranger.profile._id}/analytics/wellness`).set("Authorization", `Bearer ${t}`);
-    expect(denied.status).toBe(403);
+    const res = await request(app).get(`/api/guardian/athletes/${child.profile._id}/analytics/wellness`).set("Authorization", `Bearer ${t}`);
+    expect(res.status).toBe(404);
   });
 });
 

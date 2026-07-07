@@ -21,7 +21,7 @@ REM ============================================================================
 set PROJECT_ID=legel-assistent-466812
 set REPOSITORY_NAME=bizzzup
 set REGION=asia-south1
-set IMAGE_TAG=v13
+set IMAGE_TAG=v16
 
 set SERVER_IMAGE=scp-server
 set SERVER_SERVICE=scp-server

@@ -1,14 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { Text } from "../../../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -16,6 +8,7 @@ import { apiJson } from "../../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../../lib/theme";
 import { Card, Muted } from "../../../components/ui";
 import { ScreenHeader } from "../../../components/ScreenHeader";
+import { Avatar, type AvatarInfo } from "../../../components/Avatar";
 
 type Athlete = {
   athleteId: string;
@@ -23,6 +16,7 @@ type Athlete = {
   email: string;
   sport: string;
   position: string | null;
+  avatar?: AvatarInfo;
 };
 type Response = { athletes: Athlete[] };
 type SummaryCard = {
@@ -263,8 +257,18 @@ function RosterRow({
   return (
     <Pressable onPress={onPress}>
       <Card style={[styles.row, flagged ? { borderColor: readiness.color + "55" } : null]}>
-        <View style={[styles.scoreDot, { borderColor: readiness.color + "66" }]}>
-          <Text style={[styles.scoreText, { color: readiness.color }]}>{readiness.label}</Text>
+        <View style={styles.avatarWrap}>
+          <Avatar
+            avatar={athlete.avatar}
+            name={athlete.name || "Athlete"}
+            size={42}
+            photoPath={`/api/coach/athletes/${athlete.athleteId}/avatar/file`}
+          />
+          {summary?.readinessScore != null ? (
+            <View style={[styles.readinessBadge, { backgroundColor: readiness.color }]}>
+              <Text style={styles.readinessBadgeText}>{readiness.label}</Text>
+            </View>
+          ) : null}
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
           <View style={styles.nameRow}>
@@ -283,7 +287,7 @@ function RosterRow({
               <Text style={styles.loadLabel}>load</Text>
             </>
           ) : (
-            <Text style={styles.noRpe}>No RPE</Text>
+            <Text style={styles.noRpe}>No RPM</Text>
           )}
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.inkFaint} />
@@ -336,8 +340,21 @@ const styles = StyleSheet.create({
   filterText: { color: colors.inkMuted, fontSize: 10, fontWeight: "900", textTransform: "uppercase" },
   resultCount: { color: colors.inkFaint, fontSize: 11, fontWeight: "700", textAlign: "right", minWidth: 38 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14 },
-  scoreDot: { height: 42, width: 42, borderRadius: 21, borderWidth: 2, alignItems: "center", justifyContent: "center" },
-  scoreText: { fontSize: 13, fontWeight: "900" },
+  avatarWrap: { width: 42, height: 42 },
+  readinessBadge: {
+    position: "absolute",
+    bottom: -3,
+    right: -3,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: colors.surfaceRaised,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 2,
+  },
+  readinessBadgeText: { fontSize: 9, fontWeight: "900", color: "#fff" },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 },
   name: { flexShrink: 1, minWidth: 0, fontSize: 16, fontWeight: "700", color: colors.ink },
   meta: { fontSize: 13, color: colors.inkMuted, marginTop: 2, textTransform: "capitalize" },

@@ -2,6 +2,7 @@
 
 import { useId } from "react";
 import CountUp from "react-countup";
+import { Cell, Pie, PieChart } from "recharts";
 
 type Band = "green" | "amber" | "red";
 
@@ -51,43 +52,46 @@ export function Ring({
   const pct = value === null ? 0 : Math.max(0, Math.min(100, value));
   const resolved: Band = band ?? bandFor(value);
   const color = BAND_COLOR[resolved];
-  const [g0, g1] = BAND_GRADIENT[resolved];
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const offset = c * (1 - pct / 100);
+  const [g0] = BAND_GRADIENT[resolved];
+  const chartData = [
+    { name: "score", value: pct },
+    { name: "remaining", value: Math.max(0, 100 - pct) },
+  ];
+  const outerRadius = size / 2 - 2;
+  const innerRadius = Math.max(0, outerRadius - stroke);
 
   return (
     <div className="relative inline-flex items-center justify-center" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="-rotate-90">
+      <PieChart width={size} height={size}>
         <defs>
           <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stopColor={g0} />
-            <stop offset="100%" stopColor={g1} />
+            <stop offset="100%" stopColor={color} />
           </linearGradient>
         </defs>
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          stroke="var(--surface-inset)"
-          strokeWidth={stroke}
-        />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          stroke={`url(#${gradId})`}
-          strokeWidth={stroke}
-          strokeLinecap="round"
-          strokeDasharray={c}
-          strokeDashoffset={offset}
-          style={{ transition: animate ? "stroke-dashoffset 1.1s cubic-bezier(0.22,1,0.36,1)" : undefined }}
-        />
-      </svg>
+        <Pie
+          data={chartData}
+          dataKey="value"
+          cx="50%"
+          cy="50%"
+          startAngle={90}
+          endAngle={-270}
+          innerRadius={innerRadius}
+          outerRadius={outerRadius}
+          cornerRadius={stroke}
+          stroke="none"
+          isAnimationActive={animate}
+          animationDuration={850}
+        >
+          <Cell fill={value === null ? "var(--surface-inset)" : `url(#${gradId})`} />
+          <Cell fill="var(--surface-inset)" />
+        </Pie>
+      </PieChart>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="nums font-display text-4xl font-bold leading-none" style={{ color }}>
+        <span
+          className={`nums font-display font-bold leading-none ${size < 120 ? "text-3xl" : "text-4xl"}`}
+          style={{ color }}
+        >
           {value === null ? (
             "—"
           ) : animate ? (

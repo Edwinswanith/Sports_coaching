@@ -1,71 +1,90 @@
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { Text } from "../../components/AppText";
+import { Ionicons } from "@expo/vector-icons";
 import { AppFrame, type NativeNavItem } from "../../components/AppFrame";
 import { Card, Muted } from "../../components/ui";
 import { DatePickerPill } from "../../components/DatePickerPill";
-import { Ring } from "../../components/Ring";
+import { Gauge } from "../../components/Gauge";
 import { apiJson } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
-import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../lib/sessions";
 
-type Section = "today" | "trends" | "feedback";
 type LinkedAthlete = { athleteId: string; name: string; sport: string; position: string | null };
 type AthletesResponse = { athletes: LinkedAthlete[] };
-type DailyCard = {
-  athleteId: string;
-  name: string;
-  attendance: { status: string | null };
-  sessions: Record<SessionSlot, { status: string | null; type: string | null }>;
-  readinessScore: number | null;
-  sleep?: { hours: number | null; quality: number | null };
-  recovery?: { status: string | null; score: number | null };
-  injury?: { active: boolean; bodyPart: string | null; restriction?: string | null };
-  rpe?: {
-    sessionType: SessionSlot;
-    rpe: number;
-    calculatedTrainingLoad: number;
-    riskFlag: "green" | "amber" | "red";
-    riskReasons?: string[];
-  } | null;
-};
-type CoachComment = { _id: string; body: string };
-type FeedItem = { id: string; title: string; subtitle?: string; at?: string };
-type TrendPoint = {
+type GuardianSummary = {
   date: string;
-  readiness?: number | null;
-  load?: number | null;
-  sleepHours?: number | null;
-  recoveryScore?: number | null;
+  sleep: { quality: number | null; hours: number | null };
+  attendance: { status: string | null; note: string | null };
+  water: { totalMl: number; goalMl: number };
 };
+type Band = "green" | "amber" | "red" | "neutral";
 
 const theme = ROLE_THEMES.guardian;
 const today = () => new Date().toISOString().slice(0, 10);
 
-const NAV: NativeNavItem[] = [
-  { key: "today", label: "Today", icon: "home-outline" },
-  { key: "trends", label: "Trends", icon: "trending-up-outline" },
-  { key: "feedback", label: "Feedback", icon: "chatbubble-outline" },
-];
+const NAV: NativeNavItem[] = [{ key: "today", label: "Summary", icon: "home-outline" }];
 
-function dash(value: string | number | null | undefined) {
-  return value === null || value === undefined || value === "" ? "-" : String(value);
+const BAND_COLOR: Record<Band, string> = {
+  green: colors.ok,
+  amber: colors.warn,
+  red: colors.bad,
+  neutral: colors.inkFaint,
+};
+
+function litres(ml: number) {
+  return (ml / 1000).toFixed(ml % 1000 === 0 ? 0 : 1);
 }
 
-function riskColor(risk: "green" | "amber" | "red") {
-  if (risk === "green") return colors.ok;
-  if (risk === "amber") return colors.warn;
-  return colors.bad;
+function sleepBand(quality: number | null): Band {
+  if (quality === null) return "neutral";
+  if (quality <= 2) return "red";
+  if (quality === 3) return "amber";
+  return "green";
 }
 
+function sleepLabel(quality: number | null): string {
+  if (quality === null) return "No check-in yet";
+  return ["", "Poor", "Fair", "Good", "Great", "Excellent"][quality] ?? "—";
+}
+
+function waterBand(pct: number, hasGoal: boolean): Band {
+  if (!hasGoal) return "neutral";
+  if (pct >= 90) return "green";
+  if (pct >= 50) return "amber";
+  return "red";
+}
+
+function attendanceBand(status: string | null): Band {
+  if (status === null) return "neutral";
+  if (status === "present" || status === "rest") return "green";
+  if (status === "late" || status === "excused") return "amber";
+  return "red";
+}
+
+function attendanceLabel(status: string | null) {
+  if (status === null) return "Not logged";
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "AT";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+/**
+ * Guardian dashboard — deliberately narrow. Guardians may see ONLY three data
+ * points for their linked athlete: Sleep quality, Water intake, and Attendance
+ * for a given day. No readiness, training load, injuries, coach feedback, or
+ * messages — see server/src/routes/guardian.ts for the matching server-side
+ * restriction (the API itself never returns anything else).
+ */
 export default function GuardianDashboard() {
-  const [section, setSection] = useState<Section>("today");
   const [date, setDate] = useState(today());
   const [athletes, setAthletes] = useState<LinkedAthlete[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [card, setCard] = useState<DailyCard | null>(null);
-  const [comments, setComments] = useState<CoachComment[]>([]);
-  const [activity, setActivity] = useState<FeedItem[]>([]);
-  const [trends, setTrends] = useState<TrendPoint[]>([]);
+  const [summary, setSummary] = useState<GuardianSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,26 +102,15 @@ export default function GuardianDashboard() {
     }
   }, []);
 
-  const loadSelected = useCallback(async () => {
+  const loadSummary = useCallback(async () => {
     if (!selectedId) {
-      setCard(null);
-      setComments([]);
-      setActivity([]);
-      setTrends([]);
+      setSummary(null);
       return;
     }
     setError(null);
     try {
-      const [cardRes, commentRes, activityRes, trendRes] = await Promise.all([
-        apiJson<{ card?: DailyCard }>(`/api/guardian/athletes/${selectedId}/daily-card?date=${date}`),
-        apiJson<{ comments?: CoachComment[] }>(`/api/guardian/athletes/${selectedId}/coach-comments?date=${date}`).catch(() => ({ comments: [] })),
-        apiJson<{ items?: FeedItem[] }>(`/api/guardian/athletes/${selectedId}/activity?limit=30`).catch(() => ({ items: [] })),
-        apiJson<{ series?: TrendPoint[] }>(`/api/guardian/athletes/${selectedId}/trends?days=14`).catch(() => ({ series: [] })),
-      ]);
-      setCard(cardRes.card ?? null);
-      setComments(commentRes.comments ?? []);
-      setActivity(activityRes.items ?? []);
-      setTrends(trendRes.series ?? []);
+      const res = await apiJson<GuardianSummary>(`/api/guardian/athletes/${selectedId}/summary?date=${date}`);
+      setSummary(res);
     } catch {
       setError("Couldn't load this athlete summary.");
     }
@@ -113,22 +121,21 @@ export default function GuardianDashboard() {
   }, [loadAthletes]);
 
   useEffect(() => {
-    loadSelected();
-  }, [loadSelected]);
+    loadSummary();
+  }, [loadSummary]);
 
   const selected = athletes.find((athlete) => athlete.athleteId === selectedId) ?? null;
-  const nav = NAV.map((item) =>
-    item.key === "feedback" ? { ...item, badge: comments.length || undefined } : item
-  );
+  const hasGoal = Boolean(summary && summary.water.goalMl > 0);
+  const waterPct = summary && hasGoal ? Math.min(100, Math.round((summary.water.totalMl / summary.water.goalMl) * 100)) : 0;
 
   return (
     <AppFrame
       role="guardian"
       title={selected?.name ?? "Your athletes"}
-      subtitle={selected ? [selected.sport, selected.position].filter(Boolean).join(" - ") : undefined}
-      nav={nav}
-      activeKey={section}
-      onNavigate={(key) => setSection(key as Section)}
+      subtitle="Sleep, water & attendance only"
+      nav={NAV}
+      activeKey="today"
+      onNavigate={() => undefined}
       headerAction={<DatePickerPill value={date} onChange={setDate} />}
     >
       <ScrollView
@@ -147,6 +154,11 @@ export default function GuardianDashboard() {
                   onPress={() => setSelectedId(athlete.athleteId)}
                   style={[styles.athleteChip, active ? { backgroundColor: theme.accent, borderColor: theme.accent } : null]}
                 >
+                  <View style={[styles.athleteAvatar, active ? { backgroundColor: "rgba(255,255,255,0.28)" } : null]}>
+                    <Text style={[styles.athleteAvatarText, active ? { color: theme.accentInk } : null]}>
+                      {initialsOf(athlete.name)}
+                    </Text>
+                  </View>
                   <Text style={[styles.athleteChipText, active ? { color: theme.accentInk } : null]}>{athlete.name}</Text>
                 </Pressable>
               );
@@ -161,143 +173,99 @@ export default function GuardianDashboard() {
             <Text style={styles.emptyTitle}>No linked athletes yet.</Text>
             <Muted style={{ marginTop: 4 }}>A coach links your athlete to your account.</Muted>
           </Card>
-        ) : section === "today" ? (
-          <TodaySection card={card} />
-        ) : section === "trends" ? (
-          <TrendsSection trends={trends} />
+        ) : !summary ? (
+          <Card>
+            <Muted>No data for this date.</Muted>
+          </Card>
         ) : (
-          <FeedbackSection comments={comments} activity={activity} />
+          <View style={styles.stack}>
+            <SleepCard quality={summary.sleep.quality} hours={summary.sleep.hours} />
+            <WaterCard totalMl={summary.water.totalMl} goalMl={summary.water.goalMl} pct={waterPct} hasGoal={hasGoal} />
+            <AttendanceCard status={summary.attendance.status} note={summary.attendance.note} />
+          </View>
         )}
       </ScrollView>
     </AppFrame>
   );
 }
 
-function TodaySection({ card }: { card: DailyCard | null }) {
-  if (!card) {
-    return (
-      <Card>
-        <Muted>No data for this date.</Muted>
-      </Card>
-    );
-  }
+function MetricIcon({ band, icon }: { band: Band; icon: keyof typeof Ionicons.glyphMap }) {
+  const color = BAND_COLOR[band];
   return (
-    <View style={styles.stack}>
-      {card.injury?.active ? (
-        <View style={styles.warnStrip}>
-          <Text style={styles.warnText}>
-            {card.injury.bodyPart}
-            {card.injury.restriction ? ` - ${card.injury.restriction}` : ""}
-          </Text>
+    <View style={[styles.metricIcon, { backgroundColor: `${color}1a` }]}>
+      <Ionicons name={icon} size={20} color={color} />
+    </View>
+  );
+}
+
+function Badge({ band, text }: { band: Band; text: string }) {
+  const color = BAND_COLOR[band];
+  return (
+    <View style={[styles.badge, { backgroundColor: `${color}1a` }]}>
+      <Text style={[styles.badgeText, { color }]}>{text}</Text>
+    </View>
+  );
+}
+
+function SleepCard({ quality, hours }: { quality: number | null; hours: number | null }) {
+  const band = sleepBand(quality);
+  const pct = quality !== null ? (quality / 5) * 100 : 0;
+  return (
+    <Card style={styles.metricCard}>
+      <View style={styles.metricRow}>
+        <Gauge pct={pct} band={band} displayValue={quality != null ? String(quality) : "—"} displayUnit="/ 5" />
+        <View style={styles.metricCopy}>
+          <Text style={styles.metricLabel}>Sleep quality</Text>
+          <Text style={styles.metricValue}>{sleepLabel(quality)}</Text>
+          {hours != null ? <Text style={styles.metricExtra}>{hours}h of sleep logged</Text> : null}
         </View>
-      ) : null}
-
-      <Card style={styles.heroCard}>
-        <Ring score={card.readinessScore} size={150} stroke={12} label="readiness" />
-        <Text style={styles.heroText}>
-          {card.readinessScore == null ? "No check-in logged yet for this date." : "Readiness indicator from today's check-in."}
-        </Text>
-      </Card>
-
-      <View style={styles.statGrid}>
-        <StatTile label="Sleep" value={dash(card.sleep?.hours)} sub={`quality ${dash(card.sleep?.quality)}/5`} />
-        <StatTile label="Recovery" value={dash(card.recovery?.score)} sub={card.recovery?.status ?? "no data"} />
       </View>
+    </Card>
+  );
+}
 
-      <Card>
-        <CardTitle>{"Today's sessions"}</CardTitle>
-        <Text style={styles.miniMuted}>
-          Attendance <Text style={styles.inlineStrong}>{dash(card.attendance?.status)}</Text>
-        </Text>
-        <View style={styles.planGrid}>
-          {SESSION_SLOTS.map((slot) => (
-            <View key={slot} style={styles.slotPill}>
-              <Text style={styles.tileLabel}>{SLOT_LABEL[slot]}</Text>
-              <Text style={styles.slotType} numberOfLines={1}>{card.sessions?.[slot]?.type ?? "Rest"}</Text>
-              <Text style={styles.tileSub}>{card.sessions?.[slot]?.status ?? "-"}</Text>
-            </View>
-          ))}
+function WaterCard({
+  totalMl,
+  goalMl,
+  pct,
+  hasGoal,
+}: {
+  totalMl: number;
+  goalMl: number;
+  pct: number;
+  hasGoal: boolean;
+}) {
+  const band = waterBand(pct, hasGoal);
+  return (
+    <Card style={styles.metricCard}>
+      <View style={styles.metricRow}>
+        <Gauge pct={pct} band={band} displayValue={`${pct}%`} />
+        <View style={styles.metricCopy}>
+          <Text style={styles.metricLabel}>Water intake</Text>
+          <View style={styles.metricValueRow}>
+            <Text style={styles.metricValue}>{litres(totalMl)}</Text>
+            <Text style={styles.metricUnit}>/ {litres(goalMl)} L goal</Text>
+          </View>
         </View>
-        {card.rpe ? (
-          <View style={styles.rpeBlock}>
-            <View style={[styles.riskChip, { backgroundColor: riskColor(card.rpe.riskFlag) + "22" }]}>
-              <Text style={[styles.riskText, { color: riskColor(card.rpe.riskFlag) }]}>{card.rpe.riskFlag}</Text>
-            </View>
-            <Text style={styles.rpeLoad}>{card.rpe.calculatedTrainingLoad}</Text>
-            <Text style={styles.rpeMeta}>RPE {card.rpe.rpe} - {SLOT_LABEL[card.rpe.sessionType]}</Text>
-          </View>
-        ) : null}
-      </Card>
-    </View>
+      </View>
+    </Card>
   );
 }
 
-function TrendsSection({ trends }: { trends: TrendPoint[] }) {
-  const latest = trends[trends.length - 1];
-  const previous = trends.length > 1 ? trends[trends.length - 2] : null;
+function AttendanceCard({ status, note }: { status: string | null; note: string | null }) {
+  const band = attendanceBand(status);
   return (
-    <View style={styles.stack}>
-      <Card>
-        <CardTitle>Readiness trend</CardTitle>
-        {trends.length === 0 ? (
-          <Muted>No trend data yet.</Muted>
-        ) : (
-          <>
-            <View style={styles.trendRow}>
-              <TrendValue label="Latest" value={dash(latest?.readiness)} />
-              <TrendValue label="Previous" value={dash(previous?.readiness)} />
-              <TrendValue label="Load" value={dash(latest?.load)} />
-            </View>
-            <View style={styles.trendList}>
-              {trends.slice(-7).map((point) => (
-                <View key={point.date} style={styles.trendItem}>
-                  <Text style={styles.trendDate}>{point.date.slice(5)}</Text>
-                  <Text style={styles.trendMetric}>Readiness {dash(point.readiness)}</Text>
-                  <Text style={styles.trendMetric}>Load {dash(point.load)}</Text>
-                </View>
-              ))}
-            </View>
-          </>
-        )}
-      </Card>
-    </View>
-  );
-}
-
-function FeedbackSection({ comments, activity }: { comments: CoachComment[]; activity: FeedItem[] }) {
-  return (
-    <View style={styles.stack}>
-      <Card>
-        <CardTitle>Coach feedback</CardTitle>
-        {comments.length === 0 ? (
-          <Muted>No comments for this date.</Muted>
-        ) : (
-          <View style={styles.stackSmall}>
-            {comments.map((comment) => (
-              <View key={comment._id} style={styles.feedbackItem}>
-                <Text style={styles.itemBody}>{comment.body}</Text>
-              </View>
-            ))}
-          </View>
-        )}
-      </Card>
-
-      <Card>
-        <CardTitle>Recent activity</CardTitle>
-        {activity.length === 0 ? (
-          <Muted>Nothing logged recently.</Muted>
-        ) : (
-          <View style={styles.stackSmall}>
-            {activity.slice(0, 10).map((item) => (
-              <View key={item.id} style={styles.activityItem}>
-                <Text style={styles.itemTitle}>{item.title}</Text>
-                {item.subtitle ? <Text style={styles.itemSub}>{item.subtitle}</Text> : null}
-              </View>
-            ))}
-          </View>
-        )}
-      </Card>
-    </View>
+    <Card style={styles.metricCard}>
+      <View style={styles.metricRow}>
+        <MetricIcon band={band} icon="checkmark-circle-outline" />
+        <View style={styles.metricCopy}>
+          <Text style={styles.metricLabel}>Attendance</Text>
+          <Text style={styles.attendanceValue}>{attendanceLabel(status)}</Text>
+          {note ? <Text style={styles.metricExtra}>{note}</Text> : null}
+        </View>
+        <Badge band={band} text={status ?? "—"} />
+      </View>
+    </Card>
   );
 }
 
@@ -309,76 +277,45 @@ function Notice({ text }: { text: string }) {
   );
 }
 
-function CardTitle({ children }: { children: React.ReactNode }) {
-  return <Text style={styles.cardTitle}>{children}</Text>;
-}
-
-function StatTile({ label, value, sub }: { label: string; value: string; sub: string }) {
-  return (
-    <View style={styles.statTile}>
-      <Text style={styles.tileLabel}>{label}</Text>
-      <Text style={styles.tileValue}>{value}</Text>
-      <Text style={styles.tileSub}>{sub}</Text>
-    </View>
-  );
-}
-
-function TrendValue({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.trendValue}>
-      <Text style={styles.tileLabel}>{label}</Text>
-      <Text style={styles.tileValue}>{value}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 22 },
-  stack: { gap: 14 },
-  stackSmall: { gap: 10, marginTop: 12 },
+  stack: { gap: 12 },
   athleteSwitch: { gap: 8, paddingBottom: 12 },
   athleteChip: {
-    height: 38,
+    height: 40,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.surfaceInset,
-    justifyContent: "center",
-    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingLeft: 4,
+    paddingRight: 14,
   },
+  athleteAvatar: {
+    height: 28,
+    width: 28,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceRaised,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  athleteAvatarText: { fontSize: 10, fontWeight: "800", color: colors.inkMuted },
   athleteChipText: { color: colors.inkMuted, fontSize: 12, fontWeight: "800" },
   notice: { borderWidth: 1, borderColor: colors.bad + "55", backgroundColor: colors.bad + "14", borderRadius: radius.md, padding: 10, marginBottom: 12 },
   noticeText: { color: colors.bad, fontSize: 13, fontWeight: "700" },
-  warnStrip: { borderWidth: 1, borderColor: colors.warn + "55", backgroundColor: colors.warn + "16", borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10 },
-  warnText: { color: colors.warn, fontSize: 12, fontWeight: "700" },
-  heroCard: { alignItems: "center", paddingVertical: 22 },
-  heroText: { marginTop: 10, color: colors.inkMuted, fontSize: 12, textAlign: "center", lineHeight: 18 },
-  statGrid: { flexDirection: "row", gap: 10 },
-  statTile: { flex: 1, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, padding: 12 },
-  tileLabel: { fontSize: 10, fontWeight: "800", color: colors.inkFaint, textTransform: "uppercase", letterSpacing: 1.5 },
-  tileValue: { marginTop: 7, fontSize: 22, fontWeight: "800", color: colors.ink },
-  tileSub: { marginTop: 4, color: colors.inkMuted, fontSize: 11 },
-  cardTitle: { color: colors.inkMuted, fontSize: 13, fontWeight: "800", textTransform: "uppercase", letterSpacing: 2 },
-  miniMuted: { marginTop: 10, color: colors.inkFaint, fontSize: 12, lineHeight: 17 },
-  inlineStrong: { color: colors.ink, fontWeight: "800" },
-  planGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
-  slotPill: { flexGrow: 1, flexBasis: 96, minWidth: 96, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, padding: 12 },
-  slotType: { marginTop: 6, color: colors.ink, fontSize: 16, fontWeight: "800" },
-  rpeBlock: { borderTopWidth: 1, borderTopColor: colors.line, marginTop: 14, paddingTop: 12, flexDirection: "row", alignItems: "center", gap: 8 },
-  riskChip: { borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 5 },
-  riskText: { textTransform: "uppercase", fontSize: 10, fontWeight: "900" },
-  rpeLoad: { color: colors.ink, fontSize: 22, fontWeight: "900" },
-  rpeMeta: { flex: 1, color: colors.inkFaint, fontSize: 11 },
-  trendRow: { flexDirection: "row", gap: 8, marginTop: 12 },
-  trendValue: { flex: 1, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, padding: 12 },
-  trendList: { gap: 8, marginTop: 12 },
-  trendItem: { flexDirection: "row", alignItems: "center", gap: 10, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 8 },
-  trendDate: { width: 50, color: colors.ink, fontSize: 12, fontWeight: "800" },
-  trendMetric: { flex: 1, color: colors.inkMuted, fontSize: 11 },
-  feedbackItem: { borderLeftWidth: 3, borderLeftColor: colors.inkFaint, backgroundColor: colors.surfaceInset, borderRadius: radius.md, padding: 10 },
-  activityItem: { borderLeftWidth: 3, borderLeftColor: theme.accentStrong, backgroundColor: theme.accentSoft, borderRadius: radius.md, padding: 10 },
-  itemBody: { color: colors.ink, fontSize: 13, lineHeight: 18 },
-  itemTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" },
-  itemSub: { color: colors.inkMuted, fontSize: 11, marginTop: 2 },
   emptyTitle: { fontSize: 15, fontWeight: "700", color: colors.ink },
+  metricCard: { padding: 14 },
+  metricRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  metricIcon: { height: 44, width: 44, borderRadius: 16, alignItems: "center", justifyContent: "center" },
+  metricCopy: { flex: 1, minWidth: 0 },
+  metricLabel: { fontSize: 10, fontWeight: "800", color: colors.inkFaint, textTransform: "uppercase", letterSpacing: 1.5 },
+  metricValueRow: { marginTop: 3, flexDirection: "row", alignItems: "baseline", gap: 4, flexWrap: "wrap" },
+  metricValue: { marginTop: 3, fontSize: 17, fontWeight: "800", color: colors.ink },
+  metricUnit: { fontSize: 12, color: colors.inkFaint },
+  metricExtra: { fontSize: 11, color: colors.inkMuted, marginTop: 2 },
+  attendanceValue: { marginTop: 3, fontSize: 17, fontWeight: "800", color: colors.ink },
+  badge: { borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 5 },
+  badgeText: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.5 },
 });

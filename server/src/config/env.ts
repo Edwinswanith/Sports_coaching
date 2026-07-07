@@ -79,4 +79,19 @@ export const env = {
     accessTtl: process.env.JWT_ACCESS_TTL ?? "15m",
     refreshTtl: process.env.JWT_REFRESH_TTL ?? "30d",
   },
+  // Coach-uploaded media (athlete/workout/training-plan images). Stored on local
+  // disk, outside any statically-served directory — every read goes through an
+  // authenticated, ownership-checked route (see routes/coach.ts, routes/athlete.ts).
+  upload: {
+    dir: path.resolve(process.cwd(), process.env.UPLOAD_DIR ?? "uploads"),
+    maxSizeBytes: Number(process.env.MAX_UPLOAD_SIZE_MB ?? 8) * 1024 * 1024,
+  },
+  // Vision engine for turning a coach's workout image into a structured table.
+  // When GEMINI_API_KEY is set, the real Gemini converter reads the actual image
+  // and returns only the workout rows; otherwise a placeholder mock is used (see
+  // services/workoutImageConverter.ts). GEMINI_MODEL overrides the default model.
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY ?? "",
+    model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+  },
 };

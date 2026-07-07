@@ -115,7 +115,7 @@ export function deriveLoadAndRisk(input: RpeDerivedInput): RpeDerivedOutput {
   const highRestingHr =
     typeof input.restingHeartRate === "number" && input.restingHeartRate >= 100;
 
-  if (rpeFatigue) reasons.push(`RPE ${input.rpe} with high fatigue ${input.fatigue}`);
+  if (rpeFatigue) reasons.push(`RPM ${input.rpe} with high fatigue ${input.fatigue}`);
   if (soreFatigue)
     reasons.push(
       `Muscle soreness ${input.muscleSoreness} with high fatigue ${input.fatigue}`

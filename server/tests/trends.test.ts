@@ -159,19 +159,18 @@ describe("GET /api/coach/athletes/:id/trends (scoped)", () => {
   });
 });
 
-describe("GET /api/guardian/athletes/:id/trends (scoped)", () => {
-  test("linked guardian → 200; unlinked → 403", async () => {
+describe("GET /api/guardian/athletes/:id/trends (removed)", () => {
+  test("guardians have no trends access — endpoint doesn't exist", async () => {
+    // Guardians are scoped to Sleep quality / Water intake / Attendance only
+    // (see server/src/routes/guardian.ts); the trends endpoint was
+    // deliberately removed from the guardian router.
     const guardian = await makeUser("guardian", "parent");
     const { profile: child } = await makeAthlete("g-child");
-    const { profile: stranger } = await makeAthlete("g-stranger");
     await GuardianAthleteLink.create({ guardianId: guardian._id, athleteId: child._id });
     const app = buildApp();
     const t = tokenFor(guardian._id, "guardian");
 
-    const ok = await request(app).get(`/api/guardian/athletes/${child._id}/trends`).set("Authorization", `Bearer ${t}`);
-    expect(ok.status).toBe(200);
-
-    const denied = await request(app).get(`/api/guardian/athletes/${stranger._id}/trends`).set("Authorization", `Bearer ${t}`);
-    expect(denied.status).toBe(403);
+    const res = await request(app).get(`/api/guardian/athletes/${child._id}/trends`).set("Authorization", `Bearer ${t}`);
+    expect(res.status).toBe(404);
   });
 });

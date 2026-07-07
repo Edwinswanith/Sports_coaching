@@ -31,6 +31,29 @@ export const SESSION_STATUS = [
 ] as const;
 export type SessionStatus = (typeof SESSION_STATUS)[number];
 
+// Small image attachments alongside a session's notes (e.g. a photo of a
+// whiteboard plan, an injury, form-check still). Raw bytes live on local disk
+// under env.upload.dir, named by `storedFilename` — same secure pattern as
+// WorkoutMedia (never the client's original filename, never statically
+// served; every read goes through an authenticated, ownership-checked route).
+// Unlike WorkoutMedia, these are visible to both coach and athlete immediately
+// on upload — same as the shared, no-gate `notes` field they sit next to.
+// storedFilename is a randomUUID()-generated name — already globally unique by
+// construction, so no DB-level unique index here. A `unique: true` on a field
+// nested in an array is a collection-wide index: Mongo indexes an empty
+// `photos: []` as a null entry, so a second session with no photos would
+// collide with the first under a unique constraint.
+const sessionPhotoSchema = new Schema(
+  {
+    storedFilename: { type: String, required: true },
+    originalName: { type: String, required: true, trim: true, maxlength: 255 },
+    mimeType: { type: String, required: true },
+    sizeBytes: { type: Number, required: true, min: 1 },
+    uploadedAt: { type: Date, default: Date.now },
+  },
+  { timestamps: false }
+);
+
 const trainingSessionSchema = new Schema(
   {
     athleteId: { type: Schema.Types.ObjectId, ref: "AthleteProfile", required: true },
@@ -41,7 +64,7 @@ const trainingSessionSchema = new Schema(
     status: { type: String, enum: SESSION_STATUS, default: "planned" },
     plan: { type: Schema.Types.Mixed },
     durationMin: { type: Number },
-    intensityRpe: { type: Number, min: 1, max: 10 },
+    intensityRpe: { type: Number, min: 1, max: 100 },
     attended: { type: Boolean },
     workoutType: { type: String, trim: true },
     sets: { type: Number, min: 0 },
@@ -49,6 +72,7 @@ const trainingSessionSchema = new Schema(
     actualDurationMin: { type: Number, min: 0 },
     effortRating: { type: Number, min: 1, max: 10 },
     notes: { type: String },
+    photos: { type: [sessionPhotoSchema], default: [] },
   },
   { timestamps: true }
 );

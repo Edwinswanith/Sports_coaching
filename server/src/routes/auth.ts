@@ -11,6 +11,7 @@ import {
 } from "../lib/tokens";
 import { env } from "../config/env";
 import { requireAuth } from "../middleware/auth";
+import { avatarSummary } from "../services/avatar";
 
 const router = Router();
 
@@ -94,6 +95,7 @@ function safeUser(user: UserDoc) {
       : null,
     isAcademyOwner: Boolean(user.isAcademyOwner),
     mustChangePassword: Boolean(user.mustChangePassword),
+    avatar: avatarSummary(user),
   };
 }
 

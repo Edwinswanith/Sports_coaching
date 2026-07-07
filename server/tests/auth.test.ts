@@ -85,6 +85,7 @@ describe("POST /api/auth/login", () => {
       academyId: null,
       isAcademyOwner: false,
       mustChangePassword: false,
+      avatar: { kind: null, defaultId: null },
     });
     expect(login.body.user).not.toHaveProperty("passwordHash");
     expect(login.body.user).not.toHaveProperty("refreshTokenHash");
@@ -125,6 +126,7 @@ describe("POST /api/auth/login", () => {
       academyId: null,
       isAcademyOwner: false,
       mustChangePassword: false,
+      avatar: { kind: null, defaultId: null },
     });
   });
 

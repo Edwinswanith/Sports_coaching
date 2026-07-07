@@ -90,6 +90,14 @@ export type AthleteSummary = {
   position: string | null;
 };
 
+export type SessionPhotoView = {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedAt: string;
+};
+
 export type DailyCard = AthleteSummary & {
   date: string;
   isRestDay: boolean;
@@ -108,6 +116,7 @@ export type DailyCard = AthleteSummary & {
       actualDurationMin: number | null;
       effortRating: number | null;
       notes: string | null;
+      photos: SessionPhotoView[];
     }
   >;
   readinessScore: number | null;
@@ -276,6 +285,17 @@ export async function buildDailyCardsForAthletes(
     actualDurationMin: (s?.actualDurationMin as number | undefined) ?? null,
     effortRating: (s?.effortRating as number | undefined) ?? null,
     notes: (s?.notes as string | undefined) ?? null,
+    photos: (
+      (s?.photos as
+        | { _id: Types.ObjectId; originalName: string; mimeType: string; sizeBytes: number; uploadedAt: Date }[]
+        | undefined) ?? []
+    ).map((p) => ({
+      id: p._id.toString(),
+      originalName: p.originalName,
+      mimeType: p.mimeType,
+      sizeBytes: p.sizeBytes,
+      uploadedAt: (p.uploadedAt ?? new Date()).toISOString(),
+    })),
   });
   const serializeRpe = (rpeRow: typeof rpes[number]): DailyRpeSummary => ({
     sessionType: rpeRow.sessionType as SessionSlot,
@@ -320,12 +340,22 @@ export async function buildDailyCardsForAthletes(
     const recFallback =
       rec?.recoveryScore == null ? computeRecovery(w as WellnessDoc | undefined) : null;
 
+    // Attendance is derived from the day's log activity — the athlete no longer
+    // marks present/late/absent by hand. An explicit record (coach-recorded, or a
+    // "rest" day) still wins; otherwise "present" iff they logged/attended a
+    // session or logged any RPE for the day.
+    const trainedToday =
+      [slots.AM, slots.AFT, slots.PM].some(
+        (s) => s && (s.attended === true || s.status === "completed" || s.status === "in_progress")
+      ) || Object.keys(rpeSlots).length > 0;
+    const attendanceStatus = (att?.status as string | undefined) ?? (trainedToday ? "present" : null);
+
     return {
       ...summary,
       date: dateIso,
       isRestDay: att?.status === "rest",
       attendance: {
-        status: (att?.status as string | undefined) ?? null,
+        status: attendanceStatus,
         note: (att?.note as string | undefined) ?? null,
       },
       sessions: {

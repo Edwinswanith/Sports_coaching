@@ -1,27 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { Text } from "../../../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as DocumentPicker from "expo-document-picker";
+import { FileSystemUploadType, uploadAsync } from "expo-file-system/legacy";
 import Svg, { G, Line, Path, Rect, Text as SvgText } from "react-native-svg";
-import { apiFetch, apiJson } from "../../../lib/api";
+import { API_BASE, apiJson, apiFetch, getAccessToken } from "../../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../../lib/theme";
-import { Banner, Card, Muted, PrimaryButton } from "../../../components/ui";
+import { Banner, Card, Muted, PrimaryButton, TextField } from "../../../components/ui";
 import { Ring } from "../../../components/Ring";
 import { ScreenHeader } from "../../../components/ScreenHeader";
 import { DatePickerPill } from "../../../components/DatePickerPill";
 import { column, fmtMagnitude, latestVal, summarizeTrend } from "../../../lib/trendStats";
+import { TRAINING_CATEGORIES } from "../../../lib/trainingCategories";
 
 type SessionSlot = "AM" | "AFT" | "PM";
+
+type SessionPhoto = { id: string; originalName: string; mimeType: string; sizeBytes: number; uploadedAt: string };
 
 type DailyCard = {
   athleteId: string;
@@ -30,7 +27,7 @@ type DailyCard = {
   position: string | null;
   date: string;
   attendance: { status: string | null; note?: string | null };
-  sessions: Record<SessionSlot, { status: string | null; type: string | null }>;
+  sessions: Record<SessionSlot, { status: string | null; type: string | null; photos?: SessionPhoto[] }>;
   readinessScore: number | null;
   sleep: { hours: number | null; quality: number | null };
   soreness: number | null;
@@ -93,7 +90,7 @@ type ChartTab = "readiness" | "hr" | "wellness" | "performance";
 const TABS: { key: Tab; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "training", label: "Training" },
-  { key: "rpe", label: "RPE" },
+  { key: "rpe", label: "RPM" },
   { key: "performance", label: "Performance" },
   { key: "activity", label: "Activity" },
 ];
@@ -109,6 +106,11 @@ const SESSION_SLOTS: SessionSlot[] = ["AM", "AFT", "PM"];
 const SLOT_LABEL: Record<SessionSlot, string> = { AM: "AM", AFT: "Afternoon", PM: "PM" };
 const today = () => new Date().toISOString().slice(0, 10);
 const dash = (v: unknown) => (v === null || v === undefined || v === "" ? "-" : String(v).replace("_", " "));
+// Wellness signals are stored 1–5 but shown out of 10 across the app.
+const wellnessTen = (v: number | null | undefined): string =>
+  v === null || v === undefined || !Number.isFinite(Number(v))
+    ? "-"
+    : String(Math.max(1, Math.min(10, Math.round(1 + ((Number(v) - 1) * 9) / 4))));
 
 function cleanParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? "" : value ?? "";
@@ -265,7 +267,7 @@ export default function AthleteDetail() {
                 setChartTab={setChartTab}
               />
             ) : tab === "training" ? (
-              <TrainingTab card={card} />
+              <TrainingTab card={card} athleteId={athleteId} date={date} accent={accent} onSaved={load} />
             ) : tab === "rpe" ? (
               <RpeTab entries={rpeEntries} />
             ) : tab === "performance" ? (
@@ -296,8 +298,8 @@ export default function AthleteDetail() {
                 loading={posting}
                 disabled={!comment.trim()}
                 successLabel="Sent"
-                accent="#9bcfbe"
-                accentInk="#fff"
+                accent={accent}
+                accentInk={ROLE_THEMES.coach.accentInk}
               />
             </Card>
           </>
@@ -335,7 +337,7 @@ function OverviewTab({
               icon="moon-outline"
               label="Sleep"
               value={dash(card.sleep.hours)}
-              sub={`quality ${dash(card.sleep.quality)}/5`}
+              sub={`quality ${wellnessTen(card.sleep.quality)}/10`}
             />
             <InfoTile
               icon="pulse-outline"
@@ -415,7 +417,7 @@ function TrainingLoadCard({ card }: { card: DailyCard }) {
             <Pill label={card.rpe.riskFlag} color={riskColor(card.rpe.riskFlag)} />
             <Text style={styles.loadNumber}>{card.rpe.calculatedTrainingLoad}</Text>
             <Text style={styles.loadMeta}>
-              RPE {card.rpe.rpe} - {SLOT_LABEL[card.rpe.sessionType]}
+              RPM {card.rpe.rpe} - {SLOT_LABEL[card.rpe.sessionType]}
             </Text>
           </View>
           <Text style={styles.loadDetail}>
@@ -432,7 +434,7 @@ function TrainingLoadCard({ card }: { card: DailyCard }) {
           ) : null}
         </>
       ) : (
-        <Text style={styles.emptyText}>No RPE logged for this date.</Text>
+        <Text style={styles.emptyText}>No RPM logged for this date.</Text>
       )}
     </Card>
   );
@@ -498,24 +500,27 @@ function HeartRatePanel({ wellness }: { wellness: WellnessPoint[] }) {
 
 function WellnessPanel({ wellness }: { wellness: WellnessPoint[] }) {
   const rows = [
-    { label: "Sleep quality", key: "sleepQuality" as const, lowerIsBetter: false, suffix: "/5" },
-    { label: "Mood", key: "mood" as const, lowerIsBetter: false, suffix: "/5" },
-    { label: "Stress", key: "stress" as const, lowerIsBetter: true, suffix: "/5" },
-    { label: "Soreness", key: "soreness" as const, lowerIsBetter: true, suffix: "/5" },
-    { label: "Fatigue", key: "fatigue" as const, lowerIsBetter: true, suffix: "/5" },
+    { label: "Sleep quality", key: "sleepQuality" as const, lowerIsBetter: false, suffix: "/10" },
+    { label: "Mood", key: "mood" as const, lowerIsBetter: false, suffix: "/10" },
+    { label: "Stress", key: "stress" as const, lowerIsBetter: true, suffix: "/10" },
+    { label: "Soreness", key: "soreness" as const, lowerIsBetter: true, suffix: "/10" },
+    { label: "Fatigue", key: "fatigue" as const, lowerIsBetter: true, suffix: "/10" },
     { label: "Hydration", key: "waterPct" as const, lowerIsBetter: false, suffix: "%" },
   ];
   return (
     <View style={styles.panelStack}>
       {rows.map((row) => {
         const values = column(wellness, row.key);
+        // Wellness signals are stored 1–5 but shown out of 10 (hydration is a %).
+        const display =
+          row.key === "waterPct" ? values : values.map((v) => (v == null ? null : Number(wellnessTen(v))));
         return (
           <View key={row.key} style={styles.wellnessRow}>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={styles.wellnessLabel}>{row.label}</Text>
               <Text style={styles.wellnessSub}>{row.lowerIsBetter ? "Lower is better" : "Higher is better"}</Text>
             </View>
-            <Text style={styles.wellnessValue}>{formatLatest(values, row.suffix)}</Text>
+            <Text style={styles.wellnessValue}>{formatLatest(display, row.suffix)}</Text>
             <TrendBadge values={values} lowerIsBetter={row.lowerIsBetter} showMagnitude={false} />
           </View>
         );
@@ -563,31 +568,337 @@ function PerformancePanel({ entries }: { entries: PerfEntry[] }) {
   );
 }
 
-function TrainingTab({ card }: { card: DailyCard }) {
+function TrainingTab({
+  card,
+  athleteId,
+  date,
+  accent,
+  onSaved,
+}: {
+  card: DailyCard;
+  athleteId: string;
+  date: string;
+  accent: string;
+  onSaved: () => void | Promise<void>;
+}) {
+  // Mirrors the web coach page: one compact 3-up AM/Afternoon/PM picker
+  // instead of three full stacked cards, with just the selected slot's
+  // editor shown below.
+  const [activeSlot, setActiveSlot] = useState<SessionSlot>(SESSION_SLOTS[0]);
+  const activeSession = card.sessions[activeSlot];
+
   return (
     <View style={styles.stack}>
       <Card style={styles.loadCard}>
         <Text style={styles.cardTitle}>Attendance</Text>
-        <View style={styles.optionRow}>
-          {["present", "late", "absent", "excused"].map((status) => (
-            <View key={status} style={[styles.optionPill, card.attendance.status === status ? styles.optionActive : null]}>
-              <Text style={[styles.optionText, card.attendance.status === status ? styles.optionTextActive : null]}>
-                {status}
-              </Text>
-            </View>
-          ))}
-        </View>
+        <AttendanceEditor athleteId={athleteId} date={date} current={card.attendance.status} accent={accent} onSaved={onSaved} />
       </Card>
-      {SESSION_SLOTS.map((slot) => (
-        <Card key={slot} style={styles.loadCard}>
-          <Text style={styles.cardTitle}>{SLOT_LABEL[slot]} session</Text>
-          <View style={styles.sessionLine}>
-            <Text style={styles.sessionStatus}>{dash(card.sessions[slot]?.status)}</Text>
-            <Text style={styles.sessionType}>{card.sessions[slot]?.type ?? "Rest / unset"}</Text>
-          </View>
-        </Card>
-      ))}
+      <Card style={styles.loadCard}>
+        <Text style={styles.cardTitle}>Training</Text>
+        <View style={styles.slotGrid}>
+          {SESSION_SLOTS.map((slot) => {
+            const session = card.sessions[slot];
+            const active = slot === activeSlot;
+            const done = Boolean(session?.status && session.status !== "planned");
+            return (
+              <Pressable
+                key={slot}
+                onPress={() => setActiveSlot(slot)}
+                style={[
+                  styles.slotTile,
+                  active ? styles.slotTileActive : done ? styles.slotTileDone : null,
+                ]}
+              >
+                <Text style={[styles.slotTileLabel, active ? styles.slotTileLabelActive : null]}>
+                  {SLOT_LABEL[slot]}
+                </Text>
+                <Text style={styles.slotTileType} numberOfLines={1}>
+                  {session?.type ?? "Not set"}
+                </Text>
+                <Text style={styles.slotTileStatus}>{dash(session?.status)}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <SlotEditor
+          key={activeSlot}
+          slot={activeSlot}
+          athleteId={athleteId}
+          date={date}
+          session={activeSession}
+          accent={accent}
+          onSaved={onSaved}
+        />
+      </Card>
     </View>
+  );
+}
+
+function AttendanceEditor({
+  athleteId,
+  date,
+  current,
+  accent,
+  onSaved,
+}: {
+  athleteId: string;
+  date: string;
+  current: string | null;
+  accent: string;
+  onSaved: () => void | Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function set(status: string) {
+    setBusy(true);
+    try {
+      const res = await apiFetch(`/api/coach/athletes/${athleteId}/attendance`, {
+        method: "POST",
+        body: JSON.stringify({ date, status }),
+      });
+      if (res.ok) await onSaved();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View style={styles.optionRow}>
+      {["present", "late", "absent", "excused"].map((status) => {
+        const active = current === status;
+        return (
+          <Pressable
+            key={status}
+            disabled={busy}
+            onPress={() => void set(status)}
+            style={[
+              styles.optionPill,
+              active ? { borderColor: accent, backgroundColor: accent + "18" } : null,
+              busy ? { opacity: 0.6 } : null,
+            ]}
+          >
+            <Text style={[styles.optionText, active ? { color: accent } : null]}>{status}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+type SlotForm = { type: string; intensityRpe: string; notes: string };
+
+// Category/type is coach-set here (mirrors web's SlotEditor); status/duration
+// aren't exposed on this form since the daily card doesn't echo them back per
+// slot — same behaviour as the web coach page.
+function SlotEditor({
+  slot,
+  athleteId,
+  date,
+  session,
+  accent,
+  onSaved,
+}: {
+  slot: SessionSlot;
+  athleteId: string;
+  date: string;
+  session: { status: string | null; type: string | null; photos?: SessionPhoto[] } | undefined;
+  accent: string;
+  onSaved: () => void | Promise<void>;
+}) {
+  const [form, setForm] = useState<SlotForm>({ type: session?.type ?? "", intensityRpe: "", notes: "" });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [photos, setPhotos] = useState<SessionPhoto[]>(session?.photos ?? []);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+
+  useEffect(() => {
+    setForm({ type: session?.type ?? "", intensityRpe: "", notes: "" });
+    setPhotos(session?.photos ?? []);
+    setMsg(null);
+    // Re-sync only when the slot changes — not on every session prop tick,
+    // so the coach's in-progress edits aren't clobbered by a background refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slot]);
+
+  async function pickPhoto() {
+    const result = await DocumentPicker.getDocumentAsync({ type: "image/*" });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setUploadingPhoto(true);
+    setMsg(null);
+    try {
+      const token = getAccessToken();
+      // Raw fetch + FormData({uri,name,type}) throws "Unsupported FormDataPart
+      // implementation" on RN's New Architecture — expo-file-system's uploadAsync
+      // is the working multipart path for local-file uploads on this RN version.
+      const res = await uploadAsync(`${API_BASE}/api/coach/athletes/${athleteId}/training/${slot}/photos`, asset.uri, {
+        httpMethod: "POST",
+        uploadType: FileSystemUploadType.MULTIPART,
+        fieldName: "file",
+        mimeType: asset.mimeType ?? "image/jpeg",
+        parameters: { date },
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      if (res.status < 200 || res.status >= 300) {
+        const j = (JSON.parse(res.body || "{}") as { error?: string }) ?? {};
+        setMsg({
+          kind: "error",
+          text:
+            j.error === "unsupported_file_type"
+              ? "Unsupported file type — use JPG, PNG, WEBP, or GIF."
+              : j.error === "file_too_large"
+                ? "File is too large."
+                : "Could not attach photo.",
+        });
+        return;
+      }
+      const json = JSON.parse(res.body) as { photo: SessionPhoto };
+      setPhotos((prev) => [...prev, json.photo]);
+    } catch {
+      setMsg({ kind: "error", text: "Network error uploading photo." });
+    } finally {
+      setUploadingPhoto(false);
+    }
+  }
+
+  async function save() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const body: Record<string, unknown> = { date, status: session?.status ?? "planned" };
+      if (form.type.trim()) body.type = form.type.trim();
+      if (form.intensityRpe.trim()) body.intensityRpe = Number(form.intensityRpe);
+      if (form.notes.trim()) body.notes = form.notes.trim();
+
+      const res = await apiFetch(`/api/coach/athletes/${athleteId}/training/${slot}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        setMsg({ kind: "error", text: j.error ?? "Could not save session." });
+        return false;
+      }
+      setMsg({ kind: "ok", text: `${SLOT_LABEL[slot]} session saved.` });
+      await onSaved();
+      return true;
+    } catch {
+      setMsg({ kind: "error", text: "Network error." });
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View style={styles.slotDetail}>
+      <Text style={styles.cardTitle}>{SLOT_LABEL[slot]} session</Text>
+
+      <Text style={styles.inputLabel}>Category / type</Text>
+      <Dropdown
+        value={form.type || "Rest / unset"}
+        options={["Rest / unset", ...TRAINING_CATEGORIES]}
+        title="Category / type"
+        onChange={(v) => setForm((f) => ({ ...f, type: v === "Rest / unset" ? "" : v }))}
+      />
+
+      <Text style={[styles.inputLabel, { marginTop: 12 }]}>Intensity RPM (1-100)</Text>
+      <TextField
+        value={form.intensityRpe}
+        onChangeText={(v) => setForm((f) => ({ ...f, intensityRpe: v.replace(/[^0-9]/g, "") }))}
+        placeholder="optional"
+        keyboardType="number-pad"
+      />
+
+      <Text style={[styles.inputLabel, { marginTop: 12 }]}>Notes</Text>
+      <TextField
+        value={form.notes}
+        onChangeText={(v) => setForm((f) => ({ ...f, notes: v }))}
+        placeholder="Plan detail or coaching note..."
+        multiline
+        style={styles.notesField}
+      />
+
+      <Text style={[styles.inputLabel, { marginTop: 12 }]}>Photos</Text>
+      <View style={styles.photoRow}>
+        {photos.map((p) => (
+          <Image
+            key={p.id}
+            source={{
+              uri: `${API_BASE}/api/coach/athletes/${athleteId}/training/${slot}/photos/${p.id}/file`,
+              headers: getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : undefined,
+            }}
+            style={styles.photoThumb}
+          />
+        ))}
+        <Pressable onPress={() => void pickPhoto()} disabled={uploadingPhoto} style={styles.photoAdd}>
+          {uploadingPhoto ? <ActivityIndicator color={colors.inkFaint} size="small" /> : <Ionicons name="add" size={22} color={colors.inkFaint} />}
+        </Pressable>
+      </View>
+
+      {msg ? (
+        <View style={{ marginTop: 10 }}>
+          <Banner kind={msg.kind}>{msg.text}</Banner>
+        </View>
+      ) : null}
+
+      <View style={{ marginTop: 12 }}>
+        <PrimaryButton label={`Save ${SLOT_LABEL[slot]} session`} onPress={save} loading={busy} accent={accent} successLabel="Saved" />
+      </View>
+    </View>
+  );
+}
+
+function Dropdown({
+  value,
+  options,
+  onChange,
+  placeholder = "Select…",
+  title,
+}: {
+  value: string;
+  options: readonly string[];
+  onChange: (v: string) => void;
+  placeholder?: string;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Pressable onPress={() => setOpen(true)} style={styles.dropdownField} accessibilityRole="button">
+        <Text style={[styles.dropdownValue, !value ? { color: colors.inkFaint } : null]} numberOfLines={1}>
+          {value || placeholder}
+        </Text>
+        <Ionicons name="chevron-down" size={16} color={colors.inkMuted} />
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.dropdownBackdrop} onPress={() => setOpen(false)}>
+          <Pressable style={styles.dropdownSheet} onPress={(e) => e.stopPropagation()}>
+            {title ? <Text style={styles.dropdownSheetTitle}>{title}</Text> : null}
+            <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ paddingVertical: 2 }}>
+              {options.map((opt) => {
+                const sel = opt === value;
+                return (
+                  <Pressable
+                    key={opt}
+                    onPress={() => {
+                      onChange(opt);
+                      setOpen(false);
+                    }}
+                    style={[styles.dropdownItem, sel ? styles.dropdownItemOn : null]}
+                  >
+                    <Text style={[styles.dropdownItemText, sel ? styles.dropdownItemTextOn : null]} numberOfLines={2}>
+                      {opt}
+                    </Text>
+                    {sel ? <Ionicons name="checkmark" size={16} color={ROLE_THEMES.coach.accentStrong} /> : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   );
 }
 
@@ -595,7 +906,7 @@ function RpeTab({ entries }: { entries: RpeEntry[] }) {
   if (entries.length === 0) {
     return (
       <Card>
-        <Text style={styles.emptyText}>No RPE entries for this date.</Text>
+        <Text style={styles.emptyText}>No RPM entries for this date.</Text>
       </Card>
     );
   }
@@ -610,14 +921,14 @@ function RpeTab({ entries }: { entries: RpeEntry[] }) {
             <Pill label={entry.riskFlag} color={riskColor(entry.riskFlag)} />
             <Text style={styles.loadNumber}>{entry.calculatedTrainingLoad}</Text>
             <Text style={styles.loadMeta}>
-              RPE {entry.rpe} - {entry.plannedIntensityPercent}%
+              RPM {entry.rpe} - {entry.plannedIntensityPercent}%
             </Text>
           </View>
           <View style={styles.rpeGrid}>
-            <InfoTile label="Sleep" value={`${entry.sleepQuality}/5`} />
-            <InfoTile label="Soreness" value={`${entry.muscleSoreness}/5`} />
-            <InfoTile label="Fatigue" value={`${entry.fatigue}/5`} />
-            <InfoTile label="Mood" value={`${entry.moodMotivation}/5`} />
+            <InfoTile label="Sleep" value={`${wellnessTen(entry.sleepQuality)}/10`} />
+            <InfoTile label="Soreness" value={`${wellnessTen(entry.muscleSoreness)}/10`} />
+            <InfoTile label="Fatigue" value={`${wellnessTen(entry.fatigue)}/10`} />
+            <InfoTile label="Mood" value={`${wellnessTen(entry.moodMotivation)}/10`} />
           </View>
           {entry.bodyConditionFeedback ? <Text style={styles.noteBox}>{entry.bodyConditionFeedback}</Text> : null}
         </Card>
@@ -1080,12 +1391,74 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 10,
   },
-  optionActive: { borderColor: ROLE_THEMES.coach.accent, backgroundColor: ROLE_THEMES.coach.accentSoft },
   optionText: { color: colors.inkMuted, fontSize: 11, fontWeight: "800", textTransform: "capitalize" },
-  optionTextActive: { color: ROLE_THEMES.coach.accentStrong },
-  sessionLine: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
-  sessionStatus: { color: colors.ink, fontSize: 16, fontWeight: "900", textTransform: "capitalize" },
-  sessionType: { flex: 1, textAlign: "right", color: colors.inkMuted, fontSize: 12, textTransform: "capitalize" },
+  slotGrid: { flexDirection: "row", gap: 8 },
+  slotTile: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    padding: 10,
+  },
+  slotTileActive: { borderColor: ROLE_THEMES.coach.accent, backgroundColor: ROLE_THEMES.coach.accentSoft },
+  slotTileDone: { borderColor: colors.ok + "4d", backgroundColor: colors.ok + "0d" },
+  slotTileLabel: { color: colors.inkFaint, fontSize: 9, fontWeight: "900", letterSpacing: 0.8, textTransform: "uppercase" },
+  slotTileLabelActive: { color: ROLE_THEMES.coach.accentStrong },
+  slotTileType: { marginTop: 4, color: colors.ink, fontSize: 12, fontWeight: "800", textTransform: "capitalize" },
+  slotTileStatus: { marginTop: 2, color: colors.inkMuted, fontSize: 10, fontWeight: "700", textTransform: "capitalize" },
+  slotDetail: { marginTop: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceRaised, padding: 10 },
+  inputLabel: { marginBottom: 7, color: colors.inkFaint, fontSize: 10, fontWeight: "800", letterSpacing: 1.5, textTransform: "uppercase" },
+  notesField: { height: 76, textAlignVertical: "top", paddingTop: 12 },
+  photoRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  photoThumb: { height: 64, width: 64, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset },
+  photoAdd: {
+    height: 64,
+    width: 64,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: colors.line,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dropdownField: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    height: 46,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    paddingHorizontal: 12,
+  },
+  dropdownValue: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14, fontWeight: "700" },
+  dropdownBackdrop: { flex: 1, justifyContent: "center", padding: 24, backgroundColor: "rgba(18,24,22,0.35)" },
+  dropdownSheet: {
+    maxHeight: "80%",
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.surfaceRaised,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+  },
+  dropdownSheetTitle: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    color: colors.inkFaint,
+  },
+  dropdownItem: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, borderRadius: radius.sm, paddingHorizontal: 12, paddingVertical: 12 },
+  dropdownItemOn: { backgroundColor: colors.surfaceInset },
+  dropdownItemText: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
+  dropdownItemTextOn: { color: ROLE_THEMES.coach.accentStrong, fontWeight: "800" },
   rpeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   noteBox: {
     borderRadius: radius.sm,

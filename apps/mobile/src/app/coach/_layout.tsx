@@ -1,6 +1,7 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { Text } from "../../components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ROLE_THEMES, colors } from "../../lib/theme";
 

@@ -1,19 +1,24 @@
-import { useMemo, useState } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { useState } from "react";
+import { Modal, Pressable, StyleProp, StyleSheet, View, ViewStyle } from "react-native";
+import { Text } from "./AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../lib/auth";
 import { colors, radius, type RoleTheme } from "../lib/theme";
+import { Avatar } from "./Avatar";
 
-function initialsOf(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-}
-
-export function ProfileMenu({ theme }: { theme: RoleTheme }) {
+export function ProfileMenu({
+  theme,
+  size = 38,
+  textSize = 12,
+  style,
+}: {
+  theme: RoleTheme;
+  size?: number;
+  textSize?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
   const { user, signOut } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -21,7 +26,6 @@ export function ProfileMenu({ theme }: { theme: RoleTheme }) {
 
   const name = user?.name || "Your account";
   const email = user?.email ?? "";
-  const initials = useMemo(() => initialsOf(name || email), [name, email]);
 
   async function onSignOut() {
     setOpen(false);
@@ -41,15 +45,25 @@ export function ProfileMenu({ theme }: { theme: RoleTheme }) {
         hitSlop={8}
         style={({ pressed }) => [
           styles.avatarButton,
-          { backgroundColor: theme.accentSoft, borderColor: theme.accent },
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            borderColor: theme.accent,
+          },
+          style,
           pressed ? { opacity: 0.82 } : null,
         ]}
         accessibilityRole="button"
         accessibilityLabel="Profile and account"
       >
-        <Text style={[styles.avatarText, { color: theme.accentStrong }]} numberOfLines={1}>
-          {initials}
-        </Text>
+        <Avatar
+          avatar={user?.avatar}
+          name={name}
+          size={size}
+          accentSoft={theme.accentSoft}
+          accentStrong={theme.accentStrong}
+        />
       </Pressable>
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
@@ -59,9 +73,13 @@ export function ProfileMenu({ theme }: { theme: RoleTheme }) {
             onPress={(event) => event.stopPropagation()}
           >
             <View style={styles.identityRow}>
-              <View style={[styles.menuAvatar, { backgroundColor: theme.accentSoft }]}>
-                <Text style={[styles.menuAvatarText, { color: theme.accentStrong }]}>{initials}</Text>
-              </View>
+              <Avatar
+                avatar={user?.avatar}
+                name={name}
+                size={42}
+                accentSoft={theme.accentSoft}
+                accentStrong={theme.accentStrong}
+              />
               <View style={styles.identityText}>
                 <Text style={styles.name} numberOfLines={1}>
                   {name}
@@ -104,7 +122,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  avatarText: { fontSize: 12, fontWeight: "900" },
   backdrop: {
     flex: 1,
     backgroundColor: "rgba(18,24,22,0.18)",
@@ -125,14 +142,6 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   identityRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  menuAvatar: {
-    height: 42,
-    width: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  menuAvatarText: { fontSize: 13, fontWeight: "900" },
   identityText: { flex: 1, minWidth: 0 },
   name: { fontSize: 14, fontWeight: "800", color: colors.ink },
   email: { marginTop: 2, fontSize: 11, color: colors.inkMuted },

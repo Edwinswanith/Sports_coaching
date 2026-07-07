@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, BackHandler, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
+import { Text } from "../../components/AppText";
 import { Ionicons } from "@expo/vector-icons";
+import { BlurView, BlurTargetView } from "expo-blur";
+import * as DocumentPicker from "expo-document-picker";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Notifications from "expo-notifications";
+import { BarChart } from "react-native-chart-kit";
 import { useLocalSearchParams } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
@@ -18,8 +15,10 @@ import { AppFrame, type NativeNavItem } from "../../components/AppFrame";
 import { Card, Muted, PrimaryButton, TextField } from "../../components/ui";
 import { DatePickerPill } from "../../components/DatePickerPill";
 import { type MessageParty, type MessageView } from "../../components/MessageCenter";
+import { ChatMediaBubble } from "../../components/ChatMediaBubble";
+import { ProfileMenu } from "../../components/ProfileMenu";
 import { Ring } from "../../components/Ring";
-import { apiFetch, apiJson } from "../../lib/api";
+import { apiFetch, apiJson, API_BASE, getAccessToken } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../lib/sessions";
 import { TRAINING_CATEGORIES } from "../../lib/trainingCategories";
@@ -32,7 +31,7 @@ import {
   type TrendSummary,
 } from "../../lib/trendStats";
 
-type Section = "today" | "trends" | "log" | "water" | "coach" | "messages";
+type Section = "today" | "progress" | "log" | "coach" | "messages";
 type Band = "green" | "amber" | "red";
 
 type DailySession = {
@@ -88,6 +87,7 @@ type DailyCard = {
 type DailyResponse = { date: string; card: DailyCard };
 type FeedItem = { id: string; at: string; kind: string; title: string; subtitle?: string; detail?: string; band?: Band };
 type AthleteNote = { _id: string; body: string; date: string; createdAt: string };
+type SessionPhotoMeta = { id: string; originalName: string; mimeType: string; sizeBytes: number; uploadedAt: string };
 type CoachComment = { _id: string; body: string; date: string; createdAt: string; coachId: string };
 type TeamAnnouncement = { id: string; body: string; coachName: string; createdAt: string };
 type AssignedCoach = { coachId: string; name: string };
@@ -100,6 +100,8 @@ type MessageThreadSummary = {
   unreadCount: number;
 };
 type WaterDay = { date: string; goalMl: number; totalMl: number; entries: { id: string; amountMl: number; loggedAt: string }[] };
+type WaterPoint = { date: string; totalMl: number | null };
+type WaterSeries = { days: number; goalMl: number; series: WaterPoint[] };
 type TrendPoint = { date: string; readiness: number | null; load: number | null; sleepHours: number | null; recoveryScore: number | null };
 type WellnessPoint = {
   date: string;
@@ -113,6 +115,33 @@ type WellnessPoint = {
   waterPct?: number | null;
 };
 type PerfPoint = { date: string; value: number; metric: string; unit: string };
+type AchievementGoalKey = "check_in" | "training" | "hydration" | "all_rounder";
+type AchievementTone = "green" | "amber" | "red";
+type AchievementGoal = {
+  key: AchievementGoalKey;
+  title: string;
+  description: string;
+  metricLabel: string;
+  target: number;
+  currentStreak: number;
+  completedDays: number;
+  longestStreak: number;
+  progress: number;
+  achieved: boolean;
+  tone: AchievementTone;
+  reward: { title: string; description: string; badgeLabel: string; unlocked: boolean };
+  history: { date: string; met: boolean }[];
+};
+type AchievementsResponse = {
+  days: number;
+  generatedAt: string;
+  summary: {
+    unlocked: number;
+    nextGoal: { key: AchievementGoalKey; title: string; remaining: number } | null;
+    bestStreak: { key: AchievementGoalKey; title: string; days: number } | null;
+  };
+  goals: AchievementGoal[];
+};
 
 type WellnessForm = {
   sleepHours: string;
@@ -137,18 +166,12 @@ const emptyWellness: WellnessForm = {
 
 const NAV: NativeNavItem[] = [
   { key: "today", label: "Today", icon: "home-outline" },
-  { key: "trends", label: "Trends", icon: "trending-up-outline" },
+  { key: "progress", label: "Progress", icon: "trending-up-outline" },
   { key: "log", label: "Log", icon: "add-outline" },
-  { key: "water", label: "Water", icon: "water-outline" },
   { key: "coach", label: "Coach", icon: "chatbubble-outline" },
   { key: "messages", label: "Chat", icon: "chatbubble-ellipses-outline" },
 ];
 
-const ATTENDANCE = [
-  { value: "present", label: "Present" },
-  { value: "late", label: "Late" },
-  { value: "absent", label: "Absent" },
-] as const;
 const TRAINING_STATUS = [
   { value: "completed", label: "Done" },
   { value: "in_progress", label: "Partial" },
@@ -159,8 +182,125 @@ const WORKOUT_TYPES = TRAINING_CATEGORIES;
 const CATEGORY_CHOICES = TRAINING_CATEGORIES;
 const RECOVERY_OPTIONS = ["Stretching", "Ice bath", "Mobility", "Physio", "Hydration"];
 
+/**
+ * Web-style dropdown for React Native: a compact field showing the selected
+ * value that opens a modal option list on tap — mirrors the web app's <select>
+ * for workout type / RPM category instead of a long inline list of chips.
+ */
+function Dropdown({
+  value,
+  options,
+  onChange,
+  placeholder = "Select…",
+  title,
+}: {
+  value: string;
+  options: readonly string[];
+  onChange: (v: string) => void;
+  placeholder?: string;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Pressable onPress={() => setOpen(true)} style={styles.dropdownField} accessibilityRole="button">
+        <Text style={[styles.dropdownValue, !value ? { color: colors.inkFaint } : null]} numberOfLines={1}>
+          {value || placeholder}
+        </Text>
+        <Ionicons name="chevron-down" size={16} color={colors.inkMuted} />
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.dropdownBackdrop} onPress={() => setOpen(false)}>
+          <Pressable style={styles.dropdownSheet} onPress={(e) => e.stopPropagation()}>
+            {title ? <Text style={styles.dropdownSheetTitle}>{title}</Text> : null}
+            <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ paddingVertical: 2 }}>
+              {options.map((opt) => {
+                const sel = opt === value;
+                return (
+                  <Pressable
+                    key={opt}
+                    onPress={() => {
+                      onChange(opt);
+                      setOpen(false);
+                    }}
+                    style={[styles.dropdownItem, sel ? styles.dropdownItemOn : null]}
+                  >
+                    <Text style={[styles.dropdownItemText, sel ? styles.dropdownItemTextOn : null]} numberOfLines={2}>
+                      {opt}
+                    </Text>
+                    {sel ? <Ionicons name="checkmark" size={16} color={theme.accentStrong} /> : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
+const WATER_QUICK_ADD = [250, 500, 750];
+const WATER_GOAL_PRESETS = [2000, 2500, 3000, 3500];
+const WATER_REMINDER_KEY = "scp.hydration.reminders";
+const WATER_REMINDER_ID = "scp.hydration.reminder";
+type ReminderMinutes = 60 | 90 | 120;
+
 function dash(v: string | number | null | undefined) {
   return v === null || v === undefined || v === "" ? "-" : String(v);
+}
+
+function displayDash(v: string | number | null | undefined) {
+  return v === null || v === undefined || v === "" ? "--" : String(v);
+}
+
+function wellnessFiveToTen(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "--";
+  return String(Math.max(1, Math.min(10, Math.round(1 + ((value - 1) * 9) / 4))));
+}
+
+// Wellness sliders are shown out of 10 but stored on the 1–5 scale (fractional,
+// so values round-trip cleanly and the readiness engine is unchanged). Mirrors
+// the athlete check-in's wellnessFiveToTen / wellnessTenToFive pair on web.
+function wellnessTenFromStored(value: number | null | undefined): number {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return 5;
+  return Math.max(1, Math.min(10, Math.round(1 + ((Number(value) - 1) * 9) / 4)));
+}
+function wellnessStoredFromTen(value: number): number {
+  const v = Math.max(1, Math.min(10, Number(value) || 5));
+  return 1 + ((v - 1) * 4) / 9;
+}
+
+function initialsOf(name: string | null | undefined): string {
+  const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "AT";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function localDateFromKey(key: string) {
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(year, (month || 1) - 1, day || 1);
+}
+
+function dateKeyFromLocal(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function addDays(key: string, days: number) {
+  const date = localDateFromKey(key);
+  date.setDate(date.getDate() + days);
+  return dateKeyFromLocal(date);
+}
+
+function dayLabel(key: string) {
+  return localDateFromKey(key).toLocaleDateString("en-US", { weekday: "short" });
+}
+
+function dayNumber(key: string) {
+  return String(localDateFromKey(key).getDate());
 }
 
 function bandFor(score: number | null): Band {
@@ -198,7 +338,8 @@ function latest<T>(arr: T[]): T | undefined {
 }
 
 function sectionFromParam(value: string | undefined): Section {
-  if (value === "today" || value === "trends" || value === "log" || value === "water" || value === "coach" || value === "messages") return value;
+  if (value === "today" || value === "progress" || value === "log" || value === "coach" || value === "messages") return value;
+  if (value === "trends" || value === "water" || value === "achievements") return "progress";
   if (value === "chat") return "messages";
   return "today";
 }
@@ -209,31 +350,28 @@ export default function AthleteDashboard() {
   const [section, setSection] = useState<Section>(() => sectionFromParam(params.section));
   const [date, setDate] = useState(today());
   const [card, setCard] = useState<DailyCard | null>(null);
-  const [notes, setNotes] = useState<AthleteNote[]>([]);
   const [coachComments, setCoachComments] = useState<CoachComment[]>([]);
   const [announcements, setAnnouncements] = useState<TeamAnnouncement[]>([]);
   const [coachCount, setCoachCount] = useState<number | null>(null);
   const [rpeEntries, setRpeEntries] = useState<RpeEntry[]>([]);
   const [activity, setActivity] = useState<FeedItem[]>([]);
+  const [achievements, setAchievements] = useState<AchievementsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const [nudgeDismissed, setNudgeDismissed] = useState(false);
   const [messageHeader, setMessageHeader] = useState<MessageHeader>({ title: "Messages", subtitle: "Direct message" });
   const [logFocusSlot, setLogFocusSlot] = useState<SessionSlot | null>(null);
 
   const [wellness, setWellness] = useState<WellnessForm>(emptyWellness);
   const [hrForm, setHrForm] = useState({ wakeHr: "", bedHr: "" });
   const [recoveryModalities, setRecoveryModalities] = useState<string[]>([]);
-  const [noteDraft, setNoteDraft] = useState("");
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const [daily, notesRes, commentsRes, rpeRes, activityRes, annRes] = await Promise.all([
+      const [daily, commentsRes, rpeRes, activityRes, annRes, achievementsRes] = await Promise.all([
         apiJson<DailyResponse>(`/api/athlete/daily?date=${date}`),
-        apiJson<{ notes: AthleteNote[] }>(`/api/athlete/notes?date=${date}`).catch(() => ({ notes: [] })),
         apiJson<{ comments: CoachComment[] }>(`/api/athlete/coach-comments?date=${date}`).catch(() => ({ comments: [] })),
         apiJson<{ entries: RpeEntry[] }>(`/api/athlete/rpe-monitoring?date=${date}`).catch(() => ({ entries: [] })),
         apiJson<{ items: FeedItem[] }>("/api/athlete/activity?limit=30").catch(() => ({ items: [] })),
@@ -241,15 +379,16 @@ export default function AthleteDashboard() {
           announcements: [],
           coachCount: 0,
         })),
+        apiJson<AchievementsResponse>("/api/athlete/achievements?days=60").catch(() => null),
       ]);
 
       setCard(daily.card);
-      setNotes(notesRes.notes ?? []);
       setCoachComments(commentsRes.comments ?? []);
       setRpeEntries(rpeRes.entries ?? []);
       setActivity(activityRes.items ?? []);
       setAnnouncements(annRes.announcements ?? []);
       setCoachCount(annRes.coachCount ?? null);
+      setAchievements(achievementsRes);
       setWellness({
         sleepHours: daily.card.sleep.hours?.toString() ?? "",
         sleepQuality: daily.card.sleep.quality?.toString() ?? "3",
@@ -276,9 +415,11 @@ export default function AthleteDashboard() {
   useEffect(() => {
     if (
       params.section === "today" ||
+      params.section === "progress" ||
       params.section === "trends" ||
       params.section === "log" ||
       params.section === "water" ||
+      params.section === "achievements" ||
       params.section === "coach" ||
       params.section === "messages" ||
       params.section === "chat"
@@ -331,18 +472,11 @@ export default function AthleteDashboard() {
       payload[key] = n;
     }
     if (!("wakeHr" in payload) && !("bedHr" in payload)) {
-      setInfo("Enter your waking and/or before-bed heart rate.");
-      return false;
+      // Heart rate is optional — leaving it blank (e.g. in Quick check-in) is
+      // a normal skip, not an error worth surfacing.
+      return true;
     }
     return postJson("/api/athlete/heart-rate", payload, "Heart rate saved.");
-  }
-
-  async function submitNote() {
-    const body = noteDraft.trim();
-    if (!body) return false;
-    const ok = await postJson("/api/athlete/notes", { date, body }, "Note saved.");
-    if (ok) setNoteDraft("");
-    return ok;
   }
 
   function toggleRecovery(value: string) {
@@ -352,15 +486,18 @@ export default function AthleteDashboard() {
   const readiness = card?.readinessScore ?? null;
   const latestRpe = latest(rpeEntries);
   const isMessages = section === "messages";
-  const showCheckInNudge = Boolean(
-    card && !loading && readiness === null && !nudgeDismissed && date === today() && !isMessages
-  );
   const nav = useMemo(
     () => NAV.map((item) => item.key === "coach" ? { ...item, badge: coachComments.length || undefined } : item),
     [coachComments.length]
   );
 
+  const [rewardGoal, setRewardGoal] = useState<AchievementGoal | null>(null);
+  const [quickCheckInOpen, setQuickCheckInOpen] = useState(false);
+  const blurTargetRef = useRef<View | null>(null);
+
   return (
+    <View style={{ flex: 1 }}>
+    <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
     <AppFrame
       role="athlete"
       title={isMessages ? messageHeader.title : "My day"}
@@ -368,12 +505,25 @@ export default function AthleteDashboard() {
       nav={nav}
       activeKey={section}
       onNavigate={(key) => setSection(key as Section)}
-      headerAction={isMessages ? undefined : <DatePickerPill value={date} onChange={setDate} />}
+      renderHeader={
+        isMessages
+          ? undefined
+          : ({ unread, openNotifications }) => (
+              <AthleteHomeHeader
+                card={card}
+                date={date}
+                unread={unread}
+                onDateChange={setDate}
+                onNotifications={openNotifications}
+              />
+            )
+      }
     >
       {isMessages ? (
         <AthleteMessagesPanel initialCoachId={requestedCoachId} onHeaderChange={setMessageHeader} />
       ) : (
         <ScrollView
+          key={section}
           contentContainerStyle={styles.content}
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={theme.accent} />}
         >
@@ -383,9 +533,7 @@ export default function AthleteDashboard() {
             <ActivityIndicator color={theme.accentStrong} style={{ marginTop: 40 }} />
           ) : null}
 
-          {showCheckInNudge ? (
-            <CheckInNudge onCheckIn={() => setSection("log")} onDismiss={() => setNudgeDismissed(true)} />
-          ) : null}
+          {section === "today" ? <DateHistoryStrip value={date} onChange={setDate} /> : null}
 
           {!loading && section === "today" && card ? (
             <TodaySection
@@ -399,36 +547,33 @@ export default function AthleteDashboard() {
                 setLogFocusSlot(slot);
                 setSection("log");
               }}
+              onQuickCheckIn={() => setQuickCheckInOpen(true)}
             />
           ) : null}
 
-          {!loading && section === "trends" ? <TrendsSection /> : null}
+          {!loading && section === "progress" ? (
+            <ProgressSection
+              date={date}
+              achievements={achievements}
+              loading={loading}
+              onCheckIn={() => setSection("log")}
+              onOpenLog={() => setSection("log")}
+              onOpenReward={setRewardGoal}
+            />
+          ) : null}
 
           {!loading && section === "log" && card ? (
             <SessionLogSection
               card={card}
               wellness={wellness}
               setWellness={setWellness}
-              hrForm={hrForm}
-              setHrForm={setHrForm}
               recoveryModalities={recoveryModalities}
               toggleRecovery={toggleRecovery}
-              noteDraft={noteDraft}
-              setNoteDraft={setNoteDraft}
-              notes={notes}
               submitWellness={submitWellness}
-              submitHeartRate={submitHeartRate}
-              submitNote={submitNote}
               postJson={postJson}
               date={date}
               focusedSlot={logFocusSlot}
             />
-          ) : null}
-
-          {!loading && section === "water" ? (
-            <View style={styles.stack}>
-              <HydrationCard date={date} />
-            </View>
           ) : null}
 
           {!loading && section === "coach" ? (
@@ -442,28 +587,499 @@ export default function AthleteDashboard() {
         </ScrollView>
       )}
     </AppFrame>
+    </BlurTargetView>
+      {rewardGoal ? (
+        <RewardOverlay goal={rewardGoal} onClose={() => setRewardGoal(null)} blurTarget={blurTargetRef} />
+      ) : null}
+      <QuickCheckInModal
+        open={quickCheckInOpen}
+        onClose={() => setQuickCheckInOpen(false)}
+        wellness={wellness}
+        setWellness={setWellness}
+        hrForm={hrForm}
+        setHrForm={setHrForm}
+        onSave={async () => {
+          await submitWellness();
+          await submitHeartRate();
+          setQuickCheckInOpen(false);
+        }}
+      />
+    </View>
   );
 }
 
-function CheckInNudge({ onCheckIn, onDismiss }: { onCheckIn: () => void; onDismiss: () => void }) {
+function AthleteHomeHeader({
+  card,
+  date,
+  unread,
+  onDateChange,
+  onNotifications,
+}: {
+  card: DailyCard | null;
+  date: string;
+  unread: number;
+  onDateChange: (value: string) => void;
+  onNotifications: () => void;
+}) {
+  const initials = initialsOf(card?.name);
+
   return (
-    <View style={styles.checkInNudge}>
-      <View style={styles.checkInIcon}>
-        <Ionicons name="flash-outline" size={15} color={theme.accentStrong} />
+    <View style={styles.todayHeader}>
+      <View style={styles.todayHeaderTop}>
+        <ProfileMenu theme={theme} size={50} textSize={19} style={styles.todayAvatar} />
+        <View style={styles.todayGreeting}>
+          <Text style={[styles.todayRole, { color: theme.accentStrong }]}>Athlete</Text>
+          <Text style={styles.todayGreetingLine}>Good morning,</Text>
+          <Text style={styles.todayGreetingName}>{initials} 👋</Text>
+        </View>
+        <View style={styles.todayHeaderActions}>
+          <HeaderIconButton icon="notifications-outline" onPress={onNotifications} badge={unread} />
+          <DatePickerPill value={date} onChange={onDateChange} iconOnly />
+        </View>
       </View>
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={styles.checkInTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82}>
-          {"You haven't checked in today"}
-        </Text>
-        <Text style={styles.checkInSub}>Takes about 30 seconds.</Text>
+    </View>
+  );
+}
+
+function HeaderIconButton({
+  icon,
+  onPress,
+  badge,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  onPress: () => void;
+  badge?: number;
+}) {
+  return (
+    <Pressable onPress={onPress} hitSlop={8} style={({ pressed }) => [styles.todayHeaderButton, pressed ? { opacity: 0.82 } : null]}>
+      <Ionicons name={icon} size={24} color={colors.ink} />
+      {badge ? (
+        <View style={styles.todayHeaderBadge}>
+          <Text style={styles.todayHeaderBadgeText}>{badge > 9 ? "9+" : badge}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function DateHistoryStrip({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const days = useMemo(() => Array.from({ length: 8 }, (_, index) => addDays(value, index - 7)), [value]);
+  const todayKey = today();
+
+  return (
+    <Card style={styles.dateHistoryCard}>
+      <View style={styles.dateHistoryTop}>
+        <View style={styles.todayChip}>
+          <Text style={styles.todayChipText}>Today</Text>
+        </View>
+        <Text style={styles.dateHistoryValue}>{value}</Text>
       </View>
-      <Pressable onPress={onCheckIn} style={styles.checkInButton}>
-        <Text style={styles.checkInButtonText}>Check in</Text>
-      </Pressable>
-      <Pressable onPress={onDismiss} hitSlop={10} style={styles.checkInClose} accessibilityLabel="Dismiss">
-        <Ionicons name="close" size={16} color={colors.inkFaint} />
+      <View style={styles.dateHistoryRow}>
+        {days.map((key) => {
+          const selected = key === value;
+          const isToday = key === todayKey;
+          return (
+            <Pressable
+              key={key}
+              onPress={() => onChange(key)}
+              style={[styles.dateHistoryDay, selected ? styles.dateHistoryDaySelected : null]}
+              accessibilityRole="button"
+            >
+              <Text style={[styles.dateHistoryDow, selected ? styles.dateHistorySelectedText : null]}>{dayLabel(key)}</Text>
+              <Text style={[styles.dateHistoryNum, selected ? styles.dateHistorySelectedText : null]}>{dayNumber(key)}</Text>
+              <View style={[styles.dateHistoryDot, isToday || selected ? styles.dateHistoryDotActive : null]} />
+            </Pressable>
+          );
+        })}
+      </View>
+    </Card>
+  );
+}
+
+type ProgressTab = "goals" | "water" | "trends";
+
+function ProgressSection({
+  date,
+  achievements,
+  loading,
+  onCheckIn,
+  onOpenLog,
+  onOpenReward,
+}: {
+  date: string;
+  achievements: AchievementsResponse | null;
+  loading: boolean;
+  onCheckIn: () => void;
+  onOpenLog: () => void;
+  onOpenReward: (goal: AchievementGoal) => void;
+}) {
+  const [tab, setTab] = useState<ProgressTab>("goals");
+
+  return (
+    <View style={styles.stack}>
+      <View style={styles.progressTabs}>
+        {[
+          { key: "goals", label: "Goals", icon: "trophy-outline" },
+          { key: "water", label: "Water", icon: "water-outline" },
+          { key: "trends", label: "Trends", icon: "analytics-outline" },
+        ].map((item) => {
+          const on = tab === item.key;
+          return (
+            <Pressable
+              key={item.key}
+              onPress={() => setTab(item.key as ProgressTab)}
+              style={[styles.progressTab, on ? styles.progressTabOn : null]}
+            >
+              <Ionicons name={item.icon as keyof typeof Ionicons.glyphMap} size={11} color={on ? theme.accentStrong : colors.inkMuted} />
+              <Text style={[styles.progressTabText, on ? styles.progressTabTextOn : null]}>{item.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {tab === "goals" ? (
+        <AchievementsPanel
+          data={achievements}
+          loading={loading}
+          onCheckIn={onCheckIn}
+          onOpenHydration={() => setTab("water")}
+          onOpenLog={onOpenLog}
+          onOpenReward={onOpenReward}
+        />
+      ) : null}
+      {tab === "trends" ? <TrendsSection /> : null}
+      {tab === "water" ? <HydrationCard date={date} /> : null}
+    </View>
+  );
+}
+
+function achievementIconName(key: AchievementGoalKey): keyof typeof Ionicons.glyphMap {
+  if (key === "check_in") return "flash-outline";
+  if (key === "training") return "barbell-outline";
+  if (key === "hydration") return "water-outline";
+  return "trophy-outline";
+}
+
+function achievementActionLabel(key: AchievementGoalKey): string {
+  if (key === "check_in") return "Check in";
+  if (key === "hydration") return "Water";
+  return "Open log";
+}
+
+function dayCount(count: number) {
+  return `${count} day${count === 1 ? "" : "s"}`;
+}
+
+function AchievementsPanel({
+  data,
+  loading,
+  onCheckIn,
+  onOpenHydration,
+  onOpenLog,
+  onOpenReward,
+}: {
+  data: AchievementsResponse | null;
+  loading: boolean;
+  onCheckIn: () => void;
+  onOpenHydration: () => void;
+  onOpenLog: () => void;
+  onOpenReward: (goal: AchievementGoal) => void;
+}) {
+
+  if (loading && !data) {
+    return (
+      <View style={styles.stack}>
+        <Card style={styles.achievementsHero}>
+          <View style={styles.skeletonLineShort} />
+          <View style={styles.skeletonLine} />
+          <View style={styles.skeletonBar} />
+        </Card>
+        <View style={styles.achievementSkeleton} />
+        <View style={styles.achievementSkeleton} />
+      </View>
+    );
+  }
+
+  if (!data) {
+    return (
+      <Card style={styles.achievementsUnavailable}>
+        <Ionicons name="trophy-outline" size={22} color={colors.inkFaint} />
+        <Text style={styles.achievementTitle}>Achievements unavailable</Text>
+        <Text style={styles.achievementDescription}>Try again after your next check-in or training log.</Text>
+      </Card>
+    );
+  }
+
+  const totalGoals = data.goals.length;
+  const unlockedPct = totalGoals ? Math.round((data.summary.unlocked / totalGoals) * 100) : 0;
+  const best = data.summary.bestStreak;
+  const next = data.summary.nextGoal;
+  const summaryText = `${data.summary.unlocked} of ${totalGoals} goals unlocked${
+    next ? ` - ${next.remaining} ${next.remaining === 1 ? "day" : "days"} to ${next.title}` : ""
+  }`;
+
+  return (
+    <View style={styles.stack}>
+      <Card style={styles.achievementsHero}>
+        <View style={styles.achievementHeroTop}>
+          <View style={styles.achievementHeroIcon}>
+            <Ionicons name="trophy-outline" size={15} color={theme.accentStrong} />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.achievementEyebrow}>Achievements</Text>
+            <Text style={styles.achievementHeroTitle}>Goal streaks</Text>
+            <Text style={styles.achievementHeroSub} numberOfLines={1}>{summaryText}</Text>
+          </View>
+        </View>
+        <View style={styles.achievementProgressTrack}>
+          <View style={[styles.achievementProgressFill, { width: `${unlockedPct}%` }]} />
+        </View>
+        <View style={styles.achievementHeroStats}>
+          <View style={styles.achievementHeroStat}>
+            <Text style={styles.achievementMetricLabel}>Best streak</Text>
+            <Text style={styles.achievementHeroMetric}>{best ? dayCount(best.days) : "0 days"}</Text>
+            <Text style={styles.achievementMetricSub} numberOfLines={1}>{best?.title ?? "No streak yet"}</Text>
+          </View>
+          <View style={[styles.achievementHeroStat, styles.achievementHeroStatRight]}>
+            <Text style={styles.achievementMetricLabel}>Window</Text>
+            <Text style={styles.achievementHeroMetric}>{data.days} days</Text>
+            <Text style={styles.achievementMetricSub} numberOfLines={1}>Recent goal history</Text>
+          </View>
+        </View>
+      </Card>
+
+      {data.goals.map((goal) => (
+        <AchievementGoalCard
+          key={goal.key}
+          goal={goal}
+          onAction={goal.key === "check_in" ? onCheckIn : goal.key === "hydration" ? onOpenHydration : onOpenLog}
+          onOpenReward={() => onOpenReward(goal)}
+        />
+      ))}
+    </View>
+  );
+}
+
+function AchievementGoalCard({
+  goal,
+  onAction,
+  onOpenReward,
+}: {
+  goal: AchievementGoal;
+  onAction: () => void;
+  onOpenReward: () => void;
+}) {
+  const remaining = Math.max(0, goal.target - goal.currentStreak);
+  const recent = goal.history.slice(-14);
+  const iconStyle =
+    goal.key === "hydration"
+      ? styles.achievementIconHydration
+      : goal.key === "training"
+        ? styles.achievementIconTraining
+        : styles.achievementIconDefault;
+  const iconColor = goal.key === "hydration" ? "#81936f" : goal.key === "training" ? "#6f6655" : theme.accentStrong;
+
+  return (
+    <Card style={styles.achievementCard}>
+      <View style={styles.achievementCardTop}>
+        <View style={[styles.achievementIcon, iconStyle]}>
+          <Ionicons name={achievementIconName(goal.key)} size={14} color={iconColor} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={styles.achievementTitleRow}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.achievementTitle} numberOfLines={1}>{goal.title}</Text>
+              <Text style={styles.achievementDescription} numberOfLines={1}>{goal.description}</Text>
+            </View>
+            <View style={[styles.achievementBadge, goal.achieved ? styles.achievementBadgeUnlocked : styles.achievementBadgeLeft]}>
+              <Text style={[styles.achievementBadgeText, goal.achieved ? styles.achievementBadgeTextUnlocked : styles.achievementBadgeTextLeft]}>
+                {goal.achieved ? "Unlocked" : `${remaining} left`}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.achievementMetrics}>
+            <View style={styles.achievementMetric}>
+              <Text style={styles.achievementMetricLabel}>{goal.metricLabel}</Text>
+              <Text style={styles.achievementMetricValue}>{goal.currentStreak}</Text>
+            </View>
+            <View style={styles.achievementMetric}>
+              <Text style={styles.achievementMetricLabel}>Count</Text>
+              <Text style={styles.achievementMetricValue}>{goal.completedDays}</Text>
+            </View>
+            <View style={[styles.achievementMetric, { alignItems: "flex-end" }]}>
+              <Text style={styles.achievementMetricLabel}>Longest</Text>
+              <Text style={styles.achievementMetricLongest}>{dayCount(goal.longestStreak)}</Text>
+            </View>
+          </View>
+
+          <View style={styles.achievementHistory} accessibilityLabel={`${goal.title} recent history`}>
+            {recent.map((day) => (
+              <View
+                key={day.date}
+                style={[styles.achievementHistoryCell, day.met ? styles.achievementHistoryCellMet : null]}
+              >
+                {day.met ? <Ionicons name="checkmark" size={11} color="#fff" /> : null}
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.achievementActions}>
+            <Pressable onPress={onAction} style={styles.achievementActionSecondary}>
+              <Text style={styles.achievementActionSecondaryText}>{achievementActionLabel(goal.key)}</Text>
+            </Pressable>
+            <Pressable
+              onPress={onOpenReward}
+              disabled={!goal.reward.unlocked}
+              style={[styles.achievementActionPrimary, !goal.reward.unlocked ? styles.achievementActionDisabled : null]}
+            >
+              <Text style={[styles.achievementActionPrimaryText, !goal.reward.unlocked ? styles.achievementActionDisabledText : null]}>
+                {goal.reward.unlocked ? "Open reward" : "Reward locked"}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Card>
+  );
+}
+
+function RewardOverlay({
+  goal,
+  onClose,
+  blurTarget,
+}: {
+  goal: AchievementGoal;
+  onClose: () => void;
+  blurTarget: React.RefObject<View | null>;
+}) {
+  // Not a Modal, so wire the hardware back button to dismiss it.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [onClose]);
+
+  return (
+    // Rendered at the screen root (NOT a Modal). BlurView blurs the wrapped
+    // BlurTargetView (the app) via blurTarget — the SDK 56 API.
+    <View style={styles.rewardOverlay}>
+      <BlurView blurTarget={blurTarget} blurMethod="dimezisBlurView" intensity={28} tint="light" style={StyleSheet.absoluteFill} />
+      <Pressable style={styles.rewardBackdrop} onPress={onClose}>
+        <Pressable style={styles.rewardSheet} onPress={(event) => event.stopPropagation()}>
+          <View style={styles.rewardHeader}>
+            <View style={styles.achievementHeroIcon}>
+              <Ionicons name="trophy-outline" size={18} color={theme.accentStrong} />
+            </View>
+            <Pressable onPress={onClose} style={styles.rewardClose}>
+              <Ionicons name="close" size={18} color={colors.inkMuted} />
+            </Pressable>
+          </View>
+          <Text style={styles.achievementEyebrow}>Reward unlocked</Text>
+          <Text style={styles.rewardTitle}>{goal.reward.title}</Text>
+          <Text style={styles.rewardDescription}>{goal.reward.description}</Text>
+          <View style={styles.rewardBadge}>
+            <Text style={styles.rewardBadgeText}>{goal.reward.badgeLabel}</Text>
+            <Text style={styles.rewardBadgeNumber}>{goal.currentStreak}</Text>
+            <Text style={styles.rewardBadgeSub}>{goal.title}</Text>
+          </View>
+          <Pressable onPress={onClose} style={styles.rewardDoneBtn}>
+            <Text style={styles.rewardDoneText}>Done</Text>
+          </Pressable>
+        </Pressable>
       </Pressable>
     </View>
+  );
+}
+
+/**
+ * Quick check-in — captures Sleep hours + Sleep quality plus the twice-daily
+ * resting heart rate. Everything else (RPE, soreness, fatigue, mood) stays in
+ * the full per-session Log form instead — mirrors the web app's popup.
+ */
+function QuickCheckInModal({
+  open,
+  onClose,
+  wellness,
+  setWellness,
+  hrForm,
+  setHrForm,
+  onSave,
+}: {
+  open: boolean;
+  onClose: () => void;
+  wellness: WellnessForm;
+  setWellness: (updater: (prev: WellnessForm) => WellnessForm) => void;
+  hrForm: { wakeHr: string; bedHr: string };
+  setHrForm: (updater: (prev: { wakeHr: string; bedHr: string }) => { wakeHr: string; bedHr: string }) => void;
+  onSave: () => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await onSave();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.quickCheckInBackdrop} onPress={onClose}>
+        <Pressable style={styles.quickCheckInSheet} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.quickCheckInHandle} />
+          <View style={styles.quickCheckInHeader}>
+            <Text style={styles.quickCheckInTitle}>Quick check-in</Text>
+            <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" hitSlop={8} style={styles.quickCheckInClose}>
+              <Ionicons name="close" size={18} color={colors.inkMuted} />
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={styles.quickCheckInBody}>
+            <Text style={styles.inputLabel}>Sleep hours</Text>
+            <TextField
+              value={wellness.sleepHours}
+              onChangeText={(v) => setWellness((s) => ({ ...s, sleepHours: v }))}
+              placeholder="e.g. 8"
+              keyboardType="decimal-pad"
+              style={styles.compactField}
+            />
+            <View style={{ height: 12 }} />
+            <CompactScale
+              label="Sleep quality"
+              value={wellnessTenFromStored(Number(wellness.sleepQuality))}
+              onChange={(v) => setWellness((s) => ({ ...s, sleepQuality: String(wellnessStoredFromTen(v)) }))}
+              lowHint="Poor"
+              highHint="Great"
+              min={1}
+              max={10}
+            />
+            <View style={{ height: 16 }} />
+            <Text style={styles.inputLabel}>Waking HR</Text>
+            <TextField
+              value={hrForm.wakeHr}
+              onChangeText={(v) => setHrForm((s) => ({ ...s, wakeHr: v }))}
+              placeholder="bpm"
+              keyboardType="number-pad"
+              style={styles.compactField}
+            />
+            <View style={{ height: 12 }} />
+            <Text style={styles.inputLabel}>Before-bed HR</Text>
+            <TextField
+              value={hrForm.bedHr}
+              onChangeText={(v) => setHrForm((s) => ({ ...s, bedHr: v }))}
+              placeholder="bpm"
+              keyboardType="number-pad"
+              style={styles.compactField}
+            />
+            <View style={{ height: 16 }} />
+            <CompactButton label="Save check-in" onPress={handleSave} disabled={saving} successLabel="Saved" />
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -484,6 +1100,7 @@ function TodaySection({
   onRefresh,
   onGoLog,
   onOpenSlot,
+  onQuickCheckIn,
 }: {
   card: DailyCard;
   readiness: number | null;
@@ -492,6 +1109,7 @@ function TodaySection({
   onRefresh: () => Promise<void>;
   onGoLog: () => void;
   onOpenSlot: (slot: SessionSlot) => void;
+  onQuickCheckIn: () => void;
 }) {
   const guidance = readinessGuidance(readiness);
   const band = bandFor(readiness);
@@ -517,28 +1135,32 @@ function TodaySection({
         end={{ x: 1, y: 1 }}
         style={styles.heroCard}
       >
-        <Ring score={readiness} size={150} stroke={12} label="readiness" />
-        <Chip band={band} style={{ marginTop: 12 }}>{guidance.word}</Chip>
-        <Text style={styles.heroText}>{guidance.line}</Text>
-        <Pressable onPress={onGoLog} style={[styles.heroButton, heroButtonStyle]}>
-          <Ionicons name="add" size={16} color={heroButtonIcon} />
-          <Text style={[styles.heroButtonText, heroButtonTextStyle]}>{readiness === null ? "Complete check-in" : "Update check-in"}</Text>
-        </Pressable>
+        <View style={styles.heroRingCol}>
+          <Ring score={readiness} size={78} stroke={7} label="readiness" />
+        </View>
+        <View style={styles.heroCopy}>
+          <Chip band={band}>{guidance.word}</Chip>
+          <Text style={styles.heroText}>{guidance.line}</Text>
+          <Pressable onPress={onQuickCheckIn} style={[styles.heroButton, heroButtonStyle]}>
+            <Ionicons name="add" size={16} color={heroButtonIcon} />
+            <Text style={[styles.heroButtonText, heroButtonTextStyle]}>{readiness === null ? "Quick check-in" : "Update check-in"}</Text>
+          </Pressable>
+        </View>
       </LinearGradient>
 
       <BandLegend />
 
       <View style={styles.statGrid}>
-        <StatTile label="Sleep" value={dash(card.sleep.hours)} sub={`qual ${dash(card.sleep.quality)}/5`} icon="moon-outline" />
-        <StatTile label="Recovery" value={dash(card.recovery.score)} sub={card.recovery.status ?? "-"} icon="pulse-outline" />
-        <StatTile label="Load" value={dash(latestRpe?.calculatedTrainingLoad)} sub={latestRpe ? `RPE ${latestRpe.rpe}` : "-"} icon="flame-outline" />
+        <StatTile label="Sleep" value={displayDash(card.sleep.hours)} sub={`qual ${wellnessFiveToTen(card.sleep.quality)}/10`} icon="moon-outline" onPress={onGoLog} />
+        <StatTile label="Recovery" value={displayDash(card.recovery.score)} sub={card.recovery.status ?? "--"} icon="pulse-outline" onPress={onGoLog} />
+        <StatTile label="Load" value={displayDash(latestRpe?.calculatedTrainingLoad)} sub={latestRpe ? `RPM ${latestRpe.rpe}` : "--"} icon="bag-outline" onPress={onGoLog} />
       </View>
 
       <Card>
-        <CardTitle>{"Today's plan"}</CardTitle>
-        <View style={styles.planGrid}>
+        <CardTitle>Training summary</CardTitle>
+        <View style={styles.trainingSummaryList}>
           {SESSION_SLOTS.map((slot) => (
-            <SlotPill
+            <TrainingSummaryRow
               key={slot}
               slot={slot}
               session={card.sessions[slot]}
@@ -560,7 +1182,7 @@ function TodaySection({
             <View style={styles.loadRow}>
               <Chip band={latestRpe.riskFlag}>{latestRpe.riskFlag}</Chip>
               <Text style={styles.loadValue}>{latestRpe.calculatedTrainingLoad}</Text>
-              <Text style={styles.loadMeta}>load · RPE {latestRpe.rpe} · {SLOT_LABEL[latestRpe.sessionType]}</Text>
+              <Text style={styles.loadMeta}>load · RPM {latestRpe.rpe} · {SLOT_LABEL[latestRpe.sessionType]}</Text>
             </View>
             <Text style={styles.miniMuted}>
               {latestRpe.trainingCategory} · {latestRpe.plannedIntensityPercent}% intensity
@@ -574,13 +1196,13 @@ function TodaySection({
             ) : null}
           </>
         ) : (
-          <Muted>No RPE logged today.</Muted>
+          <Muted>No RPM logged today.</Muted>
         )}
         <View style={{ marginTop: 12 }}>
           <PrimaryButton
-            label={latestRpe ? "Edit / add a session" : "Log RPE"}
+            label={latestRpe ? "Edit in Log" : "Log session"}
             onPress={onGoLog}
-            accent={theme.accent}
+            accent="#ff7e1a"
             accentInk={theme.accentInk}
           />
         </View>
@@ -635,16 +1257,39 @@ function BandLegend() {
   );
 }
 
-function StatTile({ label, value, sub, icon }: { label: string; value: string; sub: string; icon: keyof typeof Ionicons.glyphMap }) {
+function StatTile({
+  label,
+  value,
+  sub,
+  icon,
+  onPress,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  onPress?: () => void;
+}) {
+  const tint = label === "Sleep" ? "#fbf7ff" : label === "Recovery" ? "#f5fbf8" : "#fff7f1";
   return (
-    <View style={styles.statTile}>
+    <Pressable
+      onPress={onPress}
+      disabled={!onPress}
+      accessibilityRole={onPress ? "button" : undefined}
+      android_ripple={onPress ? { color: "rgba(0,0,0,0.06)" } : undefined}
+      style={({ pressed }) => [
+        styles.statTile,
+        { backgroundColor: tint },
+        onPress && pressed ? { opacity: 0.7 } : null,
+      ]}
+    >
       <View style={styles.tileLabelRow}>
         <Ionicons name={icon} size={13} color={colors.inkFaint} />
         <Text style={styles.tileLabel}>{label}</Text>
       </View>
       <Text style={styles.tileValue}>{value}</Text>
       <Text style={styles.tileSub}>{sub}</Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -664,7 +1309,7 @@ function SlotPill({
   const status = isRestDay ? "rest" : session.status;
   const done = Boolean(rpe || sessionComplete(session));
   const title = isRestDay ? "Rest day" : session.workoutType ?? session.type ?? rpe?.trainingCategory ?? "Open";
-  const sub = isRestDay ? "Recovery available" : rpe ? `Done - RPE ${rpe.rpe}` : status ? status.replace("_", " ") : "Open";
+  const sub = isRestDay ? "Recovery available" : rpe ? `Done - RPM ${rpe.rpe}` : status ? status.replace("_", " ") : "Open";
   return (
     <Pressable onPress={onPress} style={[styles.slotPill, done ? styles.slotPillDone : null]} accessibilityRole="button">
       <Text style={styles.tileLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
@@ -678,6 +1323,69 @@ function SlotPill({
   );
 }
 
+function TrainingSummaryRow({
+  slot,
+  session,
+  rpe,
+  isRestDay,
+  onPress,
+}: {
+  slot: SessionSlot;
+  session: DailySession;
+  rpe?: RpeEntry | null;
+  isRestDay: boolean;
+  onPress: () => void;
+}) {
+  const status = isRestDay ? "rest" : session.status;
+  const done = Boolean(rpe || sessionComplete(session));
+  const title = isRestDay ? "Rest day" : session.workoutType ?? session.type ?? rpe?.trainingCategory ?? "Open";
+  const sub = isRestDay ? "Recovery available" : rpe ? `Done - RPM ${rpe.rpe}` : status ? status.replace("_", " ") : "Open";
+  const isPm = slot === "PM";
+  const label = slot === "AFT" ? "AFTERNOON" : SLOT_LABEL[slot].toUpperCase();
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.trainingSummaryRow,
+        done ? styles.trainingSummaryRowDone : null,
+        pressed ? { opacity: 0.86 } : null,
+      ]}
+      accessibilityRole="button"
+    >
+      <View style={[styles.trainingSummaryIcon, isPm ? styles.trainingSummaryIconPm : null]}>
+        <Ionicons name={isPm ? "moon-outline" : "sunny-outline"} size={20} color={isPm ? "#5670ad" : "#e97912"} />
+        <Text style={[styles.trainingSummaryIconText, isPm ? styles.trainingSummaryIconTextPm : null]}>{slot}</Text>
+      </View>
+      <View style={styles.trainingSummaryCopy}>
+        <Text style={styles.trainingSummaryTitle} numberOfLines={1}>
+          {title}
+        </Text>
+        <Text style={styles.trainingSummarySub} numberOfLines={1}>
+          {sub}
+        </Text>
+        <Text style={styles.trainingSummarySlot} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+      <Text style={styles.trainingSummaryAction}>{done ? "Edit log" : "Open log"}</Text>
+      <Ionicons name="chevron-forward" size={18} color={colors.inkMuted} />
+    </Pressable>
+  );
+}
+
+const MAX_SCALE_METER_SEGMENTS = 10;
+
+/**
+ * Bar count for the meter — one bar per value for small ranges (e.g. a 1-10
+ * RPM scale gets 10 bars, each an exact integer step) so every bar maps to a
+ * distinct reachable value; capped at 10 for wide ranges (e.g. 0-100%, where
+ * each bar represents ~10 units).
+ */
+function scaleSegmentCount(min: number, max: number): number {
+  return Math.max(1, Math.min(MAX_SCALE_METER_SEGMENTS, Math.round(max - min) + 1));
+}
+
 function CompactScale({
   label,
   value,
@@ -686,6 +1394,7 @@ function CompactScale({
   highHint,
   min = 1,
   max = 5,
+  step,
 }: {
   label: string;
   value: number | null;
@@ -694,11 +1403,21 @@ function CompactScale({
   highHint: string;
   min?: number;
   max?: number;
+  /** Explicit increment between bars (e.g. 5) — overrides the default 10-bar cap. */
+  step?: number;
 }) {
-  const [width, setWidth] = useState(1);
   const fallback = Math.round((min + max) / 2);
   const current = Math.max(min, Math.min(max, Number.isFinite(Number(value)) ? Number(value) : fallback));
-  const pct = max === min ? 0 : ((current - min) / (max - min)) * 100;
+  const segments = step ? Math.round((max - min) / step) + 1 : scaleSegmentCount(min, max);
+  const steps = Math.max(1, segments - 1);
+  // Bar i (0-indexed) represents the value at that step, so filling the
+  // 1st bar sets/shows the minimum value — not one step above it.
+  const filled = max === min ? 1 : Math.round(((current - min) / (max - min)) * steps) + 1;
+
+  function setSegment(i: number) {
+    const raw = min + (i / steps) * (max - min);
+    onChange(Math.max(min, Math.min(max, Math.round(raw))));
+  }
 
   return (
     <View>
@@ -706,20 +1425,19 @@ function CompactScale({
         <Text style={styles.scaleLabel}>{label}</Text>
         <Text style={styles.scaleValue}>{current}</Text>
       </View>
-      <Pressable
-        onLayout={(e) => setWidth(Math.max(1, e.nativeEvent.layout.width))}
-        onPress={(e) => {
-          const next = Math.max(min, Math.min(max, Math.round((e.nativeEvent.locationX / width) * (max - min)) + min));
-          onChange(next);
-        }}
-        style={styles.scaleTrack}
-        accessibilityRole="adjustable"
-        accessibilityLabel={label}
-      >
-        <View style={styles.scaleBase} />
-        <View style={[styles.scaleFill, { width: `${pct}%` }]} />
-        <View style={[styles.scaleThumb, { left: `${pct}%` }]} />
-      </Pressable>
+      <View style={styles.meterRow} accessibilityRole="adjustable" accessibilityLabel={label}>
+        {Array.from({ length: segments }).map((_, i) => (
+          <Pressable
+            key={i}
+            onPress={() => setSegment(i)}
+            style={[
+              styles.meterBar,
+              { height: `${34 + (i * 66) / Math.max(1, segments - 1)}%` },
+              i < filled ? styles.meterBarFilled : styles.meterBarEmpty,
+            ]}
+          />
+        ))}
+      </View>
       <View style={styles.scaleHints}>
         <Text style={styles.scaleHint}>{lowHint}</Text>
         <Text style={styles.scaleHint}>{highHint}</Text>
@@ -728,7 +1446,498 @@ function CompactScale({
   );
 }
 
+function parseReminderMinutes(value: unknown): ReminderMinutes {
+  return value === 60 || value === 90 || value === 120 ? value : 120;
+}
+
+async function readHydrationReminderSettings(): Promise<{ enabled: boolean; minutes: ReminderMinutes }> {
+  try {
+    const parsed = JSON.parse((await AsyncStorage.getItem(WATER_REMINDER_KEY)) ?? "{}") as {
+      enabled?: boolean;
+      minutes?: number;
+    };
+    return { enabled: Boolean(parsed.enabled), minutes: parseReminderMinutes(parsed.minutes) };
+  } catch {
+    return { enabled: false, minutes: 120 };
+  }
+}
+
+async function syncHydrationReminder(enabled: boolean, minutes: ReminderMinutes, remainingMl: number) {
+  await Notifications.cancelScheduledNotificationAsync(WATER_REMINDER_ID).catch(() => undefined);
+  if (!enabled || remainingMl <= 0) return;
+  await Notifications.scheduleNotificationAsync({
+    identifier: WATER_REMINDER_ID,
+    content: {
+      title: "Hydration reminder",
+      body: `${litres(remainingMl)} L remaining for today's water goal.`,
+    },
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+      seconds: minutes * 60,
+      repeats: true,
+      channelId: "hydration",
+    },
+  });
+}
+
 function HydrationCard({ date }: { date: string }) {
+  const [day, setDay] = useState<WaterDay | null>(null);
+  const [historyDays, setHistoryDays] = useState<7 | 30>(7);
+  const [history, setHistory] = useState<WaterSeries | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [goalDraft, setGoalDraft] = useState("");
+  const [amountDraft, setAmountDraft] = useState("");
+  const [goalError, setGoalError] = useState<string | null>(null);
+  const [amountError, setAmountError] = useState<string | null>(null);
+  const [remindersEnabled, setRemindersEnabled] = useState(false);
+  const [reminderMinutes, setReminderMinutes] = useState<ReminderMinutes>(120);
+  const [notificationPermission, setNotificationPermission] = useState("undetermined");
+  const [reminderError, setReminderError] = useState<string | null>(null);
+  const [reminderReady, setReminderReady] = useState(false);
+
+  const loadDay = useCallback(async () => {
+    try {
+      const next = await apiJson<WaterDay>(`/api/athlete/water?date=${date}`);
+      setDay(next);
+      setGoalDraft(String(next.goalMl));
+    } catch {
+      // Keep last known day if the optional hydration fetch fails.
+    }
+  }, [date]);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      setHistory(await apiJson<WaterSeries>(`/api/athlete/analytics/water?days=${historyDays}`));
+    } catch {
+      // Keep last known chart/history if analytics fails.
+    }
+  }, [historyDays]);
+
+  useEffect(() => {
+    void loadDay();
+  }, [loadDay]);
+
+  useEffect(() => {
+    void loadHistory();
+  }, [loadHistory]);
+
+  useEffect(() => {
+    let active = true;
+    async function hydrateReminderState() {
+      if (Platform.OS === "android") {
+        await Notifications.setNotificationChannelAsync("hydration", {
+          name: "Hydration",
+          importance: Notifications.AndroidImportance.DEFAULT,
+        }).catch(() => undefined);
+      }
+      const [settings, permission] = await Promise.all([
+        readHydrationReminderSettings(),
+        Notifications.getPermissionsAsync().catch(() => null),
+      ]);
+      if (!active) return;
+      setRemindersEnabled(settings.enabled);
+      setReminderMinutes(settings.minutes);
+      setNotificationPermission(permission?.status ?? "unsupported");
+      setReminderReady(true);
+    }
+    void hydrateReminderState();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const total = day?.totalMl ?? 0;
+  const goal = day?.goalMl ?? 3000;
+  const remaining = Math.max(0, goal - total);
+  const pct = goal > 0 ? Math.min(100, Math.round((total / goal) * 100)) : 0;
+  const reached = total >= goal;
+  const historyGoal = history?.goalMl ?? goal;
+  const achievedDays = useMemo(
+    () => (history?.series ?? []).filter((point) => (point.totalMl ?? 0) >= historyGoal).length,
+    [history?.series, historyGoal]
+  );
+
+  useEffect(() => {
+    if (!reminderReady) return;
+    void AsyncStorage.setItem(
+      WATER_REMINDER_KEY,
+      JSON.stringify({ enabled: remindersEnabled, minutes: reminderMinutes })
+    );
+    if (notificationPermission === "granted") {
+      void syncHydrationReminder(remindersEnabled, reminderMinutes, remaining).catch(() => undefined);
+    }
+  }, [notificationPermission, remaining, reminderMinutes, reminderReady, remindersEnabled]);
+
+  async function mutateWater(run: () => Promise<Response>) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await run();
+      if (res.ok) {
+        setDay((await res.json()) as WaterDay);
+        await loadHistory();
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function add(amountMl: number) {
+    setAmountError(null);
+    await mutateWater(() =>
+      apiFetch("/api/athlete/water", {
+        method: "POST",
+        body: JSON.stringify({ date, amountMl }),
+      })
+    );
+  }
+
+  async function addCustomAmount() {
+    const amountMl = Number(amountDraft);
+    if (!Number.isFinite(amountMl) || amountMl < 50 || amountMl > 3000) {
+      setAmountError("Amount must be between 50 and 3000 ml.");
+      return;
+    }
+    await add(Math.round(amountMl));
+    setAmountDraft("");
+  }
+
+  async function remove(id: string) {
+    await mutateWater(() => apiFetch(`/api/athlete/water/${id}`, { method: "DELETE" }));
+  }
+
+  async function saveGoal(nextGoal?: number) {
+    const goalMl = nextGoal ?? Number(goalDraft);
+    if (!Number.isFinite(goalMl) || goalMl < 500 || goalMl > 8000) {
+      setGoalError("Goal must be between 500 and 8000 ml.");
+      return;
+    }
+    setBusy(true);
+    setGoalError(null);
+    try {
+      const rounded = Math.round(goalMl);
+      const res = await apiFetch("/api/athlete/me", {
+        method: "PATCH",
+        body: JSON.stringify({ hydrationGoalMl: rounded }),
+      });
+      if (!res.ok) {
+        setGoalError("Could not save goal.");
+        return;
+      }
+      setGoalDraft(String(rounded));
+      setDay((current) => current ? { ...current, goalMl: rounded } : current);
+      await Promise.all([loadDay(), loadHistory()]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleReminders() {
+    setReminderError(null);
+    if (remindersEnabled) {
+      setRemindersEnabled(false);
+      await Notifications.cancelScheduledNotificationAsync(WATER_REMINDER_ID).catch(() => undefined);
+      return;
+    }
+    const permission = await Notifications.requestPermissionsAsync().catch(() => null);
+    const status = permission?.status ?? "unsupported";
+    setNotificationPermission(status);
+    if (status !== "granted") {
+      setReminderError(status === "denied" ? "Notifications are blocked on this device." : "Allow notifications to use reminders.");
+      return;
+    }
+    setRemindersEnabled(true);
+  }
+
+  return (
+    <View style={styles.stack}>
+      <Card style={styles.waterGoalCard}>
+        <CardTitle>Water goal</CardTitle>
+        <View style={styles.waterGoalBody}>
+          <HydrationGoalRing pct={pct} reached={reached} />
+          <View style={styles.waterMetricGrid}>
+            <HydrationMetricTile label="Drunk" value={`${litres(total)} L`} />
+            <HydrationMetricTile label="Remaining" value={`${litres(remaining)} L`} good={reached} />
+            <HydrationMetricTile label="Goal" value={`${litres(goal)} L`} />
+          </View>
+          <View style={[styles.waterStatusPanel, reached ? styles.waterStatusPanelGood : null]}>
+            <Text style={[styles.waterStatusText, reached ? styles.waterStatusTextGood : null]}>
+              {reached ? "Daily hydration achieved" : `${remaining} ml remaining today`}
+            </Text>
+            <Text style={styles.waterStatusSub}>
+              {achievedDays} of last {historyDays} days reached the goal.
+            </Text>
+          </View>
+        </View>
+      </Card>
+
+      <Card>
+        <CardTitle>Daily water goal</CardTitle>
+        <View style={styles.waterPresetGrid}>
+          {WATER_GOAL_PRESETS.map((ml) => (
+            <Pressable
+              key={ml}
+              onPress={() => saveGoal(ml)}
+              disabled={busy}
+              style={[styles.waterPresetButton, goal === ml ? styles.waterPresetButtonOn : null, busy ? styles.controlDisabled : null]}
+            >
+              <Text style={[styles.waterPresetText, goal === ml ? styles.waterPresetTextOn : null]}>{litres(ml)} L</Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={styles.waterInputRow}>
+          <TextInput
+            value={goalDraft}
+            onChangeText={setGoalDraft}
+            keyboardType="numeric"
+            placeholder="Goal ml"
+            placeholderTextColor={colors.inkFaint}
+            style={styles.waterInput}
+          />
+          <Pressable onPress={() => saveGoal()} disabled={busy} style={[styles.waterPrimaryButton, busy ? styles.controlDisabled : null]}>
+            <Text style={styles.waterPrimaryText}>Save</Text>
+          </Pressable>
+        </View>
+        {goalError ? <Text style={styles.waterError}>{goalError}</Text> : null}
+      </Card>
+
+      <Card>
+        <CardTitle>Log water intake</CardTitle>
+        <View style={styles.waterPresetGrid}>
+          {WATER_QUICK_ADD.map((ml) => (
+            <Pressable key={ml} disabled={busy} onPress={() => add(ml)} style={[styles.waterSecondaryButton, busy ? styles.controlDisabled : null]}>
+              <Text style={styles.waterSecondaryText}>+{ml} ml</Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={styles.waterInputRow}>
+          <TextInput
+            value={amountDraft}
+            onChangeText={setAmountDraft}
+            keyboardType="numeric"
+            placeholder="Custom ml"
+            placeholderTextColor={colors.inkFaint}
+            style={styles.waterInput}
+          />
+          <Pressable
+            onPress={addCustomAmount}
+            disabled={busy || !amountDraft.trim()}
+            style={[styles.waterPrimaryButton, busy || !amountDraft.trim() ? styles.controlDisabled : null]}
+          >
+            <Text style={styles.waterPrimaryText}>Add</Text>
+          </Pressable>
+        </View>
+        {amountError ? <Text style={styles.waterError}>{amountError}</Text> : null}
+      </Card>
+
+      <Card>
+        <View style={styles.waterReminderHeader}>
+          <View style={styles.waterReminderCopy}>
+            <CardTitle>Reminder notifications</CardTitle>
+            <Text style={styles.waterReminderTitle}>Hydration reminders</Text>
+            <Text style={styles.waterReminderSub}>
+              {remindersEnabled ? `Every ${reminderMinutes} minutes while this app is installed.` : "Off"}
+            </Text>
+          </View>
+          <Pressable
+            onPress={toggleReminders}
+            style={[styles.waterReminderToggle, remindersEnabled ? styles.waterReminderToggleOn : null]}
+          >
+            <Text style={[styles.waterReminderToggleText, remindersEnabled ? styles.waterReminderToggleTextOn : null]}>
+              {remindersEnabled ? "On" : "Enable"}
+            </Text>
+          </Pressable>
+        </View>
+        <View style={styles.waterPresetGrid}>
+          {[60, 90, 120].map((minutes) => (
+            <Pressable
+              key={minutes}
+              onPress={() => setReminderMinutes(minutes as ReminderMinutes)}
+              style={[styles.waterPresetButton, reminderMinutes === minutes ? styles.waterPresetButtonOn : null]}
+            >
+              <Text style={[styles.waterPresetText, reminderMinutes === minutes ? styles.waterPresetTextOn : null]}>{minutes} min</Text>
+            </Pressable>
+          ))}
+        </View>
+        <Text style={styles.waterPermission}>Status: {notificationPermission}</Text>
+        {reminderError ? <Text style={styles.waterError}>{reminderError}</Text> : null}
+      </Card>
+
+      <Card>
+        <View style={styles.waterChartTitleRow}>
+          <CardTitle>{historyDays === 7 ? "Weekly chart" : "Monthly chart"}</CardTitle>
+          <View style={styles.waterSegment}>
+            {[7, 30].map((days) => (
+              <Pressable
+                key={days}
+                onPress={() => setHistoryDays(days as 7 | 30)}
+                style={[styles.waterSegmentButton, historyDays === days ? styles.waterSegmentButtonOn : null]}
+              >
+                <Text style={[styles.waterSegmentText, historyDays === days ? styles.waterSegmentTextOn : null]}>
+                  {days === 7 ? "Week" : "Month"}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+        <HydrationBarsMobile series={history?.series ?? []} goalMl={historyGoal} />
+      </Card>
+
+      <Card>
+        <CardTitle>Hydration history</CardTitle>
+        {history && history.series.length > 0 ? (
+          <View style={styles.waterHistoryList}>
+            {[...history.series].reverse().slice(0, 10).map((point) => {
+              const amount = point.totalMl ?? 0;
+              const met = amount >= historyGoal;
+              return (
+                <View key={point.date} style={styles.waterHistoryRow}>
+                  <View>
+                    <Text style={styles.waterHistoryDate}>{shortDate(point.date)}</Text>
+                    <Text style={styles.waterHistorySub}>
+                      {met ? "Goal achieved" : `${Math.max(0, historyGoal - amount)} ml remaining`}
+                    </Text>
+                  </View>
+                  <Text style={[styles.waterHistoryAmount, met ? styles.waterHistoryAmountGood : null]}>
+                    {litres(amount)} L
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        ) : (
+          <Text style={styles.miniMuted}>No hydration history yet.</Text>
+        )}
+      </Card>
+
+      <Card>
+        <CardTitle>Today's entries</CardTitle>
+        {day && day.entries.length > 0 ? (
+          <View style={styles.waterEntryWrap}>
+            {[...day.entries].reverse().map((entry) => (
+              <Pressable
+                key={entry.id}
+                disabled={busy}
+                onPress={() => remove(entry.id)}
+                style={({ pressed }) => [styles.waterEntryChip, pressed ? { borderColor: `${colors.bad}66` } : null, busy ? styles.controlDisabled : null]}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${entry.amountMl} ml`}
+              >
+                <Text style={styles.waterEntryText}>{entry.amountMl} ml x</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : (
+          <Text style={styles.miniMuted}>No water logged for this date.</Text>
+        )}
+      </Card>
+    </View>
+  );
+}
+
+function HydrationMetricTile({ label, value, good }: { label: string; value: string; good?: boolean }) {
+  return (
+    <View style={styles.waterMetricTile}>
+      <Text style={styles.waterMetricLabel}>{label}</Text>
+      <Text style={[styles.waterMetricValue, good ? styles.waterMetricValueGood : null]}>{value}</Text>
+    </View>
+  );
+}
+
+function HydrationGoalRing({ pct, reached }: { pct: number; reached: boolean }) {
+  const size = 176;
+  const stroke = 16;
+  const ringRadius = (size - stroke) / 2;
+  const circ = 2 * Math.PI * ringRadius;
+  const offset = circ * (1 - Math.max(0, Math.min(100, pct)) / 100);
+  return (
+    <View style={styles.waterRingWrap}>
+      <Svg width={size} height={size} style={StyleSheet.absoluteFill}>
+        <Circle cx={size / 2} cy={size / 2} r={ringRadius} stroke={colors.surfaceInset} strokeWidth={stroke} fill="none" />
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={ringRadius}
+          stroke={reached ? colors.ok : "#ff7e1a"}
+          strokeWidth={stroke}
+          fill="none"
+          strokeDasharray={circ}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </Svg>
+      <View style={styles.waterRingInner}>
+        <Text style={styles.waterRingPct}>{pct}%</Text>
+        <Text style={styles.waterRingLabel}>{reached ? "Goal met" : "Complete"}</Text>
+      </View>
+    </View>
+  );
+}
+
+function HydrationBarsMobile({ series, goalMl }: { series: WaterPoint[]; goalMl: number }) {
+  const { width } = useWindowDimensions();
+  if (series.length === 0) return <Text style={styles.miniMuted}>No chart data yet.</Text>;
+
+  const chartWidth = Math.max(260, Math.min(width - 86, 430));
+  const chartHeight = 176;
+  const chartData = {
+    labels: series.map(() => ""),
+    datasets: [
+      {
+        data: series.map((point) => point.totalMl ?? 0),
+        colors: series.map((point) => {
+          if (point.totalMl === null) return () => colors.surfaceInset;
+          return () => ((point.totalMl ?? 0) >= goalMl ? colors.ok : "#ff7e1a");
+        }),
+      },
+    ],
+  };
+
+  return (
+    <View>
+      <View style={styles.waterChartKitWrap}>
+        <BarChart
+          data={chartData}
+          width={chartWidth}
+          height={chartHeight}
+          yAxisLabel=""
+          yAxisSuffix=""
+          fromZero
+          withInnerLines={false}
+          withHorizontalLabels={false}
+          withVerticalLabels={false}
+          showBarTops={false}
+          withCustomBarColorFromData
+          flatColor
+          segments={4}
+          chartConfig={{
+            backgroundGradientFrom: colors.surfaceRaised,
+            backgroundGradientFromOpacity: 0,
+            backgroundGradientTo: colors.surfaceRaised,
+            backgroundGradientToOpacity: 0,
+            fillShadowGradient: "#ff7e1a",
+            fillShadowGradientOpacity: 1,
+            color: () => "#ff7e1a",
+            labelColor: () => colors.inkFaint,
+            barPercentage: series.length > 14 ? 0.24 : 0.72,
+            barRadius: 6,
+            decimalPlaces: 0,
+            propsForBackgroundLines: { stroke: colors.line },
+          }}
+          style={styles.waterChartKit}
+        />
+      </View>
+      <View style={styles.waterBarsFooter}>
+        <Text style={styles.waterBarsLabel}>{shortDate(series[0].date)}</Text>
+        <Text style={styles.waterBarsLabel}>Goal {litres(goalMl)} L</Text>
+        <Text style={styles.waterBarsLabel}>{shortDate(series[series.length - 1].date)}</Text>
+      </View>
+    </View>
+  );
+}
+
+function HydrationCardLegacy({ date }: { date: string }) {
   const [day, setDay] = useState<WaterDay | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1056,7 +2265,7 @@ function PerformanceTrendPanel() {
 
       <ChartPanel
         title="Training load"
-        subtitle="Higher bars mean more training stress. Blank days mean no RPE load."
+        subtitle="Higher bars mean more training stress. Blank days mean no RPM load."
         loading={loading}
       >
         <View style={styles.tileRow}>
@@ -1070,7 +2279,7 @@ function PerformanceTrendPanel() {
         />
         <Legend items={[{ label: "Training load", color: "#f47c20" }]} />
         <ChartAbout>
-          Training load is effort from logged RPE sessions. Use it with readiness: high load during low readiness is
+          Training load is effort from logged RPM sessions. Use it with readiness: high load during low readiness is
           the main warning sign.
         </ChartAbout>
       </ChartPanel>
@@ -1126,8 +2335,8 @@ function WellnessSignalsPanel() {
                 <Sparkline values={col} color={sparkColor} />
               </View>
               <Text style={styles.wellnessValue} numberOfLines={1}>
-                {now === null ? "—" : fmtValue(now)}
-                <Text style={styles.wellnessUnit}>{sig.unit ?? "/5"}</Text>
+                {now === null ? "—" : sig.unit ? fmtValue(now) : wellnessFiveToTen(now)}
+                <Text style={styles.wellnessUnit}>{sig.unit ?? "/10"}</Text>
               </Text>
               <View style={styles.wellnessBadge}>
                 <TrendBadge summary={sum} showMagnitude={false} />
@@ -1305,10 +2514,10 @@ function makeSessionForms(card: DailyCard): Record<SessionSlot, SessionForm> {
       trainingCategory: rpe?.trainingCategory ?? session.workoutType ?? session.type ?? TRAINING_CATEGORIES[0],
       plannedIntensityPercent: rpe?.plannedIntensityPercent ?? Math.min(100, Math.max(0, (session.intensityRpe ?? 7) * 10)),
       rpe: rpe?.rpe ?? session.effortRating ?? 6,
-      sleepQuality: rpe?.sleepQuality ?? card.sleep.quality ?? 3,
-      soreness: rpe?.muscleSoreness ?? card.soreness ?? 3,
-      fatigue: rpe?.fatigue ?? 3,
-      moodMotivation: rpe?.moodMotivation ?? 3,
+      sleepQuality: wellnessTenFromStored(rpe?.sleepQuality ?? card.sleep.quality),
+      soreness: wellnessTenFromStored(rpe?.muscleSoreness ?? card.soreness),
+      fatigue: wellnessTenFromStored(rpe?.fatigue),
+      moodMotivation: wellnessTenFromStored(rpe?.moodMotivation),
       restingHeartRate: "",
     };
     return acc;
@@ -1406,16 +2615,9 @@ function SessionLogSection({
   card,
   wellness,
   setWellness,
-  hrForm,
-  setHrForm,
   recoveryModalities,
   toggleRecovery,
-  noteDraft,
-  setNoteDraft,
-  notes,
   submitWellness,
-  submitHeartRate,
-  submitNote,
   postJson,
   date,
   focusedSlot,
@@ -1423,22 +2625,18 @@ function SessionLogSection({
   card: DailyCard;
   wellness: WellnessForm;
   setWellness: React.Dispatch<React.SetStateAction<WellnessForm>>;
-  hrForm: { wakeHr: string; bedHr: string };
-  setHrForm: React.Dispatch<React.SetStateAction<{ wakeHr: string; bedHr: string }>>;
   recoveryModalities: string[];
   toggleRecovery: (value: string) => void;
-  noteDraft: string;
-  setNoteDraft: (v: string) => void;
-  notes: AthleteNote[];
   submitWellness: () => Promise<boolean>;
-  submitHeartRate: () => Promise<boolean>;
-  submitNote: () => Promise<boolean>;
   postJson: (path: string, body: unknown, success: string) => Promise<boolean>;
   date: string;
   focusedSlot: SessionSlot | null;
 }) {
   const [forms, setForms] = useState<Record<SessionSlot, SessionForm>>(() => makeSessionForms(card));
   const [formError, setFormError] = useState<string | null>(null);
+  const [sessionPhotos, setSessionPhotos] = useState<Record<SessionSlot, SessionPhotoMeta[]>>({ AM: [], AFT: [], PM: [] });
+  const [pendingPhoto, setPendingPhoto] = useState<Partial<Record<SessionSlot, { uri: string; name: string; mimeType: string }>>>({});
+  const [uploadingSlot, setUploadingSlot] = useState<SessionSlot | null>(null);
   const isRestDay = Boolean(card.isRestDay || card.attendance.status === "rest");
   const checkinDone = card.readinessScore !== null || card.sleep.quality !== null;
   const completedWeight = isRestDay ? 1 : SESSION_SLOTS.filter((slot) => sessionComplete(card.sessions[slot])).length;
@@ -1448,9 +2646,7 @@ function SessionLogSection({
   const firstUnfinished = firstSession ? `session:${firstSession}` : null;
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [activeSlot, setActiveSlot] = useState<SessionSlot>(focusedSlot ?? firstSession ?? SESSION_SLOTS[0]);
-  const hrDone = card.heartRate.wakeHr !== null || card.heartRate.bedHr !== null;
   const recDone = card.recovery.score !== null || !!card.recovery.status;
-  const notesDone = notes.length > 0;
 
   useEffect(() => {
     setForms(makeSessionForms(card));
@@ -1464,6 +2660,74 @@ function SessionLogSection({
   useEffect(() => {
     if (focusedSlot) setActiveSlot(focusedSlot);
   }, [focusedSlot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        SESSION_SLOTS.map(async (slot) => {
+          try {
+            const json = await apiJson<{ session?: { photos?: SessionPhotoMeta[] } | null }>(
+              `/api/athlete/training/${slot}?date=${date}`
+            );
+            return [slot, json.session?.photos ?? []] as const;
+          } catch {
+            return [slot, []] as const;
+          }
+        })
+      );
+      if (!cancelled) setSessionPhotos(Object.fromEntries(entries) as Record<SessionSlot, SessionPhotoMeta[]>);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [date]);
+
+  async function pickSessionPhoto(slot: SessionSlot) {
+    const result = await DocumentPicker.getDocumentAsync({ type: "image/*" });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setPendingPhoto((prev) => ({
+      ...prev,
+      [slot]: { uri: asset.uri, name: asset.name ?? "photo.jpg", mimeType: asset.mimeType ?? "image/jpeg" },
+    }));
+  }
+
+  function clearSessionPhoto(slot: SessionSlot) {
+    setPendingPhoto((prev) => {
+      const next = { ...prev };
+      delete next[slot];
+      return next;
+    });
+  }
+
+  async function uploadSessionPhoto(slot: SessionSlot) {
+    const pending = pendingPhoto[slot];
+    if (!pending) return;
+    setUploadingSlot(slot);
+    try {
+      const form = new FormData();
+      form.append("date", date);
+      form.append("file", { uri: pending.uri, name: pending.name, type: pending.mimeType } as unknown as Blob);
+      const res = await apiFetch(`/api/athlete/training/${slot}/photos`, { method: "POST", body: form });
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string };
+        setFormError(
+          json?.error === "file_too_large"
+            ? "That image is too large."
+            : json?.error === "unsupported_file_type"
+              ? "Please choose a JPG, PNG, or WEBP image."
+              : "Photo upload failed."
+        );
+        return;
+      }
+      const json = (await res.json()) as { photo: SessionPhotoMeta };
+      clearSessionPhoto(slot);
+      setSessionPhotos((prev) => ({ ...prev, [slot]: [...(prev[slot] ?? []), json.photo] }));
+    } finally {
+      setUploadingSlot(null);
+    }
+  }
 
   function toggle(key: string) {
     setOpenKey((cur) => (cur === key ? null : key));
@@ -1520,13 +2784,13 @@ function SessionLogSection({
         trainingCategory,
         plannedIntensityPercent: form.plannedIntensityPercent,
         rpe: form.rpe,
-        sleepQuality: form.sleepQuality,
-        muscleSoreness: form.soreness,
-        fatigue: form.fatigue,
-        moodMotivation: form.moodMotivation,
+        sleepQuality: wellnessStoredFromTen(form.sleepQuality),
+        muscleSoreness: wellnessStoredFromTen(form.soreness),
+        fatigue: wellnessStoredFromTen(form.fatigue),
+        moodMotivation: wellnessStoredFromTen(form.moodMotivation),
         ...(restingHeartRate !== undefined ? { restingHeartRate } : {}),
       },
-      `${SLOT_LABEL[slot]} RPE logged.`
+      `${SLOT_LABEL[slot]} RPM logged.`
     );
   }
 
@@ -1631,18 +2895,13 @@ function SessionLogSection({
               ))}
             </View>
 
-            <Text style={[styles.inputLabel, { marginTop: 14 }]}>Workout</Text>
-            <View style={styles.recoveryWrap}>
-              {WORKOUT_TYPES.map((item) => (
-                <Pressable
-                  key={item}
-                  onPress={() => updateSession(activeSlot, { workoutType: item, trainingCategory: item })}
-                  style={[styles.trainingChip, activeForm.workoutType === item ? styles.trainingChipOn : null]}
-                >
-                  <Text style={[styles.trainingText, activeForm.workoutType === item ? styles.trainingTextOn : null]}>{item}</Text>
-                </Pressable>
-              ))}
-            </View>
+            <Text style={[styles.inputLabel, { marginTop: 14 }]}>Workout type</Text>
+            <Dropdown
+              value={activeForm.workoutType}
+              options={WORKOUT_TYPES}
+              title="Workout type"
+              onChange={(item) => updateSession(activeSlot, { workoutType: item, trainingCategory: item })}
+            />
 
             <View style={[styles.twoCols, { marginTop: 12 }]}>
               <View style={{ flex: 1 }}>
@@ -1671,27 +2930,22 @@ function SessionLogSection({
               <CompactScale label="Effort" value={activeForm.effortRating} onChange={(v) => updateSession(activeSlot, { effortRating: v, rpe: v })} lowHint="Easy" highHint="Max" min={1} max={10} />
             </View>
             <View style={{ marginTop: 12 }}>
-              <CompactScale label="Planned intensity" value={activeForm.plannedIntensityPercent} onChange={(v) => updateSession(activeSlot, { plannedIntensityPercent: v })} lowHint="0%" highHint="100%" min={0} max={100} />
+              <CompactScale label="Planned intensity" value={activeForm.plannedIntensityPercent} onChange={(v) => updateSession(activeSlot, { plannedIntensityPercent: v })} lowHint="0%" highHint="100%" min={0} max={100} step={5} />
             </View>
             <View style={{ marginTop: 12 }}>
-              <CompactScale label="Session RPE" value={activeForm.rpe} onChange={(v) => updateSession(activeSlot, { rpe: v, effortRating: v })} lowHint="Rest" highHint="Max" min={0} max={10} />
+              <CompactScale label="Session RPM" value={activeForm.rpe} onChange={(v) => updateSession(activeSlot, { rpe: v, effortRating: v })} lowHint="Rest" highHint="Max" min={0} max={10} />
+            </View>
+
+            <View style={{ marginTop: 12 }}>
+              <CompactScale label="Mood" value={activeForm.moodMotivation} onChange={(v) => updateSession(activeSlot, { moodMotivation: v })} lowHint="Low" highHint="High" min={1} max={10} />
             </View>
 
             <View style={[styles.twoCols, { marginTop: 12 }]}>
               <View style={{ flex: 1 }}>
-                <CompactScale label="Sleep" value={activeForm.sleepQuality} onChange={(v) => updateSession(activeSlot, { sleepQuality: v })} lowHint="Poor" highHint="Great" />
+                <CompactScale label="Soreness" value={activeForm.soreness} onChange={(v) => updateSession(activeSlot, { soreness: v })} lowHint="Fresh" highHint="Sore" min={1} max={10} />
               </View>
               <View style={{ flex: 1 }}>
-                <CompactScale label="Mood" value={activeForm.moodMotivation} onChange={(v) => updateSession(activeSlot, { moodMotivation: v })} lowHint="Low" highHint="High" />
-              </View>
-            </View>
-
-            <View style={[styles.twoCols, { marginTop: 12 }]}>
-              <View style={{ flex: 1 }}>
-                <CompactScale label="Soreness" value={activeForm.soreness} onChange={(v) => updateSession(activeSlot, { soreness: v })} lowHint="Fresh" highHint="Sore" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <CompactScale label="Fatigue" value={activeForm.fatigue} onChange={(v) => updateSession(activeSlot, { fatigue: v })} lowHint="Rested" highHint="Spent" />
+                <CompactScale label="Fatigue" value={activeForm.fatigue} onChange={(v) => updateSession(activeSlot, { fatigue: v })} lowHint="Rested" highHint="Spent" min={1} max={10} />
               </View>
             </View>
 
@@ -1703,6 +2957,34 @@ function SessionLogSection({
               multiline
               style={[styles.noteBox, { marginTop: 12 }]}
             />
+
+            <View style={styles.sessionPhotoRow}>
+              {(sessionPhotos[activeSlot] ?? []).map((p) => (
+                <SessionPhotoThumb key={p.id} slot={activeSlot} photoId={p.id} />
+              ))}
+              {pendingPhoto[activeSlot] ? (
+                <View style={styles.sessionPhotoPreviewRow}>
+                  <Image source={{ uri: pendingPhoto[activeSlot]!.uri }} style={styles.sessionPhotoPreviewImage} />
+                  <Pressable onPress={() => clearSessionPhoto(activeSlot)} style={styles.sessionPhotoPreviewRemove} hitSlop={8}>
+                    <Ionicons name="close" size={13} color={colors.inkMuted} />
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable onPress={() => pickSessionPhoto(activeSlot)} style={styles.sessionPhotoButton}>
+                  <Ionicons name="add" size={18} color={colors.inkFaint} />
+                  <Text style={styles.sessionPhotoButtonText}>Photo</Text>
+                </Pressable>
+              )}
+              {pendingPhoto[activeSlot] ? (
+                <CompactButton
+                  label={uploadingSlot === activeSlot ? "Uploading" : "Save photo"}
+                  onPress={() => uploadSessionPhoto(activeSlot)}
+                  disabled={uploadingSlot === activeSlot}
+                  successLabel="Saved"
+                />
+              ) : null}
+            </View>
+
             {activeRpe ? (
               <Text style={[styles.miniMuted, { marginTop: 8 }]}>
                 Load {activeRpe.calculatedTrainingLoad} - readiness {activeRpe.readinessScore ?? "-"}
@@ -1776,18 +3058,13 @@ function SessionLogSection({
                 ))}
               </View>
 
-              <Text style={[styles.inputLabel, { marginTop: 14 }]}>Workout</Text>
-              <View style={styles.recoveryWrap}>
-                {WORKOUT_TYPES.map((item) => (
-                  <Pressable
-                    key={item}
-                    onPress={() => updateSession(slot, { workoutType: item })}
-                    style={[styles.trainingChip, form.workoutType === item ? styles.trainingChipOn : null]}
-                  >
-                    <Text style={[styles.trainingText, form.workoutType === item ? styles.trainingTextOn : null]}>{item}</Text>
-                  </Pressable>
-                ))}
-              </View>
+              <Text style={[styles.inputLabel, { marginTop: 14 }]}>Workout type</Text>
+              <Dropdown
+                value={form.workoutType}
+                options={WORKOUT_TYPES}
+                title="Workout type"
+                onChange={(item) => updateSession(slot, { workoutType: item })}
+              />
 
               <View style={[styles.twoCols, { marginTop: 12 }]}>
                 <View style={{ flex: 1 }}>
@@ -1815,24 +3092,19 @@ function SessionLogSection({
                 <CompactScale label="Effort" value={form.effortRating} onChange={(v) => updateSession(slot, { effortRating: v, rpe: v })} lowHint="Easy" highHint="Max" min={1} max={10} />
               </View>
 
-              <Text style={[styles.inputLabel, { marginTop: 14 }]}>RPE category</Text>
-              <View style={styles.recoveryWrap}>
-                {categoryChoicesFor(form.trainingCategory).map((category) => (
-                  <Pressable
-                    key={category}
-                    onPress={() => updateSession(slot, { trainingCategory: category })}
-                    style={[styles.trainingChip, form.trainingCategory === category ? styles.trainingChipOn : null]}
-                  >
-                    <Text style={[styles.trainingText, form.trainingCategory === category ? styles.trainingTextOn : null]}>{category}</Text>
-                  </Pressable>
-                ))}
-              </View>
+              <Text style={[styles.inputLabel, { marginTop: 14 }]}>RPM category</Text>
+              <Dropdown
+                value={form.trainingCategory}
+                options={categoryChoicesFor(form.trainingCategory)}
+                title="RPM category"
+                onChange={(category) => updateSession(slot, { trainingCategory: category })}
+              />
 
               <View style={{ marginTop: 12 }}>
                 <CompactScale label="Planned intensity" value={form.plannedIntensityPercent} onChange={(v) => updateSession(slot, { plannedIntensityPercent: v })} lowHint="0%" highHint="100%" min={0} max={100} />
               </View>
               <View style={{ marginTop: 12 }}>
-                <CompactScale label="Session RPE" value={form.rpe} onChange={(v) => updateSession(slot, { rpe: v, effortRating: v })} lowHint="Rest" highHint="Max" min={0} max={10} />
+                <CompactScale label="Session RPM" value={form.rpe} onChange={(v) => updateSession(slot, { rpe: v, effortRating: v })} lowHint="Rest" highHint="Max" min={0} max={10} />
               </View>
 
               <View style={[styles.twoCols, { marginTop: 12 }]}>
@@ -1861,6 +3133,34 @@ function SessionLogSection({
                 multiline
                 style={[styles.noteBox, { marginTop: 12 }]}
               />
+
+              <View style={styles.sessionPhotoRow}>
+                {(sessionPhotos[slot] ?? []).map((p) => (
+                  <SessionPhotoThumb key={p.id} slot={slot} photoId={p.id} />
+                ))}
+                {pendingPhoto[slot] ? (
+                  <View style={styles.sessionPhotoPreviewRow}>
+                    <Image source={{ uri: pendingPhoto[slot]!.uri }} style={styles.sessionPhotoPreviewImage} />
+                    <Pressable onPress={() => clearSessionPhoto(slot)} style={styles.sessionPhotoPreviewRemove} hitSlop={8}>
+                      <Ionicons name="close" size={13} color={colors.inkMuted} />
+                    </Pressable>
+                  </View>
+                ) : (
+                  <Pressable onPress={() => pickSessionPhoto(slot)} style={styles.sessionPhotoButton}>
+                    <Ionicons name="add" size={18} color={colors.inkFaint} />
+                    <Text style={styles.sessionPhotoButtonText}>Photo</Text>
+                  </Pressable>
+                )}
+                {pendingPhoto[slot] ? (
+                  <CompactButton
+                    label={uploadingSlot === slot ? "Uploading" : "Save photo"}
+                    onPress={() => uploadSessionPhoto(slot)}
+                    disabled={uploadingSlot === slot}
+                    successLabel="Saved"
+                  />
+                ) : null}
+              </View>
+
               {rpe ? (
                 <Text style={[styles.miniMuted, { marginTop: 8 }]}>
                   Load {rpe.calculatedTrainingLoad} · readiness {rpe.readinessScore ?? "-"}
@@ -1879,23 +3179,6 @@ function SessionLogSection({
         </LogRow>
           </>
         ) : null}
-
-        <LogRow title="Heart rate" status={hrDone ? `${card.heartRate.wakeHr ?? "-"} / ${card.heartRate.bedHr ?? "-"} bpm` : "Optional"} done={hrDone} open={openKey === "heart"} onToggle={() => toggle("heart")}>
-          <Muted style={{ marginBottom: 10 }}>Resting bpm - log on waking and before bed.</Muted>
-          <View style={styles.twoCols}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Waking HR</Text>
-              <TextField value={hrForm.wakeHr} onChangeText={(v) => setHrForm((s) => ({ ...s, wakeHr: v }))} placeholder="bpm" keyboardType="number-pad" style={styles.compactField} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Before bed</Text>
-              <TextField value={hrForm.bedHr} onChangeText={(v) => setHrForm((s) => ({ ...s, bedHr: v }))} placeholder="bpm" keyboardType="number-pad" style={styles.compactField} />
-            </View>
-          </View>
-          <View style={{ marginTop: 12 }}>
-            <CompactButton label="Save heart rate" onPress={submitHeartRate} successLabel="Saved" />
-          </View>
-        </LogRow>
 
         {false ? (
         <LogRow title="Recovery" status={recDone ? card.recovery.status ?? `${card.recovery.score}` : "Optional"} done={recDone} open={openKey === "recovery"} onToggle={() => toggle("recovery")}>
@@ -1916,32 +3199,23 @@ function SessionLogSection({
         </LogRow>
         ) : null}
 
-        <LogRow title="Daily notes" status={notesDone ? `${notes.length} note${notes.length === 1 ? "" : "s"}` : "Optional"} done={notesDone} open={openKey === "notes"} onToggle={() => toggle("notes")}>
-          <TextInput
-            value={noteDraft}
-            onChangeText={setNoteDraft}
-            placeholder="Anything to log today?"
-            placeholderTextColor={colors.inkFaint}
-            multiline
-            style={styles.noteBox}
-          />
-          <View style={{ marginTop: 10 }}>
-            <CompactButton label="Save note" onPress={submitNote} disabled={!noteDraft.trim()} successLabel="Saved" />
-          </View>
-          {notes.length > 0 ? (
-            <View style={{ marginTop: 12, gap: 8 }}>
-              {notes.map((n) => (
-                <View key={n._id} style={styles.noteItem}>
-                  <Text style={styles.noteText}>{n.body}</Text>
-                </View>
-              ))}
-            </View>
-          ) : (
-            <Text style={[styles.miniMuted, { marginTop: 10 }]}>No notes today.</Text>
-          )}
-        </LogRow>
       </Card>
     </View>
+  );
+}
+
+/** Renders one session photo from a Bearer-authenticated, self-scoped image endpoint. */
+function SessionPhotoThumb({ slot, photoId }: { slot: SessionSlot; photoId: string }) {
+  const token = getAccessToken();
+  return (
+    <Image
+      source={{
+        uri: `${API_BASE}/api/athlete/training/${slot}/photos/${photoId}/file`,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      }}
+      style={styles.sessionPhotoThumb}
+      resizeMode="cover"
+    />
   );
 }
 
@@ -1982,7 +3256,6 @@ function LogSection({
 
   // Per-entry "done" state drives the at-a-glance checklist + progress count.
   const checkinDone = card.readinessScore !== null || card.sleep.quality !== null;
-  const attDone = !!card.attendance.status;
   const loggedSlots = SESSION_SLOTS.filter((s) => card.sessions[s].status);
   const trainDone = loggedSlots.length > 0;
   const hr = card.heartRate;
@@ -1990,16 +3263,17 @@ function LogSection({
   const recDone = card.recovery.score !== null || !!card.recovery.status;
   const notesDone = notes.length > 0;
 
-  const ENTRIES = [checkinDone, attDone, trainDone, hrDone, recDone, notesDone];
+  // Attendance isn't logged here anymore — it's derived from session/RPM activity.
+  const ENTRIES = [checkinDone, trainDone, hrDone, recDone, notesDone];
+  const total = ENTRIES.length;
   const doneCount = ENTRIES.filter(Boolean).length;
-  const keys = ["checkin", "attendance", "training", "heart", "recovery", "notes"];
+  const keys = ["checkin", "training", "heart", "recovery", "notes"];
   const firstUnfinished = keys[ENTRIES.findIndex((d) => !d)] ?? null;
 
   const [openKey, setOpenKey] = useState<string | null>(firstUnfinished);
   const toggle = (key: string) => setOpenKey((cur) => (cur === key ? null : key));
 
   const checkinStatus = card.readinessScore !== null ? `Readiness ${card.readinessScore}` : checkinDone ? "Logged" : "Not logged";
-  const attStatus = card.attendance.status ? cap(card.attendance.status) : "Not logged";
   const trainStatus = trainDone ? `${loggedSlots.length}/${SESSION_SLOTS.length} logged` : "Not logged";
   const hrStatus = hrDone ? `${hr.wakeHr ?? "–"} / ${hr.bedHr ?? "–"} bpm` : "Not logged";
   const recStatus = card.recovery.status ? cap(card.recovery.status) : recDone ? `${card.recovery.score}` : "Not logged";
@@ -2010,25 +3284,15 @@ function LogSection({
       <Card style={styles.logHub}>
         <View style={styles.logHubHead}>
           <CardTitle>Today's log</CardTitle>
-          <View style={[styles.logProgressPill, doneCount === 6 ? styles.logProgressPillDone : null]}>
-            <Text style={[styles.logProgressText, doneCount === 6 ? styles.logProgressTextDone : null]}>
-              {doneCount === 6 ? "All done" : `${doneCount} of 6 done`}
+          <View style={[styles.logProgressPill, doneCount === total ? styles.logProgressPillDone : null]}>
+            <Text style={[styles.logProgressText, doneCount === total ? styles.logProgressTextDone : null]}>
+              {doneCount === total ? "All done" : `${doneCount} of ${total} done`}
             </Text>
           </View>
         </View>
 
-        <LogRow title="Daily check-in" status={checkinStatus} done={checkinDone} open={openKey === "checkin"} onToggle={() => toggle("checkin")}>
-          <Text style={styles.inputLabel}>Sleep hours</Text>
-          <TextField
-            value={wellness.sleepHours}
-            onChangeText={(v) => setWellness((s) => ({ ...s, sleepHours: v }))}
-            placeholder="e.g. 8"
-            keyboardType="decimal-pad"
-            style={styles.compactField}
-          />
-          <View style={{ height: 12 }} />
+        <LogRow title="Daily wellness" status={checkinStatus} done={checkinDone} open={openKey === "checkin"} onToggle={() => toggle("checkin")}>
           {[
-            ["sleepQuality", "Sleep quality", "Poor", "Great"],
             ["mood", "Mood", "Low", "High"],
             ["stress", "Stress", "Calm", "Tense"],
             ["soreness", "Soreness", "Fresh", "Sore"],
@@ -2045,19 +3309,6 @@ function LogSection({
             </View>
           ))}
           <CompactButton label="Save check-in" onPress={submitWellness} successLabel="Saved" />
-        </LogRow>
-
-        <LogRow title="Attendance" status={attStatus} done={attDone} open={openKey === "attendance"} onToggle={() => toggle("attendance")}>
-          <View style={styles.choiceGrid}>
-            {ATTENDANCE.map((o) => (
-              <Choice
-                key={o.value}
-                label={o.label}
-                selected={card.attendance.status === o.value}
-                onPress={() => postJson("/api/athlete/attendance", { date, status: o.value }, `Attendance: ${o.value}.`)}
-              />
-            ))}
-          </View>
         </LogRow>
 
         <LogRow title="Training completion" status={trainStatus} done={trainDone} open={openKey === "training"} onToggle={() => toggle("training")}>
@@ -2499,7 +3750,14 @@ function AthleteMessagesPanel({
                       {showDay ? <Text style={styles.dayMarker}>{chatDay(message.createdAt)}</Text> : null}
                       <View style={[styles.messageRow, message.mine ? styles.messageRowMine : null]}>
                         <View style={[styles.messageBubble, message.mine ? styles.messageBubbleMine : styles.messageBubbleOther]}>
-                          <Text style={[styles.messageBody, message.mine ? styles.messageBodyMine : null]}>{message.body}</Text>
+                          {message.media ? (
+                            <View style={{ marginBottom: message.body ? 6 : 2 }}>
+                              <ChatMediaBubble media={message.media} role="athlete" mine={message.mine} />
+                            </View>
+                          ) : null}
+                          {message.body ? (
+                            <Text style={[styles.messageBody, message.mine ? styles.messageBodyMine : null]}>{message.body}</Text>
+                          ) : null}
                           <Text style={[styles.messageTime, message.mine ? styles.messageTimeMine : null]}>{chatTime(message.createdAt)}</Text>
                         </View>
                       </View>
@@ -2801,42 +4059,116 @@ function Legend({ items }: { items: { label: string; color: string }[] }) {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: 16, paddingBottom: 22 },
-  stack: { gap: 14 },
+  content: { paddingHorizontal: 16, paddingTop: 0, paddingBottom: 22 },
+  stack: { gap: 8 },
   stackSmall: { gap: 10 },
+  todayHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 4,
+    backgroundColor: colors.surface,
+  },
+  todayHeaderTop: { flexDirection: "row", alignItems: "center", gap: 10 },
+  todayAvatar: {
+    borderWidth: 0,
+    elevation: 0,
+  },
+  todayGreeting: { flex: 1, minWidth: 0 },
+  todayRole: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 2 },
+  todayGreetingLine: { marginTop: 2, color: colors.ink, fontSize: 18, lineHeight: 22, fontWeight: "500" },
+  todayGreetingName: { color: colors.ink, fontSize: 20, lineHeight: 24, fontWeight: "900" },
+  todayHeaderActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  todayHeaderButton: {
+    height: 44,
+    width: 44,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceRaised,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
+  },
+  todayHeaderBadge: {
+    position: "absolute",
+    top: 1,
+    right: 3,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: colors.bad,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  todayHeaderBadgeText: { color: "#fff", fontSize: 10, fontWeight: "900" },
+  todayDatePillRow: { marginTop: 8, alignItems: "flex-start" },
+  dateHistoryCard: { marginBottom: 7, padding: 6, borderRadius: 18 },
+  dateHistoryTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  todayChip: {
+    height: 24,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: "#ff7e1a",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    backgroundColor: "#fff7ed",
+  },
+  todayChipText: { color: theme.accentStrong, fontSize: 11, fontWeight: "900" },
+  dateHistoryValue: { color: theme.accentStrong, fontSize: 12, fontWeight: "900" },
+  dateHistoryRow: { flexDirection: "row", gap: 4, marginTop: 4 },
+  dateHistoryDay: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "transparent",
+  },
+  dateHistoryDaySelected: { borderColor: "#ffb179", backgroundColor: "#fff3e8" },
+  dateHistoryDow: { color: colors.inkMuted, fontSize: 9, fontWeight: "700" },
+  dateHistoryNum: { marginTop: 2, color: colors.ink, fontSize: 15, fontWeight: "900" },
+  dateHistorySelectedText: { color: theme.accentStrong },
+  dateHistoryDot: { marginTop: 3, height: 5, width: 5, borderRadius: 3, backgroundColor: "#aeb4af" },
+  dateHistoryDotActive: { backgroundColor: "#e97912" },
   notice: { borderWidth: 1, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12 },
   noticeText: { fontSize: 13, fontWeight: "600" },
   checkInNudge: {
-    marginBottom: 14,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: `${theme.accentStrong}33`,
     backgroundColor: theme.accentSoft,
-    borderRadius: radius.md,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: 18,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
   checkInIcon: {
-    height: 34,
-    width: 34,
-    borderRadius: radius.sm,
+    height: 30,
+    width: 30,
+    borderRadius: 15,
     backgroundColor: colors.surfaceRaised,
     alignItems: "center",
     justifyContent: "center",
   },
-  checkInTitle: { color: colors.ink, fontSize: 14, fontWeight: "800" },
+  checkInTitle: { color: colors.ink, fontSize: 13, fontWeight: "900" },
   checkInSub: { marginTop: 1, color: colors.inkMuted, fontSize: 11 },
   checkInButton: {
-    height: 36,
-    borderRadius: radius.md,
-    backgroundColor: theme.accent,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#ff7e1a",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
   },
-  checkInButtonText: { color: theme.accentInk, fontSize: 12, fontWeight: "800" },
+  checkInButtonText: { color: theme.accentInk, fontSize: 11, fontWeight: "900" },
   checkInClose: { height: 28, width: 24, alignItems: "center", justifyContent: "center" },
   warnStrip: {
     borderWidth: 1,
@@ -2851,25 +4183,29 @@ const styles = StyleSheet.create({
   },
   warnText: { flex: 1, color: colors.warn, fontSize: 12 },
   heroCard: {
+    flexDirection: "row",
     alignItems: "center",
-    borderRadius: 28,
+    gap: 10,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.surfaceRaised,
-    paddingHorizontal: 18,
-    paddingVertical: 22,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
     shadowColor: "#0f172a",
     shadowOpacity: 0.08,
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 12 },
     elevation: 2,
   },
-  heroText: { marginTop: 8, color: colors.inkMuted, fontSize: 12, lineHeight: 18, textAlign: "center", maxWidth: 300 },
+  heroRingCol: { width: 84, alignItems: "center", justifyContent: "center" },
+  heroCopy: { flex: 1, minWidth: 0, alignItems: "flex-start" },
+  heroText: { marginTop: 5, color: colors.inkMuted, fontSize: 11, lineHeight: 15, textAlign: "left" },
   heroButton: {
-    marginTop: 14,
-    height: 44,
-    borderRadius: radius.md,
-    paddingHorizontal: 18,
+    marginTop: 6,
+    height: 32,
+    borderRadius: 16,
+    paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
@@ -2880,11 +4216,11 @@ const styles = StyleSheet.create({
     borderColor: `${theme.accentStrong}33`,
     backgroundColor: `${theme.accent}1a`,
   },
-  heroButtonText: { fontSize: 14, fontWeight: "800" },
+  heroButtonText: { fontSize: 12, fontWeight: "800" },
   heroButtonPrimaryText: { color: theme.accentInk },
   heroButtonSecondaryText: { color: theme.accentStrong },
-  bandLegendCard: { padding: 12 },
-  bandLegendHeader: { minHeight: 24, flexDirection: "row", alignItems: "center", gap: 10 },
+  bandLegendCard: { padding: 7 },
+  bandLegendHeader: { minHeight: 18, flexDirection: "row", alignItems: "center", gap: 10 },
   bandLegendHeaderRight: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 7 },
   bandLegendDot: { height: 10, width: 10, borderRadius: 5 },
   bandLegendRows: { gap: 12, marginTop: 12 },
@@ -2896,14 +4232,51 @@ const styles = StyleSheet.create({
   bandLegendRange: { color: colors.inkFaint, fontSize: 11 },
   bandLegendNote: { marginTop: 1, color: colors.inkMuted, fontSize: 11, lineHeight: 16 },
   statGrid: { flexDirection: "row", gap: 8 },
-  statTile: { flex: 1, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, padding: 12 },
+  statTile: { flex: 1, minHeight: 62, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, padding: 8 },
   tileLabelRow: { flexDirection: "row", alignItems: "center", gap: 5 },
   tileLabel: { fontSize: 10, fontWeight: "800", color: colors.inkFaint, textTransform: "uppercase", letterSpacing: 1.5 },
-  tileValue: { marginTop: 7, fontSize: 21, fontWeight: "800", color: colors.ink },
-  tileSub: { marginTop: 4, color: colors.inkMuted, fontSize: 11 },
+  tileValue: { marginTop: 4, fontSize: 16, fontWeight: "800", color: colors.ink },
+  tileSub: { marginTop: 1, color: colors.inkMuted, fontSize: 10 },
   cardTitle: { color: colors.inkMuted, fontSize: 13, fontWeight: "800", textTransform: "uppercase", letterSpacing: 2 },
   cardTitleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
   planGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
+  trainingSummaryList: { gap: 6, marginTop: 8 },
+  trainingSummaryRow: {
+    minHeight: 50,
+    borderRadius: 16,
+    backgroundColor: colors.surfaceRaised,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.04,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 1,
+  },
+  // Opaque, not alpha-blended — a transparent backgroundColor combined with
+  // `elevation` (still active here since this style layers on trainingSummaryRow)
+  // makes Android render a hard gray shadow "plate" behind the row instead of a
+  // soft one, since the OS shadow renderer expects an opaque surface to cast onto.
+  trainingSummaryRowDone: { backgroundColor: "#f5faf6" },
+  trainingSummaryIcon: {
+    height: 40,
+    width: 40,
+    borderRadius: 12,
+    backgroundColor: "#fff3df",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  trainingSummaryIconPm: { backgroundColor: "#f0f2fb" },
+  trainingSummaryIconText: { marginTop: 1, color: "#b85307", fontSize: 11, fontWeight: "900" },
+  trainingSummaryIconTextPm: { color: "#5670ad" },
+  trainingSummaryCopy: { flex: 1, minWidth: 0 },
+  trainingSummaryTitle: { color: colors.ink, fontSize: 13, fontWeight: "900" },
+  trainingSummarySub: { marginTop: 0, color: colors.inkMuted, fontSize: 10, fontWeight: "500" },
+  trainingSummarySlot: { marginTop: 1, color: theme.accentStrong, fontSize: 9, fontWeight: "900" },
+  trainingSummaryAction: { color: theme.accentStrong, fontSize: 11, fontWeight: "900" },
   slotPill: { flexGrow: 1, flexBasis: 104, minWidth: 104, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, padding: 12 },
   slotPillDone: { borderColor: `${colors.ok}66`, backgroundColor: `${colors.ok}10` },
   slotType: { marginTop: 6, color: colors.ink, fontSize: 16, fontWeight: "800" },
@@ -2916,6 +4289,181 @@ const styles = StyleSheet.create({
   quickWaterGrid: { flexDirection: "row", gap: 8, marginTop: 12 },
   secondaryButton: { flex: 1, height: 42, borderRadius: radius.md, borderWidth: 1, borderColor: `${theme.accentStrong}44`, backgroundColor: `${theme.accent}1a`, alignItems: "center", justifyContent: "center" },
   secondaryText: { color: theme.accentStrong, fontSize: 12, fontWeight: "800" },
+  waterGoalCard: { padding: 14 },
+  waterGoalBody: { alignItems: "center", gap: 14, marginTop: 4 },
+  waterRingWrap: {
+    height: 176,
+    width: 176,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  waterRingInner: {
+    height: 128,
+    width: 128,
+    borderRadius: 64,
+    backgroundColor: colors.surfaceRaised,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2,
+  },
+  waterRingPct: { color: colors.ink, fontSize: 28, fontWeight: "900" },
+  waterRingLabel: { marginTop: 2, color: colors.inkMuted, fontSize: 11, fontWeight: "700" },
+  waterMetricGrid: { flexDirection: "row", gap: 8, width: "100%" },
+  waterMetricTile: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    padding: 10,
+  },
+  waterMetricLabel: {
+    color: colors.inkFaint,
+    fontSize: 8,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 1.1,
+  },
+  waterMetricValue: { marginTop: 5, color: colors.ink, fontSize: 16, fontWeight: "900" },
+  waterMetricValueGood: { color: colors.ok },
+  waterStatusPanel: {
+    width: "100%",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  waterStatusPanelGood: { borderColor: `${colors.ok}4d`, backgroundColor: `${colors.ok}14` },
+  waterStatusText: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  waterStatusTextGood: { color: colors.ok },
+  waterStatusSub: { marginTop: 2, color: colors.inkMuted, fontSize: 11 },
+  waterPresetGrid: { flexDirection: "row", gap: 8, marginTop: 12 },
+  waterPresetButton: {
+    flex: 1,
+    height: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  waterPresetButtonOn: { borderColor: "#ff7e1a", backgroundColor: "#ff7e1a" },
+  waterPresetText: { color: colors.inkMuted, fontSize: 12, fontWeight: "800" },
+  waterPresetTextOn: { color: "#1a0c00" },
+  waterInputRow: { flexDirection: "row", gap: 8, marginTop: 12 },
+  waterInput: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+    paddingHorizontal: 12,
+  },
+  waterPrimaryButton: {
+    height: 44,
+    minWidth: 82,
+    borderRadius: 12,
+    backgroundColor: "#ff7e1a",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  waterPrimaryText: { color: "#1a0c00", fontSize: 13, fontWeight: "900" },
+  waterSecondaryButton: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#ffbe83",
+    backgroundColor: "#fff7ed",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  waterSecondaryText: { color: theme.accentStrong, fontSize: 12, fontWeight: "900" },
+  waterError: { marginTop: 8, color: colors.bad, fontSize: 11, fontWeight: "800" },
+  waterReminderHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  waterReminderCopy: { flex: 1, minWidth: 0 },
+  waterReminderTitle: { marginTop: 10, color: colors.ink, fontSize: 13, fontWeight: "800" },
+  waterReminderSub: { marginTop: 2, color: colors.inkMuted, fontSize: 11 },
+  waterReminderToggle: {
+    height: 36,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  waterReminderToggleOn: { borderColor: "#ff7e1a", backgroundColor: "#ff7e1a" },
+  waterReminderToggleText: { color: colors.inkMuted, fontSize: 12, fontWeight: "900" },
+  waterReminderToggleTextOn: { color: "#1a0c00" },
+  waterPermission: { marginTop: 8, color: colors.inkFaint, fontSize: 11 },
+  waterChartTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  waterSegment: {
+    flexDirection: "row",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    padding: 3,
+  },
+  waterSegmentButton: { height: 30, minWidth: 58, borderRadius: 9, alignItems: "center", justifyContent: "center", paddingHorizontal: 9 },
+  waterSegmentButtonOn: { backgroundColor: "#ff7e1a" },
+  waterSegmentText: { color: colors.inkMuted, fontSize: 11, fontWeight: "800" },
+  waterSegmentTextOn: { color: "#1a0c00" },
+  waterChartKitWrap: {
+    marginTop: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+    overflow: "hidden",
+    alignItems: "center",
+  },
+  waterChartKit: {
+    borderRadius: 0,
+    paddingTop: 8,
+    paddingRight: 0,
+  },
+  waterBars: {
+    height: 176,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 5,
+    marginTop: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+  },
+  waterBarSlot: { flex: 1, minWidth: 0, height: "100%", justifyContent: "flex-end" },
+  waterBar: { width: "100%", borderTopLeftRadius: 6, borderTopRightRadius: 6 },
+  waterBarsFooter: { marginTop: 8, flexDirection: "row", justifyContent: "space-between", gap: 8 },
+  waterBarsLabel: { color: colors.inkFaint, fontSize: 10, fontWeight: "700" },
+  waterHistoryList: { marginTop: 8 },
+  waterHistoryRow: {
+    minHeight: 54,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 10,
+  },
+  waterHistoryDate: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  waterHistorySub: { marginTop: 2, color: colors.inkMuted, fontSize: 11 },
+  waterHistoryAmount: { color: colors.ink, fontSize: 16, fontWeight: "900" },
+  waterHistoryAmountGood: { color: colors.ok },
+  controlDisabled: { opacity: 0.45 },
   waterEntryWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 12 },
   waterEntryChip: {
     minHeight: 24,
@@ -2946,6 +4494,159 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
   legendDot: { height: 8, width: 8, borderRadius: 4 },
   legendText: { fontSize: 11, color: colors.inkMuted, fontWeight: "600" },
+  progressTabs: {
+    flexDirection: "row",
+    gap: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceRaised,
+    padding: 4,
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1,
+  },
+  progressTab: {
+    flex: 1,
+    height: 30,
+    borderRadius: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+  progressTabOn: { backgroundColor: theme.accentSoft },
+  progressTabText: { color: colors.inkMuted, fontSize: 10, fontWeight: "900" },
+  progressTabTextOn: { color: theme.accentStrong },
+  achievementsHero: { padding: 14, borderRadius: 16 },
+  achievementHeroTop: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  achievementHeroIcon: {
+    height: 32,
+    width: 32,
+    borderRadius: 12,
+    backgroundColor: "#fff3df",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  achievementEyebrow: {
+    color: theme.accentStrong,
+    fontSize: 9,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 1.3,
+  },
+  achievementHeroTitle: { marginTop: 2, color: colors.ink, fontSize: 20, fontWeight: "700" },
+  achievementHeroSub: { marginTop: 2, color: colors.inkMuted, fontSize: 11 },
+  achievementProgressTrack: { marginTop: 14, height: 8, borderRadius: 999, backgroundColor: colors.surfaceInset, overflow: "hidden" },
+  achievementProgressFill: { height: 8, borderRadius: 999, backgroundColor: "#ff7e1a" },
+  achievementHeroStats: { marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.line, flexDirection: "row" },
+  achievementHeroStat: { flex: 1, minWidth: 0 },
+  achievementHeroStatRight: { borderLeftWidth: 1, borderLeftColor: colors.line, paddingLeft: 14 },
+  achievementMetricLabel: {
+    color: colors.inkFaint,
+    fontSize: 8,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 1.1,
+  },
+  achievementHeroMetric: { marginTop: 4, color: colors.ink, fontSize: 18, fontWeight: "700" },
+  achievementMetricSub: { marginTop: 1, color: colors.inkMuted, fontSize: 10 },
+  achievementCard: { padding: 14, borderRadius: 16 },
+  achievementCardTop: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  achievementIcon: { height: 34, width: 34, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  achievementIconDefault: { backgroundColor: "#fff3df" },
+  achievementIconTraining: { backgroundColor: "#f5f3ed" },
+  achievementIconHydration: { backgroundColor: "#f1f7ef" },
+  achievementTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  achievementTitle: { color: colors.ink, fontSize: 15, fontWeight: "700" },
+  achievementDescription: { marginTop: 2, color: colors.inkMuted, fontSize: 10 },
+  achievementBadge: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 },
+  achievementBadgeUnlocked: { backgroundColor: "#dcfce7" },
+  achievementBadgeLeft: { backgroundColor: "#ffe2e2" },
+  achievementBadgeText: { fontSize: 8, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.6 },
+  achievementBadgeTextUnlocked: { color: "#16803c" },
+  achievementBadgeTextLeft: { color: "#e33a3a" },
+  achievementMetrics: { marginTop: 14, flexDirection: "row", gap: 8 },
+  achievementMetric: { flex: 1, minWidth: 0 },
+  achievementMetricValue: { marginTop: 4, color: colors.ink, fontSize: 20, fontWeight: "700" },
+  achievementMetricLongest: { marginTop: 6, color: colors.ink, fontSize: 12, fontWeight: "700" },
+  achievementHistory: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 12 },
+  achievementHistoryCell: {
+    height: 18,
+    width: 18,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  achievementHistoryCellMet: { borderColor: "#ff8a1f", backgroundColor: "#ff8a1f" },
+  achievementActions: { flexDirection: "row", gap: 8, marginTop: 14 },
+  achievementActionSecondary: {
+    flex: 1,
+    height: 34,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#ffbe83",
+    backgroundColor: "#fff7ed",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  achievementActionSecondaryText: { color: theme.accentStrong, fontSize: 10, fontWeight: "700" },
+  achievementActionPrimary: {
+    flex: 1,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: "#ff8a1f",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  achievementActionPrimaryText: { color: "#1a0c00", fontSize: 10, fontWeight: "700" },
+  achievementActionDisabled: { backgroundColor: colors.surfaceInset },
+  achievementActionDisabledText: { color: colors.inkFaint },
+  achievementSkeleton: { height: 170, borderRadius: 16, backgroundColor: colors.surfaceInset },
+  achievementsUnavailable: { alignItems: "center", gap: 8, padding: 18 },
+  skeletonLineShort: { width: 110, height: 12, borderRadius: 6, backgroundColor: colors.surfaceInset },
+  skeletonLine: { marginTop: 10, width: 180, height: 20, borderRadius: 8, backgroundColor: colors.surfaceInset },
+  skeletonBar: { marginTop: 14, height: 8, borderRadius: 999, backgroundColor: colors.surfaceInset },
+  // Full-screen, in-window overlay (renders over AppFrame at the screen root).
+  rewardOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000, elevation: 1000 },
+  rewardBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 18,
+    // Very light dim — the soft light blur does most of the work.
+    backgroundColor: "rgba(18,24,22,0.05)",
+  },
+  rewardSheet: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceRaised,
+    padding: 14,
+  },
+  rewardHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  rewardClose: {
+    height: 34,
+    width: 34,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rewardTitle: { marginTop: 4, color: colors.ink, fontSize: 22, fontWeight: "700" },
+  rewardDescription: { marginTop: 6, color: colors.inkMuted, fontSize: 13, lineHeight: 18 },
+  rewardBadge: { marginTop: 12, borderRadius: 14, borderWidth: 1, borderColor: `${theme.accentStrong}33`, backgroundColor: theme.accentSoft, padding: 12, alignItems: "center" },
+  rewardBadgeText: { color: theme.accentStrong, fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1.2 },
+  rewardBadgeNumber: { marginTop: 2, color: colors.ink, fontSize: 30, fontWeight: "800" },
+  rewardBadgeSub: { color: colors.inkMuted, fontSize: 12 },
+  rewardDoneBtn: { marginTop: 12, height: 44, borderRadius: radius.md, backgroundColor: theme.accent, alignItems: "center", justifyContent: "center" },
+  rewardDoneText: { color: theme.accentInk, fontSize: 15, fontWeight: "800" },
   // Trends — sub-tab switcher
   trendTabs: { flexDirection: "row", gap: 8, paddingVertical: 2 },
   trendTab: { height: 34, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, justifyContent: "center", backgroundColor: colors.surfaceRaised },
@@ -2993,34 +4694,10 @@ const styles = StyleSheet.create({
   scaleHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
   scaleLabel: { color: colors.ink, fontSize: 12, fontWeight: "800" },
   scaleValue: { color: theme.accentStrong, fontSize: 11, fontWeight: "800" },
-  scaleTrack: {
-    height: 16,
-    justifyContent: "center",
-    overflow: "visible",
-  },
-  scaleBase: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    height: 3,
-    borderRadius: 999,
-    backgroundColor: colors.lineStrong,
-  },
-  scaleFill: {
-    position: "absolute",
-    left: 0,
-    height: 3,
-    borderRadius: 999,
-    backgroundColor: theme.accentStrong,
-  },
-  scaleThumb: {
-    position: "absolute",
-    marginLeft: -6,
-    height: 12,
-    width: 12,
-    borderRadius: 6,
-    backgroundColor: theme.accentStrong,
-  },
+  meterRow: { flexDirection: "row", alignItems: "flex-end", height: 32, gap: 3 },
+  meterBar: { flex: 1, borderRadius: 3 },
+  meterBarFilled: { backgroundColor: theme.accentStrong },
+  meterBarEmpty: { backgroundColor: colors.surfaceInset, borderWidth: 1, borderColor: colors.line },
   scaleHints: { flexDirection: "row", justifyContent: "space-between" },
   scaleHint: { color: colors.inkFaint, fontSize: 9, fontWeight: "700", textTransform: "uppercase" },
   choiceGrid: { flexDirection: "row", gap: 8 },
@@ -3097,6 +4774,24 @@ const styles = StyleSheet.create({
   trainingChipOn: { borderColor: theme.accentStrong, backgroundColor: theme.accentSoft },
   trainingText: { color: colors.inkMuted, fontSize: 11, fontWeight: "800" },
   trainingTextOn: { color: theme.accentStrong },
+  // Web-style dropdown
+  dropdownField: { marginTop: 6, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, height: 46, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, paddingHorizontal: 12 },
+  dropdownValue: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14, fontWeight: "700" },
+  dropdownBackdrop: { flex: 1, justifyContent: "center", padding: 24, backgroundColor: "rgba(18,24,22,0.35)" },
+  dropdownSheet: { maxHeight: "80%", borderRadius: radius.lg, borderWidth: 1, borderColor: colors.lineStrong, backgroundColor: colors.surfaceRaised, paddingVertical: 8, paddingHorizontal: 6 },
+  dropdownSheetTitle: { paddingHorizontal: 10, paddingVertical: 8, fontSize: 11, fontWeight: "800", letterSpacing: 1, textTransform: "uppercase", color: colors.inkFaint },
+  // Quick check-in — bottom sheet chrome (drag handle + title + close), mirrors the web app's popup.
+  quickCheckInBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(18,24,22,0.4)" },
+  quickCheckInSheet: { maxHeight: "88%", borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, borderWidth: 1, borderColor: colors.lineStrong, borderBottomWidth: 0, backgroundColor: colors.surfaceRaised },
+  quickCheckInHandle: { alignSelf: "center", marginTop: 8, height: 4, width: 40, borderRadius: 2, backgroundColor: colors.lineStrong },
+  quickCheckInHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 10, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: colors.line },
+  quickCheckInTitle: { fontSize: 17, fontWeight: "700", color: colors.ink },
+  quickCheckInClose: { height: 32, width: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceInset },
+  quickCheckInBody: { paddingHorizontal: 16, paddingVertical: 16 },
+  dropdownItem: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, borderRadius: radius.sm, paddingHorizontal: 12, paddingVertical: 12 },
+  dropdownItemOn: { backgroundColor: colors.surfaceInset },
+  dropdownItemText: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
+  dropdownItemTextOn: { color: theme.accentStrong, fontWeight: "800" },
   twoCols: { flexDirection: "row", gap: 12 },
   recoveryWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
   recoveryChip: { borderRadius: 999, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, paddingHorizontal: 12, paddingVertical: 9 },
@@ -3106,6 +4801,13 @@ const styles = StyleSheet.create({
   noteBox: { minHeight: 92, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, paddingHorizontal: 12, paddingVertical: 10, color: colors.ink, fontSize: 14, textAlignVertical: "top" },
   noteItem: { borderLeftWidth: 3, borderLeftColor: theme.accentStrong, backgroundColor: colors.surfaceInset, borderRadius: radius.md, padding: 10 },
   noteText: { color: colors.ink, fontSize: 13 },
+  sessionPhotoRow: { marginTop: 8, flexDirection: "row", flexWrap: "wrap", gap: 8, alignItems: "center" },
+  sessionPhotoThumb: { width: 64, height: 64, borderRadius: radius.sm, backgroundColor: colors.surfaceInset },
+  sessionPhotoButton: { width: 64, height: 64, flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, borderRadius: radius.sm, borderWidth: 1, borderStyle: "dashed", borderColor: colors.line },
+  sessionPhotoButtonText: { fontSize: 9, fontWeight: "700", color: colors.inkFaint, textTransform: "uppercase" },
+  sessionPhotoPreviewRow: { position: "relative" },
+  sessionPhotoPreviewImage: { width: 64, height: 64, borderRadius: radius.sm, backgroundColor: colors.surfaceInset },
+  sessionPhotoPreviewRemove: { position: "absolute", top: -6, right: -6, height: 20, width: 20, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceRaised, borderWidth: 1, borderColor: colors.line },
   accentItem: { borderLeftWidth: 3, borderLeftColor: theme.accentStrong, backgroundColor: `${theme.accent}0f`, borderRadius: radius.md, padding: 10 },
   insetItem: { borderLeftWidth: 3, borderLeftColor: colors.inkFaint, backgroundColor: colors.surfaceInset, borderRadius: radius.md, padding: 10 },
   itemBody: { color: colors.ink, fontSize: 13, lineHeight: 18 },

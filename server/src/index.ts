@@ -8,6 +8,7 @@ import authRouter from "./routes/auth";
 import athleteRouter from "./routes/athlete";
 import guardianRouter from "./routes/guardian";
 import notificationsRouter from "./routes/notifications";
+import avatarRouter from "./routes/avatar";
 import { errorHandler } from "./middleware/errorHandler";
 
 async function main() {
@@ -51,6 +52,7 @@ async function main() {
   app.use("/api/athlete", athleteRouter);
   app.use("/api/guardian", guardianRouter);
   app.use("/api/notifications", notificationsRouter);
+  app.use("/api/me", avatarRouter);
 
   // 404 for unknown /api/* paths
   app.use("/api", (_req, res) => {

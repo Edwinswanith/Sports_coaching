@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "../../components/Card";
 import { Icon } from "../../components/ui";
+import { Avatar, AvatarBadgePicker } from "../../components/Avatar";
 import { PasswordInput } from "../../components/PasswordInput";
 import { AppShell, type NavItem } from "../../components/AppShell";
 import {
@@ -122,6 +123,76 @@ export default function AccountPage() {
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+
+  async function applyAvatarResponse(res: Response) {
+    const json = (await res.json().catch(() => ({}))) as {
+      avatar?: StoredUser["avatar"];
+      error?: string;
+    };
+    if (!res.ok || !json.avatar) {
+      setAvatarError(
+        json?.error === "file_too_large"
+          ? "That image is too large."
+          : json?.error === "unsupported_file_type"
+            ? "Please choose a JPG, PNG, or WEBP image."
+            : "Could not update your profile photo."
+      );
+      return;
+    }
+    setUser((prev) => {
+      if (!prev) return prev;
+      const updated = { ...prev, avatar: json.avatar };
+      setStoredUser(updated);
+      return updated;
+    });
+  }
+
+  async function uploadAvatarFile(file: File) {
+    setAvatarBusy(true);
+    setAvatarError(null);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const res = await apiFetch("/api/me/avatar", { method: "POST", body });
+      await applyAvatarResponse(res);
+    } catch {
+      setAvatarError("Network error - please try again.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  async function chooseAvatarDefault(defaultId: string) {
+    setAvatarBusy(true);
+    setAvatarError(null);
+    try {
+      const res = await apiFetch("/api/me/avatar/default", {
+        method: "POST",
+        body: JSON.stringify({ defaultId }),
+      });
+      await applyAvatarResponse(res);
+    } catch {
+      setAvatarError("Network error - please try again.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  async function removeAvatar() {
+    setAvatarBusy(true);
+    setAvatarError(null);
+    try {
+      const res = await apiFetch("/api/me/avatar", { method: "DELETE" });
+      await applyAvatarResponse(res);
+    } catch {
+      setAvatarError("Network error - please try again.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
   const dashboardPath = useMemo(
     () => (user ? dashboardPathForRole(user.role as Role) : null),
     [user]
@@ -227,6 +298,48 @@ export default function AccountPage() {
       onSignOut={logout}
     >
       <section className="space-y-4">
+        <Card title="Profile photo">
+          <div className="flex items-center gap-4">
+            <Avatar avatar={user.avatar} name={user.name} className="h-16 w-16" />
+            <div className="flex flex-wrap gap-2">
+              <label className="btn-secondary cursor-pointer">
+                {avatarBusy ? "Uploading..." : "Upload photo"}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  disabled={avatarBusy}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (file) uploadAvatarFile(file);
+                  }}
+                />
+              </label>
+              {user.avatar?.kind ? (
+                <button
+                  type="button"
+                  onClick={removeAvatar}
+                  disabled={avatarBusy}
+                  className="btn-ghost"
+                >
+                  Remove
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <p className="label mt-4">Or pick a badge icon</p>
+          <div className="mt-2">
+            <AvatarBadgePicker
+              selectedId={user.avatar?.kind === "default" ? user.avatar.defaultId : null}
+              onSelect={chooseAvatarDefault}
+            />
+          </div>
+
+          {avatarError ? <p className="mt-3 text-[11px] text-bad">{avatarError}</p> : null}
+        </Card>
+
         {user.role === "athlete" ? (
           <Card title="Athlete profile">
             {profileStatus === "loading" ? (

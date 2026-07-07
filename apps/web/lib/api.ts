@@ -21,6 +21,8 @@ export type StoredUser = {
   mustChangePassword?: boolean;
   /** Coach who can also create/list other coaches in their academy. */
   isAcademyOwner?: boolean;
+  /** Profile picture: an uploaded photo, a bundled badge icon, or neither (initials fallback). */
+  avatar?: { kind: "photo" | "default" | null; defaultId: string | null };
 };
 
 export function getStoredUser(): StoredUser | null {
@@ -72,11 +74,14 @@ export async function apiFetch(
   path: string,
   init: RequestInit = {}
 ): Promise<Response> {
+  // FormData bodies (file uploads) must NOT get a manual Content-Type — the
+  // browser sets one with the correct multipart boundary itself.
+  const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
   const opts: RequestInit = {
     ...init,
     credentials: "include",
     headers: {
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      ...(init.body && !isFormData ? { "Content-Type": "application/json" } : {}),
       ...(init.headers ?? {}),
     },
   };

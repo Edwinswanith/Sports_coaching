@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card } from "../../../components/Card";
 import { Ring, bandFor } from "../../../components/Ring";
-import { Chip, StatTile, dash, Icon } from "../../../components/ui";
+import { Chip, StatTile, dash, wellnessTen, Icon } from "../../../components/ui";
 import { AppShell, type NavItem } from "../../../components/AppShell";
 import { BottomSheet } from "../../../components/BottomSheet";
 import { TrendRow, type TrendPoint } from "../../../components/Trend";
@@ -331,10 +331,10 @@ const ROSTER_FILTERS: { key: RosterFilter; label: string }[] = [
 
 /** Short, human reason an athlete is flagged — mirrors attentionRank's order. */
 function attentionReason(c: DailyCard): string {
-  if (c.rpe?.riskFlag === "red") return "High RPE risk";
+  if (c.rpe?.riskFlag === "red") return "High RPM risk";
   if (c.injury.active) return c.injury.bodyPart ? `Injury · ${c.injury.bodyPart}` : "Injury";
   if (c.readinessScore !== null && c.readinessScore < 60) return `Low readiness ${c.readinessScore}`;
-  if (c.rpe?.riskFlag === "amber") return "RPE caution";
+  if (c.rpe?.riskFlag === "amber") return "RPM caution";
   if (c.readinessScore !== null && c.readinessScore < 80) return `Readiness ${c.readinessScore}`;
   return "Check in";
 }
@@ -517,8 +517,8 @@ function AthleteDetail({ card, date }: { card: DailyCard; date: string }) {
         ))}
       </div>
       <p className="text-[11px] text-ink-muted">
-        Soreness <span className="nums font-semibold text-ink">{dash(card.soreness)}</span>
-        <span className="text-ink-faint"> · sleep {dash(card.sleep.quality)}/5</span>
+        Soreness <span className="nums font-semibold text-ink">{wellnessTen(card.soreness)}/10</span>
+        <span className="text-ink-faint"> · sleep {wellnessTen(card.sleep.quality)}/10</span>
       </p>
 
       <div className="border-t border-line pt-3">
@@ -528,7 +528,7 @@ function AthleteDetail({ card, date }: { card: DailyCard; date: string }) {
               <Chip band={card.rpe.riskFlag}>{card.rpe.riskFlag}</Chip>
               <span className="nums font-display text-lg font-bold text-ink">{card.rpe.calculatedTrainingLoad}</span>
               <span className="ml-auto text-[11px] text-ink-faint">
-                RPE {card.rpe.rpe} · {SLOT_LABEL[card.rpe.sessionType]}
+                RPM {card.rpe.rpe} · {SLOT_LABEL[card.rpe.sessionType]}
               </span>
             </div>
             <p className="mt-1 text-[11px] text-ink-muted">{card.rpe.trainingCategory}</p>
@@ -541,7 +541,7 @@ function AthleteDetail({ card, date }: { card: DailyCard; date: string }) {
             ) : null}
           </div>
         ) : (
-          <p className="text-[11px] uppercase tracking-wide text-ink-faint">No RPE today</p>
+          <p className="text-[11px] uppercase tracking-wide text-ink-faint">No RPM today</p>
         )}
       </div>
 

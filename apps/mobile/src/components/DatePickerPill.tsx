@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, StyleSheet, View } from "react-native";
+import { Text } from "./AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius } from "../lib/theme";
 
@@ -33,7 +34,7 @@ function dateKey(date: Date): string {
 }
 
 function displayDate(value: string): string {
-  return value.split("-").reverse().join("-");
+  return value.split("-").reverse().join(" - ");
 }
 
 const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -60,6 +61,7 @@ export function DatePickerPill({
   accent = "#ff7e1a",
   accentInk = "#1a0c00",
   compact = false,
+  iconOnly = false,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -68,6 +70,8 @@ export function DatePickerPill({
   accentInk?: string;
   /** Narrower pill with a short "26 Jun" label — for crowded header rows. */
   compact?: boolean;
+  /** Render only a calendar icon button (no date text) — for header action rows. */
+  iconOnly?: boolean;
 }) {
   const selected = useMemo(() => parseDate(value), [value]);
   const [open, setOpen] = useState(false);
@@ -112,16 +116,28 @@ export function DatePickerPill({
 
   return (
     <>
-      <Pressable
-        onPress={openPicker}
-        hitSlop={8}
-        style={({ pressed }) => [styles.pill, compact ? styles.pillCompact : null, pressed ? { opacity: 0.82 } : null]}
-        accessibilityRole="button"
-        accessibilityLabel={accessibilityLabel}
-      >
-        <Text style={styles.pillText}>{compact ? shortDate(value) : displayDate(value)}</Text>
-        <Ionicons name="calendar-outline" size={14} color={colors.inkMuted} />
-      </Pressable>
+      {iconOnly ? (
+        <Pressable
+          onPress={openPicker}
+          hitSlop={8}
+          style={({ pressed }) => [styles.iconButton, pressed ? { opacity: 0.82 } : null]}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+        >
+          <Ionicons name="calendar-outline" size={24} color={colors.ink} />
+        </Pressable>
+      ) : (
+        <Pressable
+          onPress={openPicker}
+          hitSlop={8}
+          style={({ pressed }) => [styles.pill, compact ? styles.pillCompact : null, pressed ? { opacity: 0.82 } : null]}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+        >
+          <Text style={styles.pillText}>{compact ? shortDate(value) : displayDate(value)}</Text>
+          <Ionicons name="calendar-outline" size={14} color={colors.inkMuted} />
+        </Pressable>
+      )}
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
@@ -210,9 +226,9 @@ export function DatePickerPill({
 
 const styles = StyleSheet.create({
   pill: {
-    height: 38,
-    minWidth: 124,
-    borderRadius: radius.sm,
+    height: 36,
+    minWidth: 132,
+    borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.surfaceInset,
@@ -223,7 +239,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   pillCompact: { minWidth: 0, paddingHorizontal: 9 },
-  pillText: { fontSize: 12, fontWeight: "700", color: colors.ink },
+  pillText: { fontSize: 12, fontWeight: "800", color: colors.ink },
+  iconButton: {
+    height: 44,
+    width: 44,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceRaised,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
+  },
   backdrop: {
     flex: 1,
     justifyContent: "center",

@@ -24,8 +24,14 @@ type ShellProps = {
   nav: NavItem[];
   activeKey: string;
   onNavigate: (key: string) => void;
-  /** Right-aligned header controls (e.g. a date picker). */
+  /** Right-aligned header controls, in their own row below the title. */
   headerActions?: ReactNode;
+  /** Compact icon-sized control rendered inline with the bell/avatar (e.g. a date-picker icon button). */
+  headerIcon?: ReactNode;
+  /** Full override for the label/title/subtitle block (e.g. an avatar + greeting). */
+  titleSlot?: ReactNode;
+  /** Hide the default right-side profile avatar — use when titleSlot already renders its own profile menu. */
+  hideProfileMenu?: boolean;
   onSignOut: () => void;
   children: ReactNode;
 };
@@ -43,6 +49,9 @@ export function AppShell({
   activeKey,
   onNavigate,
   headerActions,
+  headerIcon,
+  titleSlot,
+  hideProfileMenu,
   onSignOut,
   children,
 }: ShellProps) {
@@ -66,13 +75,18 @@ export function AppShell({
         <div className="space-y-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
-              <p className="label text-accent-strong">{roleLabel}</p>
-              <h1 className="truncate font-display text-lg font-bold leading-tight text-ink">{title}</h1>
-              {subtitle ? <p className="truncate text-[11px] text-ink-muted">{subtitle}</p> : null}
+              {titleSlot ?? (
+                <>
+                  <p className="label text-accent-strong">{roleLabel}</p>
+                  <h1 className="truncate font-display text-lg font-bold leading-tight text-ink">{title}</h1>
+                  {subtitle ? <p className="truncate text-[11px] text-ink-muted">{subtitle}</p> : null}
+                </>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <NotificationCenter />
-              <ProfileMenu userName={userName} role={role} onSignOut={onSignOut} />
+              {headerIcon}
+              {hideProfileMenu ? null : <ProfileMenu userName={userName} role={role} onSignOut={onSignOut} />}
             </div>
           </div>
           {headerActions ? (

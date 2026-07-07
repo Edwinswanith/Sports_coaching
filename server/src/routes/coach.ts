@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { Types } from "mongoose";
+import { Types, type HydratedDocument } from "mongoose";
 import bcrypt from "bcryptjs";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/role";
@@ -44,14 +44,31 @@ import {
   buildCoachNotesInbox,
 } from "../services/analytics";
 import { parseDateOrNull } from "../lib/trainingCategories";
+import { avatarFilePath, avatarSummary } from "../services/avatar";
 import {
   fetchThread,
   sendMessage,
+  messageView,
   markThreadRead,
   buildCoachThreads,
   coachTotalUnread,
   clampMsgLimit,
 } from "../services/messaging";
+import multer from "multer";
+import fs from "fs";
+import {
+  WorkoutMedia,
+  MEDIA_CONTEXTS,
+  type WorkoutMediaDoc,
+} from "../models/WorkoutMedia";
+import {
+  mediaUpload,
+  mediaFilePath,
+  serializeMedia,
+  markMediaSent,
+  convertMediaToTable,
+  updateMediaTable,
+} from "../services/media";
 
 const router = Router();
 
@@ -180,7 +197,7 @@ router.get("/athletes", async (req: Request, res: Response) => {
     .select("_id userId sport position academyId")
     .lean();
   const users = await User.find({ _id: { $in: profiles.map((p) => p.userId) } })
-    .select("_id name email")
+    .select("_id name email avatarKind avatarDefaultId")
     .lean();
   const userById = new Map(users.map((u) => [u._id.toString(), u]));
 
@@ -194,11 +211,36 @@ router.get("/athletes", async (req: Request, res: Response) => {
       sport: p.sport,
       position: p.position ?? null,
       academyId: p.academyId ? (p.academyId as Types.ObjectId).toString() : null,
+      avatar: u ? avatarSummary(u) : { kind: null, defaultId: null },
     };
   });
 
   res.json({ athletes });
 });
+
+/** GET /api/coach/athletes/:athleteId/avatar/file — streams an assigned athlete's uploaded profile photo. */
+router.get(
+  "/athletes/:athleteId/avatar/file",
+  requireAthleteAccess("athleteId"),
+  async (req: Request, res: Response) => {
+    const profile = await AthleteProfile.findById(req.params.athleteId).select("userId").lean();
+    const user = profile
+      ? await User.findById(profile.userId).select("avatarKind avatarStoredFilename avatarMimeType").lean()
+      : null;
+    if (!user || user.avatarKind !== "photo" || !user.avatarStoredFilename) {
+      res.status(404).json({ error: "no_avatar_photo" });
+      return;
+    }
+    const filePath = avatarFilePath(user);
+    res.type(user.avatarMimeType ?? "image/jpeg");
+    res.setHeader("Cache-Control", "private, max-age=0, no-store");
+    res.sendFile(filePath, (err) => {
+      if (err && !res.headersSent) {
+        res.status(404).json({ error: "file_missing" });
+      }
+    });
+  }
+);
 
 // ── Coach-led onboarding ──────────────────────────────────────────────────
 // A coach provisions athletes/guardians in their own academy. Scoped & audited;
@@ -655,22 +697,13 @@ router.post(
       res.status(400).json({ error: "message_too_long" });
       return;
     }
-    const created = await sendMessage({
+    const { message: created, media } = await sendMessage({
       coachId: req.actor.userId,
       athleteId: new Types.ObjectId(req.params.athleteId),
       senderRole: "coach",
       body,
     });
-    res.status(201).json({
-      message: {
-        id: created._id.toString(),
-        body: created.body,
-        senderRole: "coach",
-        mine: true,
-        read: false,
-        createdAt: (created.createdAt as Date).toISOString(),
-      },
-    });
+    res.status(201).json({ message: messageView(created, "coach", media) });
   }
 );
 
@@ -971,7 +1004,7 @@ router.post(
       (typeof b.intensityRpe !== "number" ||
         Number.isNaN(b.intensityRpe) ||
         b.intensityRpe < 1 ||
-        b.intensityRpe > 10)
+        b.intensityRpe > 100)
     ) {
       res.status(400).json({ error: "invalid_intensityRpe" });
       return;
@@ -1008,6 +1041,104 @@ router.post(
     );
     const saved = await TrainingSession.findOne({ athleteId, date, slot }).lean();
     res.json({ session: saved });
+  }
+);
+
+function serializeSessionPhoto(p: {
+  _id: Types.ObjectId;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedAt?: Date;
+}) {
+  return {
+    id: p._id.toString(),
+    originalName: p.originalName,
+    mimeType: p.mimeType,
+    sizeBytes: p.sizeBytes,
+    uploadedAt: (p.uploadedAt ?? new Date()).toISOString(),
+  };
+}
+
+/**
+ * POST /api/coach/athletes/:athleteId/training/:slot/photos  multipart, field "file", body: { date }
+ * Attaches a photo to a session's notes — visible to both sides immediately
+ * (no send gate), matching the shared/no-gate `notes` field it sits next to.
+ */
+router.post(
+  "/athletes/:athleteId/training/:slot/photos",
+  writeRateLimit({ windowMs: 60_000, max: 20 }),
+  requireAthleteAccess("athleteId"),
+  (req: Request, res: Response, next) => {
+    mediaUpload.single("file")(req, res, (err: unknown) => {
+      if (!err) {
+        next();
+        return;
+      }
+      if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+        res.status(400).json({ error: "file_too_large" });
+        return;
+      }
+      res.status(400).json({ error: "unsupported_file_type" });
+    });
+  },
+  async (req: Request, res: Response) => {
+    const slot = req.params.slot as (typeof SESSION_SLOTS)[number];
+    if (!SESSION_SLOTS.includes(slot)) {
+      res.status(400).json({ error: "invalid_slot" });
+      return;
+    }
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({ error: "file_required" });
+      return;
+    }
+    const date = strictDate(req.body?.date, res);
+    if (!date) {
+      await fs.promises.unlink(file.path).catch(() => undefined);
+      return;
+    }
+    const athleteId = new Types.ObjectId(req.params.athleteId);
+    const photo = {
+      _id: new Types.ObjectId(),
+      storedFilename: file.filename,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      sizeBytes: file.size,
+      uploadedAt: new Date(),
+    };
+    await TrainingSession.updateOne(
+      { athleteId, date, slot },
+      { $push: { photos: photo }, $setOnInsert: { athleteId, date, slot } },
+      { upsert: true, runValidators: true }
+    );
+    res.status(201).json({ photo: serializeSessionPhoto(photo) });
+  }
+);
+
+/** GET /api/coach/athletes/:athleteId/training/:slot/photos/:photoId/file — streams the raw image bytes. */
+router.get(
+  "/athletes/:athleteId/training/:slot/photos/:photoId/file",
+  requireAthleteAccess("athleteId"),
+  async (req: Request, res: Response) => {
+    const athleteId = new Types.ObjectId(req.params.athleteId);
+    const session = await TrainingSession.findOne(
+      { athleteId, "photos._id": req.params.photoId },
+      { "photos.$": 1 }
+    ).lean();
+    const photo = session?.photos?.[0];
+    if (!photo) {
+      res.status(404).json({ error: "photo_not_found" });
+      return;
+    }
+    const filePath = mediaFilePath(photo);
+    res.type(photo.mimeType);
+    res.setHeader("Cache-Control", "private, max-age=0, no-store");
+    res.sendFile(filePath, (err) => {
+      if (err && !res.headersSent) {
+        res.status(404).json({ error: "file_missing" });
+      }
+    });
   }
 );
 
@@ -1068,6 +1199,206 @@ router.get(
       .limit(limit)
       .lean();
     res.json({ entries });
+  }
+);
+
+/**
+ * Coach image upload — a coach can upload an image tied to one assigned
+ * athlete (context: athlete / workout / training_plan), later send the raw
+ * image to that athlete, and/or convert it into a structured workout table
+ * via the (currently mock) OCR/vision adapter in services/workoutImageConverter.
+ *
+ * Every media row carries its own athleteId AND coachId, so access to a
+ * media-id-scoped route (get/file/send/convert below) is gated on BOTH
+ * `doc.coachId` matching the actor (mirrors the Message-thread ownership
+ * pattern) AND the athlete still being in the coach's current assignments —
+ * ending an assignment immediately cuts off a coach's access to that
+ * athlete's media, consistent with the rest of the coach-scope invariant.
+ */
+async function loadOwnedMedia(
+  req: Request,
+  res: Response
+): Promise<HydratedDocument<WorkoutMediaDoc> | null> {
+  const raw = req.params.mediaId;
+  if (!raw || !Types.ObjectId.isValid(raw)) {
+    res.status(400).json({ error: "invalid_media_id" });
+    return null;
+  }
+  const media = await WorkoutMedia.findById(raw);
+  if (!media) {
+    res.status(404).json({ error: "media_not_found" });
+    return null;
+  }
+  if (!req.actor || !media.coachId.equals(req.actor.userId)) {
+    res.status(403).json({ error: "not_media_owner" });
+    return null;
+  }
+  const assigned = req.actor.assignedAthleteIds ?? [];
+  if (!assigned.some((id) => id.equals(media.athleteId as Types.ObjectId))) {
+    res.status(403).json({ error: "not_in_assignments" });
+    return null;
+  }
+  return media;
+}
+
+/** POST /api/coach/athletes/:athleteId/media — multipart upload, field name "file". */
+router.post(
+  "/athletes/:athleteId/media",
+  writeRateLimit({ windowMs: 60_000, max: 20 }),
+  requireAthleteAccess("athleteId"),
+  (req: Request, res: Response, next) => {
+    mediaUpload.single("file")(req, res, (err: unknown) => {
+      if (!err) {
+        next();
+        return;
+      }
+      if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+        res.status(400).json({ error: "file_too_large" });
+        return;
+      }
+      res.status(400).json({ error: "unsupported_file_type" });
+    });
+  },
+  async (req: Request, res: Response) => {
+    if (!req.actor) {
+      res.status(401).json({ error: "unauthenticated" });
+      return;
+    }
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({ error: "file_required" });
+      return;
+    }
+    const context = req.body?.context;
+    if (!MEDIA_CONTEXTS.includes(context)) {
+      await fs.promises.unlink(file.path).catch(() => undefined);
+      res.status(400).json({ error: "invalid_context" });
+      return;
+    }
+    const created = await WorkoutMedia.create({
+      coachId: req.actor.userId,
+      athleteId: new Types.ObjectId(req.params.athleteId),
+      academyId: req.actor.academyId ?? null,
+      context,
+      originalName: file.originalname,
+      storedFilename: file.filename,
+      mimeType: file.mimetype,
+      sizeBytes: file.size,
+    });
+    res.status(201).json({ media: serializeMedia(created) });
+  }
+);
+
+/** GET /api/coach/athletes/:athleteId/media — this coach's uploads for one assigned athlete. */
+router.get(
+  "/athletes/:athleteId/media",
+  requireAthleteAccess("athleteId"),
+  async (req: Request, res: Response) => {
+    if (!req.actor) {
+      res.status(401).json({ error: "unauthenticated" });
+      return;
+    }
+    const rows = await WorkoutMedia.find({
+      coachId: req.actor.userId,
+      athleteId: new Types.ObjectId(req.params.athleteId),
+    })
+      .sort({ createdAt: -1 })
+      .lean<WorkoutMediaDoc[]>();
+    res.json({ media: rows.map((m) => serializeMedia(m as WorkoutMediaDoc)) });
+  }
+);
+
+/** GET /api/coach/media/:mediaId — one media's metadata (incl. conversion table). */
+router.get("/media/:mediaId", async (req: Request, res: Response) => {
+  const media = await loadOwnedMedia(req, res);
+  if (!media) return;
+  res.json({ media: serializeMedia(media) });
+});
+
+/** GET /api/coach/media/:mediaId/file — streams the raw image bytes. */
+router.get("/media/:mediaId/file", async (req: Request, res: Response) => {
+  const media = await loadOwnedMedia(req, res);
+  if (!media) return;
+  const filePath = mediaFilePath(media);
+  res.type(media.mimeType);
+  res.setHeader("Cache-Control", "private, max-age=0, no-store");
+  res.sendFile(filePath, (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).json({ error: "file_missing" });
+    }
+  });
+});
+
+/**
+ * POST /api/coach/media/:mediaId/send — shares the raw image with the
+ * athlete AND posts it into the coach⇄athlete chat thread (optional
+ * `caption` body text rides along on the same message).
+ */
+router.post(
+  "/media/:mediaId/send",
+  writeRateLimit({ windowMs: 60_000, max: 40 }),
+  async (req: Request, res: Response) => {
+    if (!req.actor) {
+      res.status(401).json({ error: "unauthenticated" });
+      return;
+    }
+    const media = await loadOwnedMedia(req, res);
+    if (!media) return;
+    const caption = reqStr(req.body?.caption);
+    if (caption.length > 4000) {
+      res.status(400).json({ error: "message_too_long" });
+      return;
+    }
+    const updated = await markMediaSent(media);
+    const { message } = await sendMessage({
+      coachId: req.actor.userId,
+      athleteId: updated.athleteId as Types.ObjectId,
+      senderRole: "coach",
+      body: caption,
+      mediaId: updated._id,
+    });
+    res.json({ media: serializeMedia(updated), message: messageView(message, "coach", updated) });
+  }
+);
+
+/** POST /api/coach/media/:mediaId/convert — runs the workout-image → table conversion. */
+router.post(
+  "/media/:mediaId/convert",
+  writeRateLimit({ windowMs: 60_000, max: 20 }),
+  async (req: Request, res: Response) => {
+    const media = await loadOwnedMedia(req, res);
+    if (!media) return;
+    const updated = await convertMediaToTable(media);
+    res.json({ media: serializeMedia(updated) });
+  }
+);
+
+/**
+ * PATCH /api/coach/media/:mediaId/table — body: { table: WorkoutTableRow[] }.
+ * Lets the coach correct/fill in the extracted table before sending (e.g.
+ * the source image had no explicit sets/reps for some rows). Rejected once
+ * the media has already been sent — the athlete has seen it, so it's frozen.
+ */
+router.patch(
+  "/media/:mediaId/table",
+  writeRateLimit({ windowMs: 60_000, max: 60 }),
+  async (req: Request, res: Response) => {
+    const media = await loadOwnedMedia(req, res);
+    if (!media) return;
+    if (!Array.isArray(req.body?.table)) {
+      res.status(400).json({ error: "table_required" });
+      return;
+    }
+    try {
+      const updated = await updateMediaTable(media, req.body.table);
+      res.json({ media: serializeMedia(updated) });
+    } catch (err) {
+      if ((err as Error).message === "already_sent") {
+        res.status(409).json({ error: "already_sent" });
+        return;
+      }
+      throw err;
+    }
   }
 );
 

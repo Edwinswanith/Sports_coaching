@@ -23,7 +23,10 @@ const messageSchema = new Schema(
     coachId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     athleteId: { type: Schema.Types.ObjectId, ref: "AthleteProfile", required: true },
     senderRole: { type: String, enum: MESSAGE_SENDER_ROLES, required: true },
-    body: { type: String, required: true, trim: true, maxlength: 4000 },
+    /** Optional when `mediaId` is set — an image can be sent with no caption. */
+    body: { type: String, default: "", trim: true, maxlength: 4000 },
+    /** Set when this message is a coach-shared image (see WorkoutMedia). */
+    mediaId: { type: Schema.Types.ObjectId, ref: "WorkoutMedia", default: null },
     /** Set when the recipient (the non-sender) has read it; null = unread. */
     readAt: { type: Date, default: null },
   },

@@ -1,5 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
+import { Text } from "./AppText";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -23,6 +24,7 @@ export function AppFrame({
   activeKey,
   onNavigate,
   headerAction,
+  renderHeader,
   children,
 }: {
   role: Role;
@@ -32,12 +34,14 @@ export function AppFrame({
   activeKey: string;
   onNavigate: (key: string) => void;
   headerAction?: ReactNode;
+  renderHeader?: (ctx: { theme: RoleTheme; unread: number; openNotifications: () => void }) => ReactNode;
   children: ReactNode;
 }) {
   const theme = ROLE_THEMES[role];
   const router = useRouter();
   const [unread, setUnread] = useState(0);
   const insets = useSafeAreaInsets();
+  const openNotifications = () => router.push("/notifications" as never);
 
   useEffect(() => {
     let active = true;
@@ -51,18 +55,22 @@ export function AppFrame({
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Text style={[styles.role, { color: theme.accentStrong }]}>{theme.label}</Text>
-          <Text style={styles.title} numberOfLines={1}>{title}</Text>
-          {subtitle ? <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text> : null}
+      {renderHeader ? (
+        renderHeader({ theme, unread, openNotifications })
+      ) : (
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <Text style={[styles.role, { color: theme.accentStrong }]}>{theme.label}</Text>
+            <Text style={styles.title} numberOfLines={1}>{title}</Text>
+            {subtitle ? <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text> : null}
+          </View>
+          <View style={styles.headerActions}>
+            {headerAction}
+            <IconButton icon="notifications-outline" onPress={openNotifications} theme={theme} badge={unread} />
+            <ProfileMenu theme={theme} />
+          </View>
         </View>
-        <View style={styles.headerActions}>
-          {headerAction}
-          <IconButton icon="notifications-outline" onPress={() => router.push("/notifications" as never)} theme={theme} badge={unread} />
-          <ProfileMenu theme={theme} />
-        </View>
-      </View>
+      )}
 
       <View style={styles.body}>{children}</View>
 
@@ -147,14 +155,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "stretch",
     gap: 4,
+    marginHorizontal: 10,
+    marginBottom: 6,
     paddingTop: 6,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     paddingBottom: 8,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 26,
     backgroundColor: "rgba(255,255,255,0.97)",
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: -6 },
+    elevation: 8,
   },
-  tab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2, minHeight: 58 },
+  tab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 1, minHeight: 48 },
   tabIconWrap: {
     position: "relative",
     height: 30,

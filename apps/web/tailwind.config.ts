@@ -1,16 +1,15 @@
 import type { Config } from "tailwindcss";
 
 // Apple's SF Pro leads; -apple-system + BlinkMacSystemFont resolve to the real
-// iOS/macOS system font (and auto-pick SF Pro Display vs Text by size). Inter is
-// self-hosted via next/font as `--font-body` for non-Apple/non-Android web.
+// iOS/macOS system font. Inter is the fallback everywhere else (Windows,
+// Linux, Android web), then system-ui/sans-serif as the final safety net.
 const NATIVE_STACK = [
   "-apple-system",
   "BlinkMacSystemFont",
-  '"SF Pro Display"',
   '"SF Pro Text"',
+  '"SF Pro Display"',
+  '"Inter"',
   "system-ui",
-  '"Segoe UI"',
-  "Roboto",
   "sans-serif",
 ];
 

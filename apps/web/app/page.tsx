@@ -10,7 +10,7 @@ const ICONS: Record<IconKey, () => JSX.Element> = {
 };
 
 const FEATURES: { icon: () => JSX.Element; title: string; sub: string }[] = [
-  { icon: Icon.spark, title: "Daily check-in & RPE", sub: "Log training load, sleep, soreness in seconds" },
+  { icon: Icon.spark, title: "Daily check-in & RPM", sub: "Log training load, sleep, soreness in seconds" },
   { icon: Icon.gauge, title: "Readiness & risk flags", sub: "Green / amber / red, computed for you" },
   { icon: Icon.message, title: "Coach feedback", sub: "Notes and guidance, right where you train" },
   { icon: Icon.chart, title: "Trends & history", sub: "Watch every number move over time" },

@@ -585,6 +585,37 @@ describe("Athlete training completion", () => {
     expect(dash.body.cards[0].sessions.AM.type).toBe("strength");
   });
 
+  test("completing a session auto-marks Attendance present → coach 'Present' count reflects it", async () => {
+    const admin = await makeUser("coach", "admin-auto");
+    const coach = await makeUser("coach", "coach-auto");
+    const { user: au, profile } = await makeAthlete("ath-auto");
+    await CoachAthleteAssignment.create({
+      coachId: coach._id,
+      athleteId: profile._id,
+      assignedBy: admin._id,
+    });
+
+    const app = buildApp();
+
+    // No attendance marked yet — coach should see 0 present.
+    const before = await request(app)
+      .get(`/api/coach/dashboard?date=${TODAY_STR}`)
+      .set("Authorization", `Bearer ${tokenFor(coach._id, "coach")}`);
+    expect(before.body.cards[0].attendance.status).toBeNull();
+
+    // Athlete completes their AM session (fills in data, "comes to ground").
+    const post = await request(app)
+      .post("/api/athlete/training/AM")
+      .set("Authorization", `Bearer ${tokenFor(au._id, "athlete")}`)
+      .send({ date: TODAY_STR, status: "completed" });
+    expect(post.status).toBe(200);
+
+    const after = await request(app)
+      .get(`/api/coach/dashboard?date=${TODAY_STR}`)
+      .set("Authorization", `Bearer ${tokenFor(coach._id, "coach")}`);
+    expect(after.body.cards[0].attendance.status).toBe("present");
+  });
+
   test("invalid slot → 400", async () => {
     const { user } = await makeAthlete("ath-slot");
     const res = await request(buildApp())

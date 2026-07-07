@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "../../../components/Card";
+import { AuthImage } from "../../../components/AuthImage";
 import { Ring, bandFor } from "../../../components/Ring";
-import { Chip, StatTile, dash, Icon } from "../../../components/ui";
+import { Chip, StatTile, dash, Icon, CompactDatePicker } from "../../../components/ui";
 import { AppShell } from "../../../components/AppShell";
+import { ProfileMenu } from "../../../components/ProfileMenu";
 import { athleteNav, isAthleteSection } from "../../../lib/athleteNav";
-import { QuickCheckIn } from "../../../components/QuickCheckIn";
 import {
   PerformanceTrendPanel,
   WellnessTrendPanel,
@@ -15,6 +16,7 @@ import {
   HeartRatePanel,
 } from "../../../components/charts/panels";
 import { HydrationModule } from "../../../components/WaterCard";
+import { QuickCheckIn } from "../../../components/QuickCheckIn";
 import { ChartTabs } from "../../../components/charts/ChartTabs";
 import { Timeline, type FeedItem } from "../../../components/Timeline";
 import {
@@ -60,7 +62,12 @@ type DailyCardData = {
   rpeEntries?: Record<SessionSlot, RpeEntry | null>;
 };
 
-type StoredUser = { name: string; email: string; role: string };
+type StoredUser = {
+  name: string;
+  email: string;
+  role: string;
+  avatar?: { kind: "photo" | "default" | null; defaultId: string | null };
+};
 type CoachComment = { _id: string; body: string; date: string; createdAt: string; coachId: string };
 type TeamAnnouncement = { id: string; body: string; coachName: string; createdAt: string };
 type TeamAnnouncementResponse = { announcements?: TeamAnnouncement[]; coachCount?: number };
@@ -122,7 +129,8 @@ type WellnessForm = {
   fatigue: string;
 };
 
-type Section = "today" | "achievements" | "hydration" | "trends" | "log" | "coach";
+type Section = "today" | "progress" | "log" | "coach";
+type ProgressTab = "goals" | "water" | "trends";
 
 const emptyWellness: WellnessForm = {
   sleepHours: "",
@@ -175,6 +183,13 @@ function wellnessTenToFive(raw: string): number {
   return 1 + ((value - 1) * 4) / 9;
 }
 
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "AT";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
 /** Safe, non-diagnostic readiness-indicator guidance shown under the hero ring. */
 function readinessGuidance(score: number | null): { word: string; line: string } {
   if (score === null) return { word: "No check-in", line: "Log today's check-in to see your readiness indicator." };
@@ -187,6 +202,7 @@ function readinessGuidance(score: number | null): { word: string; line: string }
 export default function AthleteDashboardPage() {
   const router = useRouter();
   const [section, setSection] = useState<Section>("today");
+  const [progressTab, setProgressTab] = useState<ProgressTab>("goals");
   // Restore the section when returning from a routed tab (e.g. Chat → Coach).
   useEffect(() => {
     const s = new URLSearchParams(window.location.search).get("section");
@@ -207,9 +223,8 @@ export default function AthleteDashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [quickOpen, setQuickOpen] = useState(false);
-  const [nudgeDismissed, setNudgeDismissed] = useState(false);
   const [logFocusSlot, setLogFocusSlot] = useState<SessionSlot | null>(null);
+  const [quickOpen, setQuickOpen] = useState(false);
 
   const handleAuthFailure = useCallback(
     (status: number) => {
@@ -376,7 +391,8 @@ export default function AthleteDashboardPage() {
       payload[key] = n;
     }
     if (Object.keys(payload).length === 0) {
-      setInfo("Enter your waking and/or before-bed heart rate.");
+      // Heart rate is optional — leaving it blank (e.g. in Quick check-in) is
+      // a normal skip, not an error worth surfacing.
       return;
     }
     if (await postJson("/api/athlete/heart-rate", { date, ...payload })) {
@@ -391,6 +407,7 @@ export default function AthleteDashboardPage() {
   const band = bandFor(readiness);
 
   const nav = athleteNav({ coachCount, coachBadge: coachComments.length });
+  const greetingInitials = initialsOf(user?.name ?? "");
 
   return (
     <AppShell
@@ -404,45 +421,23 @@ export default function AthleteDashboardPage() {
         else setSection(k as Section);
       }}
       onSignOut={logout}
-      headerActions={
-        <input
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          type="date"
-          aria-label="Date"
-          className="field h-9 w-[8.5rem] text-xs"
-        />
+      hideProfileMenu
+      titleSlot={
+        <div className="flex items-center gap-3">
+          <ProfileMenu userName={user?.name} role="athlete" onSignOut={logout} avatarClassName="h-[50px] w-[50px] text-base" />
+          <div className="min-w-0">
+            <p className="label text-accent-strong">Athlete</p>
+            <p className="truncate text-sm text-ink-muted">Good morning,</p>
+            <p className="truncate font-display text-lg font-bold leading-tight text-ink">{greetingInitials} 👋</p>
+          </div>
+        </div>
       }
+      headerIcon={<CompactDatePicker value={date} onChange={setDate} label="Date" />}
     >
       <div className="space-y-3">
         {error ? <Banner tone="bad">{error}</Banner> : null}
         {info ? <Banner tone="ok">{info}</Banner> : null}
         <DateHistoryStrip value={date} onChange={setDate} />
-
-        {!loading &&
-        readiness === null &&
-        !nudgeDismissed &&
-        date === new Date().toISOString().slice(0, 10) ? (
-          <div className="flex items-center gap-3 rounded-xl border border-accent/30 bg-accent-soft px-3 py-2.5">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-surface-raised text-accent-strong">
-              <Icon.spark />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold text-ink">You haven't checked in today</p>
-              <p className="text-[11px] text-ink-muted">Takes about 30 seconds.</p>
-            </div>
-            <button onClick={() => setQuickOpen(true)} className="btn-primary h-9 shrink-0 px-3 text-xs">
-              Check in
-            </button>
-            <button
-              onClick={() => setNudgeDismissed(true)}
-              aria-label="Dismiss"
-              className="shrink-0 text-ink-faint transition hover:text-ink"
-            >
-              <Icon.x />
-            </button>
-          </div>
-        ) : null}
 
         {section === "today" ? (
           <div className="space-y-3 animate-rise">
@@ -471,11 +466,17 @@ export default function AthleteDashboardPage() {
                   </div>
                   <p className="mt-2 max-w-xs text-xs text-ink-muted">{guidance.line}</p>
                   {readiness === null ? (
-                    <button onClick={() => setQuickOpen(true)} className="btn-primary mt-3">
+                    <button
+                      onClick={() => setQuickOpen(true)}
+                      className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-full bg-[#ff7e1a] px-3.5 text-xs font-extrabold text-accent-ink"
+                    >
                       <Icon.plus /> Quick check-in
                     </button>
                   ) : (
-                    <button onClick={() => setQuickOpen(true)} className="btn-secondary mt-3">
+                    <button
+                      onClick={() => setQuickOpen(true)}
+                      className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-full border border-accent/20 bg-accent/10 px-3.5 text-xs font-extrabold text-accent-strong"
+                    >
                       Update check-in
                     </button>
                   )}
@@ -493,16 +494,17 @@ export default function AthleteDashboardPage() {
                 value={dash(card?.sleep.hours)}
                 sub={`qual ${card?.sleep.quality == null ? "—" : wellnessFiveToTen(card.sleep.quality)}/10`}
                 icon={<Icon.moon />}
+                tint="#fbf7ff"
               />
-              <StatTile label="Recovery" value={dash(card?.recovery.score)} sub={card?.recovery.status ?? "—"} icon={<Icon.pulse />} />
-              <StatTile label="Load" value={dash(latestRpe?.calculatedTrainingLoad)} sub={latestRpe ? `RPE ${latestRpe.rpe}` : "—"} icon={<Icon.flame />} />
+              <StatTile label="Recovery" value={dash(card?.recovery.score)} sub={card?.recovery.status ?? "—"} icon={<Icon.pulse />} tint="#f5fbf8" />
+              <StatTile label="Load" value={dash(latestRpe?.calculatedTrainingLoad)} sub={latestRpe ? `RPE ${latestRpe.rpe}` : "—"} icon={<Icon.flame />} tint="#fff7f1" />
             </div>
 
-            {/* Today's plan */}
-            <Card title="Today's plan">
-              <div className="grid grid-cols-3 gap-2">
+            {/* Training summary */}
+            <Card title="Training summary">
+              <div className="space-y-2">
                 {SESSION_SLOTS.map((slot) => (
-                  <SlotPill
+                  <TrainingSummaryRow
                     key={slot}
                     slot={slot}
                     session={card?.sessions[slot] ?? null}
@@ -551,28 +553,52 @@ export default function AthleteDashboardPage() {
           </div>
         ) : null}
 
-        {section === "achievements" ? (
-          <AchievementsPanel
-            data={achievements}
-            loading={loading}
-            onCheckIn={() => setQuickOpen(true)}
-            onOpenHydration={() => setSection("hydration")}
-            onOpenLog={() => setSection("log")}
-          />
-        ) : null}
+        {section === "progress" ? (
+          <div className="space-y-3 animate-rise">
+            <div className="flex gap-1.5">
+              {(
+                [
+                  { key: "goals", label: "Goals" },
+                  { key: "water", label: "Water" },
+                  { key: "trends", label: "Trends" },
+                ] as const
+              ).map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setProgressTab(t.key)}
+                  className={`h-8 flex-1 rounded-full text-xs font-semibold transition ${
+                    progressTab === t.key
+                      ? "bg-accent text-accent-ink shadow-sm"
+                      : "border border-line bg-surface-raised text-ink-muted hover:text-ink"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
 
-        {section === "hydration" ? <HydrationModule date={date} /> : null}
+            {progressTab === "goals" ? (
+              <AchievementsPanel
+                data={achievements}
+                loading={loading}
+                onCheckIn={() => setSection("log")}
+                onOpenHydration={() => setProgressTab("water")}
+                onOpenLog={() => setSection("log")}
+              />
+            ) : null}
 
-        {section === "trends" ? (
-          <div className="animate-rise">
-            <ChartTabs
-              tabs={[
-                { key: "readiness", label: "Readiness", node: <PerformanceTrendPanel base="/api/athlete" /> },
-                { key: "hr", label: "Heart rate", node: <HeartRatePanel base="/api/athlete" /> },
-                { key: "wellness", label: "Wellness", node: <WellnessTrendPanel base="/api/athlete" /> },
-                { key: "performance", label: "Performance", node: <PerformancePanel base="/api/athlete" /> },
-              ]}
-            />
+            {progressTab === "water" ? <HydrationModule date={date} /> : null}
+
+            {progressTab === "trends" ? (
+              <ChartTabs
+                tabs={[
+                  { key: "readiness", label: "Readiness", node: <PerformanceTrendPanel base="/api/athlete" /> },
+                  { key: "hr", label: "Heart rate", node: <HeartRatePanel base="/api/athlete" /> },
+                  { key: "wellness", label: "Wellness", node: <WellnessTrendPanel base="/api/athlete" /> },
+                  { key: "performance", label: "Performance", node: <PerformancePanel base="/api/athlete" /> },
+                ]}
+              />
+            ) : null}
           </div>
         ) : null}
 
@@ -585,12 +611,10 @@ export default function AthleteDashboardPage() {
                 postJson={postJson}
                 refresh={refresh}
                 setInfo={setInfo}
-                hrForm={hrForm}
-                setHrForm={setHrForm}
-                submitHeartRate={submitHeartRate}
                 focusedSlot={logFocusSlot}
               />
             ) : null}
+
             <div className="hidden">
             {/* Daily check-in — sliders */}
             <Card title="Daily check-in">
@@ -782,13 +806,14 @@ export default function AthleteDashboardPage() {
         defaults={{
           sleepHours: card?.sleep.hours ?? null,
           sleepQuality: card?.sleep.quality ?? null,
-          soreness: card?.soreness ?? null,
-          plannedType: card?.sessions.AM.type ?? null,
         }}
         onSaved={() => {
           setInfo("Check-in saved.");
           refresh();
         }}
+        hrForm={hrForm}
+        setHrForm={setHrForm}
+        submitHeartRate={submitHeartRate}
       />
     </AppShell>
   );
@@ -1041,6 +1066,8 @@ function RewardModal({ goal, onClose }: { goal: AchievementGoal; onClose: () => 
   );
 }
 
+type SessionPhoto = { id: string; originalName: string; mimeType: string; sizeBytes: number; uploadedAt: string };
+
 type SessionForm = {
   status: SessionStatusValue | "";
   workoutType: string;
@@ -1063,9 +1090,6 @@ type SessionLogHubProps = {
   postJson: (path: string, body: unknown) => Promise<boolean>;
   refresh: () => Promise<void>;
   setInfo: React.Dispatch<React.SetStateAction<string | null>>;
-  hrForm: { wakeHr: string; bedHr: string };
-  setHrForm: React.Dispatch<React.SetStateAction<{ wakeHr: string; bedHr: string }>>;
-  submitHeartRate: () => Promise<void>;
   focusedSlot: SessionSlot | null;
 };
 
@@ -1075,14 +1099,14 @@ function SessionLogHub({
   postJson,
   refresh,
   setInfo,
-  hrForm,
-  setHrForm,
-  submitHeartRate,
   focusedSlot,
 }: SessionLogHubProps) {
   const [forms, setForms] = useState<Record<SessionSlot, SessionForm>>(() => makeSessionForms(card));
   const [savingSlot, setSavingSlot] = useState<SessionSlot | null>(null);
   const [savingRest, setSavingRest] = useState(false);
+  const [photos, setPhotos] = useState<Record<SessionSlot, SessionPhoto[]>>({ AM: [], AFT: [], PM: [] });
+  const [pendingPhoto, setPendingPhoto] = useState<Partial<Record<SessionSlot, { file: File; preview: string }>>>({});
+  const [uploadingSlot, setUploadingSlot] = useState<SessionSlot | null>(null);
   const hubRef = useRef<HTMLDivElement | null>(null);
   const firstOpenSlot = SESSION_SLOTS.find((slot) => !sessionComplete(card.sessions[slot])) ?? SESSION_SLOTS[0];
   const [activeSlot, setActiveSlot] = useState<SessionSlot>(focusedSlot ?? firstOpenSlot);
@@ -1090,6 +1114,68 @@ function SessionLogHub({
   useEffect(() => {
     setForms(makeSessionForms(card));
   }, [card]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        SESSION_SLOTS.map(async (slot) => {
+          const res = await apiFetch(`/api/athlete/training/${slot}?date=${date}`);
+          if (!res.ok) return [slot, []] as const;
+          const json = (await res.json()) as { session?: { photos?: SessionPhoto[] } | null };
+          return [slot, json.session?.photos ?? []] as const;
+        })
+      );
+      if (cancelled) return;
+      setPhotos(Object.fromEntries(entries) as Record<SessionSlot, SessionPhoto[]>);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [date]);
+
+  function pickPhoto(slot: SessionSlot, file: File | null) {
+    setPendingPhoto((prev) => {
+      const current = prev[slot];
+      if (current) URL.revokeObjectURL(current.preview);
+      if (!file) {
+        const next = { ...prev };
+        delete next[slot];
+        return next;
+      }
+      return { ...prev, [slot]: { file, preview: URL.createObjectURL(file) } };
+    });
+  }
+
+  async function uploadPhoto(slot: SessionSlot) {
+    const pending = pendingPhoto[slot];
+    if (!pending) return;
+    setUploadingSlot(slot);
+    try {
+      const form = new FormData();
+      form.append("date", date);
+      form.append("file", pending.file);
+      const res = await apiFetch(`/api/athlete/training/${slot}/photos`, { method: "POST", body: form });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        setInfo(
+          j.error === "file_too_large"
+            ? "That image is too large."
+            : j.error === "unsupported_file_type"
+              ? "Please choose a JPG, PNG, or WEBP image."
+              : "Photo upload failed."
+        );
+        return;
+      }
+      const json = (await res.json()) as { photo: SessionPhoto };
+      URL.revokeObjectURL(pending.preview);
+      pickPhoto(slot, null);
+      setPhotos((prev) => ({ ...prev, [slot]: [...(prev[slot] ?? []), json.photo] }));
+      setInfo("Photo added.");
+    } finally {
+      setUploadingSlot(null);
+    }
+  }
 
   useEffect(() => {
     if (!focusedSlot) return;
@@ -1341,6 +1427,7 @@ function SessionLogHub({
                 value={activeForm.plannedIntensityPercent}
                 min={0}
                 max={100}
+                step={5}
                 onChange={(v) => updateForm(activeSlot, "plannedIntensityPercent", v)}
               />
               <RangeField
@@ -1351,15 +1438,6 @@ function SessionLogHub({
                 min={0}
                 max={10}
                 onChange={(v) => updateForm(activeSlot, "rpe", v)}
-              />
-              <RangeField
-                label="Sleep quality"
-                lo="0"
-                hi="5"
-                value={activeForm.sleepQuality}
-                min={0}
-                max={5}
-                onChange={(v) => updateForm(activeSlot, "sleepQuality", v)}
               />
               <RangeField
                 label="Soreness"
@@ -1396,6 +1474,54 @@ function SessionLogHub({
               placeholder="Session notes"
               className="field mt-3 h-20 resize-none py-2"
             />
+
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {photos[activeSlot]?.map((p) => (
+                <AuthImage
+                  key={p.id}
+                  src={`/api/athlete/training/${activeSlot}/photos/${p.id}/file`}
+                  alt={p.originalName}
+                  className="h-16 w-16 rounded-lg object-cover"
+                />
+              ))}
+              {pendingPhoto[activeSlot] ? (
+                <div className="relative">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview */}
+                  <img
+                    src={pendingPhoto[activeSlot]!.preview}
+                    alt="Pending upload"
+                    className="h-16 w-16 rounded-lg object-cover"
+                  />
+                  <button
+                    onClick={() => pickPhoto(activeSlot, null)}
+                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface-raised text-ink-muted"
+                    aria-label="Remove photo"
+                  >
+                    <Icon.x />
+                  </button>
+                </div>
+              ) : (
+                <label className="flex h-16 w-16 cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-line text-ink-faint">
+                  <Icon.plus />
+                  <span className="text-[9px] font-semibold uppercase">Photo</span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    className="hidden"
+                    onChange={(e) => pickPhoto(activeSlot, e.target.files?.[0] ?? null)}
+                  />
+                </label>
+              )}
+              {pendingPhoto[activeSlot] ? (
+                <button
+                  onClick={() => uploadPhoto(activeSlot)}
+                  disabled={uploadingSlot === activeSlot}
+                  className="btn-secondary h-9 px-3 text-xs"
+                >
+                  {uploadingSlot === activeSlot ? "Uploading…" : "Save photo"}
+                </button>
+              ) : null}
+            </div>
 
             {activeRpe ? (
               <div className="mt-3 flex items-center gap-2 rounded-xl border border-line bg-surface-inset px-3 py-2">
@@ -1526,15 +1652,6 @@ function SessionLogHub({
 
                 <div className="mt-3 grid gap-3">
                   <RangeField
-                    label="Sleep quality"
-                    lo="0"
-                    hi="5"
-                    value={form.sleepQuality}
-                    min={0}
-                    max={5}
-                    onChange={(v) => updateForm(slot, "sleepQuality", v)}
-                  />
-                  <RangeField
                     label="Soreness"
                     lo="Fresh"
                     hi="Sore"
@@ -1606,41 +1723,6 @@ function SessionLogHub({
         </div>
       </Card>
       </div>
-
-      <Card title="Heart rate">
-        <p className="mb-2 text-[11px] text-ink-faint">Resting bpm</p>
-        <div className="grid grid-cols-2 gap-2">
-          <label className="block">
-            <span className="label">Waking HR</span>
-            <input
-              value={hrForm.wakeHr}
-              onChange={(e) => setHrForm((s) => ({ ...s, wakeHr: e.target.value }))}
-              type="number"
-              inputMode="numeric"
-              min={25}
-              max={220}
-              placeholder="bpm"
-              className="field mt-1"
-            />
-          </label>
-          <label className="block">
-            <span className="label">Before bed</span>
-            <input
-              value={hrForm.bedHr}
-              onChange={(e) => setHrForm((s) => ({ ...s, bedHr: e.target.value }))}
-              type="number"
-              inputMode="numeric"
-              min={25}
-              max={220}
-              placeholder="bpm"
-              className="field mt-1"
-            />
-          </label>
-        </div>
-        <button onClick={submitHeartRate} className="btn-primary mt-3 w-full">
-          Save heart rate
-        </button>
-      </Card>
     </>
   );
 }
@@ -1893,7 +1975,7 @@ function BandLegend() {
   );
 }
 
-function SlotPill({
+function TrainingSummaryRow({
   slot,
   session,
   rpe,
@@ -1908,22 +1990,36 @@ function SlotPill({
 }) {
   const logged = sessionComplete(session ?? undefined) || Boolean(rpe);
   const title = isRestDay
-    ? "Rest"
+    ? "Rest day"
     : session?.workoutType ?? session?.type ?? rpe?.trainingCategory ?? (logged ? "Workout logged" : "Open");
-  const status = isRestDay ? "Rest day" : logged ? sessionStatusText(session ?? undefined).replace("Open", "Done") : "Open";
-  const subtitle = rpe && !isRestDay ? `${status} · RPE ${rpe.rpe}` : status;
+  const status = isRestDay ? "Recovery available" : logged ? sessionStatusText(session ?? undefined).replace("Open", "Done") : "Open";
+  const subtitle = rpe && !isRestDay ? `Done · RPE ${rpe.rpe}` : status;
+  const isPm = slot === "PM";
+  const label = slot === "AFT" ? "AFTERNOON" : SLOT_LABEL[slot].toUpperCase();
+
   return (
     <button
       onClick={onOpen}
       title={`${SLOT_LABEL[slot]}: ${title}`}
-      className={`flex min-h-[6.75rem] w-full flex-col rounded-xl border p-3 text-left transition hover:border-accent/35 hover:bg-accent/[0.06] ${
-        logged ? "border-ok/30 bg-ok/5" : "border-line bg-surface-inset"
+      className={`flex w-full items-center gap-2.5 rounded-2xl border px-2.5 py-2 text-left transition hover:border-accent/35 ${
+        logged ? "border-ok/20 bg-ok/[0.03]" : "border-line bg-surface-raised"
       }`}
     >
-      <p className="label w-full truncate">{SLOT_LABEL[slot]}</p>
-      <p className="mt-2 w-full truncate font-display text-sm font-bold leading-tight text-ink">{title}</p>
-      <p className="mt-1 w-full truncate text-[11px] leading-tight text-ink-muted">{subtitle}</p>
-      <span className="mt-auto pt-2 text-[10px] font-semibold text-accent-strong">Open log</span>
+      <span
+        className={`flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-xl ${
+          isPm ? "bg-[#f0f2fb] text-[#5670ad]" : "bg-[#fff3df] text-[#e97912]"
+        }`}
+      >
+        {isPm ? <Icon.moon /> : <Icon.sun />}
+        <span className={`mt-0.5 text-[11px] font-black ${isPm ? "text-[#5670ad]" : "text-[#b85307]"}`}>{slot}</span>
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-black text-ink">{title}</span>
+        <span className="block truncate text-[10px] font-medium text-ink-muted">{subtitle}</span>
+        <span className="block truncate text-[10px] font-medium text-ink-muted">{label}</span>
+      </span>
+      <span className="shrink-0 text-[11px] font-bold text-accent-strong">{logged ? "Edit log" : "Open log"}</span>
+      <span className="shrink-0 text-ink-muted"><Icon.chevron /></span>
     </button>
   );
 }
