@@ -58,6 +58,7 @@ import {
 import { WorkoutMedia, type WorkoutMediaDoc } from "../models/WorkoutMedia";
 import { mediaUpload, mediaFilePath, serializeMedia } from "../services/media";
 import { notifyGuardiansOfAthleteUpdate } from "../services/notifications";
+import { getVoiceIntentInterpreter, type VoicePendingIntent } from "../services/voiceIntentInterpreter";
 import multer from "multer";
 import fs from "fs";
 
@@ -81,6 +82,54 @@ function notifyGuardians(profileId: Types.ObjectId, actorUserId: Types.ObjectId,
 }
 
 router.use(requireAuth, requireRole("athlete"), loadScope);
+
+/**
+ * Voice assistant NLU — classifies a spoken transcript into a structured
+ * intent only; it never writes to the database (the client performs the
+ * actual write via the existing endpoints below, after the athlete
+ * confirms), so it sits outside the stricter write-rate-limit below and
+ * gets its own more generous limit sized for a multi-turn conversation.
+ */
+router.post(
+  "/voice/interpret",
+  writeRateLimit({ windowMs: 60_000, max: 120 }),
+  async (req: Request, res: Response) => {
+    const transcript = req.body?.transcript;
+    if (typeof transcript !== "string" || !transcript.trim() || transcript.length > 2000) {
+      res.status(400).json({ error: "invalid_transcript" });
+      return;
+    }
+    const pendingIntent = sanitizePendingIntent(req.body?.pendingIntent);
+    const today = new Date().toISOString().slice(0, 10);
+
+    try {
+      const result = await getVoiceIntentInterpreter().interpret({ transcript, today, pendingIntent });
+      res.json(result);
+    } catch {
+      res.json({
+        intent: "unsupported",
+        fields: {},
+        missingFields: [],
+        requiresConfirmation: false,
+        spokenResponse: "Sorry, I couldn't understand that — please try again.",
+      });
+    }
+  }
+);
+
+function sanitizePendingIntent(raw: unknown): VoicePendingIntent | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.intent !== "string" || typeof r.collected !== "object" || !Array.isArray(r.missingFields)) {
+    return undefined;
+  }
+  return {
+    intent: r.intent as VoicePendingIntent["intent"],
+    collected: (r.collected as Record<string, unknown>) ?? {},
+    missingFields: r.missingFields.filter((f): f is string => typeof f === "string"),
+  };
+}
+
 // Throttle daily-submission writes per athlete (reads are unaffected).
 router.use(writeRateLimit({ windowMs: 60_000, max: 40 }));
 

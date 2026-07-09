@@ -44,12 +44,43 @@ export function Ring({
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
       </Svg>
-      <Text style={{ fontSize: size * 0.3, fontWeight: "800", color }}>{score ?? "—"}</Text>
-      {label ? <Text style={styles.label}>{label}</Text> : null}
+      <Text
+        style={{
+          fontSize: size * 0.3,
+          lineHeight: size * 0.3,
+          fontWeight: "800",
+          color,
+          includeFontPadding: false,
+          textAlignVertical: "center",
+        }}
+      >
+        {score ?? "—"}
+      </Text>
+      {label ? (
+        <Text
+          style={[styles.label, { maxWidth: size * 0.72 }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.5}
+        >
+          {label}
+        </Text>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  label: { fontSize: 11, fontWeight: "700", color: colors.inkMuted, textTransform: "uppercase", letterSpacing: 1, marginTop: 2 },
+  label: {
+    fontSize: 11,
+    lineHeight: 13,
+    fontWeight: "700",
+    color: colors.inkMuted,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    marginTop: 2,
+    textAlign: "center",
+    includeFontPadding: false,
+    textAlignVertical: "center",
+  },
 });

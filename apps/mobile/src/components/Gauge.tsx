@@ -72,6 +72,14 @@ export function Gauge({
 
 const styles = StyleSheet.create({
   center: { alignItems: "center", justifyContent: "center" },
-  value: { fontSize: 16, fontWeight: "800" },
-  unit: { fontSize: 9, fontWeight: "700", color: colors.inkFaint, marginTop: 1 },
+  value: { fontSize: 16, lineHeight: 18, fontWeight: "800", includeFontPadding: false, textAlignVertical: "center" },
+  unit: {
+    fontSize: 9,
+    lineHeight: 11,
+    fontWeight: "700",
+    color: colors.inkFaint,
+    marginTop: 1,
+    includeFontPadding: false,
+    textAlignVertical: "center",
+  },
 });

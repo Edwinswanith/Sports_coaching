@@ -193,7 +193,10 @@
       "Bash(adb -s emulator-5554 shell input tap 405 1800)",
       "Bash(adb -s emulator-5554 shell input tap 76 141)",
       "Bash(adb -s emulator-5554 shell input tap 405 1774)",
-      "Bash(adb -s emulator-5554 shell input tap 405 1750)"
+      "Bash(adb -s emulator-5554 shell input tap 405 1750)",
+      "Bash(nohup npx expo start --port 8081)",
+      "Bash(disown)",
+      "Bash(echo \"started, pid: $!\")"
     ],
     "additionalDirectories": [
       "d:\\sports-coaching-platform\\.playwright-mcp",

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { BottomSheet } from "./BottomSheet";
 import { apiFetch } from "../lib/api";
+import { wellnessFiveToTen, wellnessTenToFive } from "../lib/athleteActions";
 
 /**
  * Quick check-in — captures Sleep hours + Sleep quality (the two daily
@@ -12,16 +13,6 @@ import { apiFetch } from "../lib/api";
  * mobile app's quick check-in exactly). Everything else (RPE, soreness,
  * fatigue, mood) lives in the full per-session Log form instead.
  */
-
-function wellnessFiveToTen(value: number | null | undefined): number {
-  if (value === null || value === undefined) return 5;
-  return Math.max(1, Math.min(10, Math.round(1 + ((value - 1) * 9) / 4)));
-}
-
-function wellnessTenToFive(value: number): number {
-  const clamped = Math.max(1, Math.min(10, value));
-  return 1 + ((clamped - 1) * 4) / 9;
-}
 
 export function QuickCheckIn({
   open,

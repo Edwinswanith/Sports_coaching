@@ -176,6 +176,7 @@ const TRAINING_STATUS = [
   { value: "completed", label: "Done" },
   { value: "in_progress", label: "Partial" },
   { value: "skipped", label: "Missed" },
+  { value: "rest", label: "Rest" },
 ] as const;
 type SessionStatusValue = (typeof TRAINING_STATUS)[number]["value"];
 const WORKOUT_TYPES = TRAINING_CATEGORIES;
@@ -2525,7 +2526,12 @@ function makeSessionForms(card: DailyCard): Record<SessionSlot, SessionForm> {
 }
 
 function sessionComplete(session: DailySession): boolean {
-  return session.status === "completed" || session.status === "skipped" || session.attended === true;
+  return (
+    session.status === "completed" ||
+    session.status === "skipped" ||
+    session.status === "rest" ||
+    session.attended === true
+  );
 }
 
 function statusText(session: DailySession): string {
@@ -2774,7 +2780,7 @@ function SessionLogSection({
       trainingPayload,
       `${SLOT_LABEL[slot]} session saved.`
     );
-    if (!savedTraining || form.status === "skipped") return savedTraining;
+    if (!savedTraining || form.status === "skipped" || form.status === "rest") return savedTraining;
 
     return postJson(
       "/api/athlete/rpe-monitoring",

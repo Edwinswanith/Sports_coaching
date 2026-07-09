@@ -28,6 +28,17 @@ import {
 } from "../../../lib/api";
 import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../../lib/sessions";
 import { TRAINING_CATEGORIES } from "../../../lib/trainingCategories";
+import {
+  wellnessFiveToTen,
+  submitWellnessAction,
+  submitAttendanceAction,
+  submitRestDayAction,
+  submitTrainingAction,
+  submitRpeMonitoringAction,
+  submitRecoveryAction,
+} from "../../../lib/athleteActions";
+import { VoiceAssistantSheet } from "../../../components/VoiceAssistant/VoiceAssistantSheet";
+import { useSpeechRecognition } from "../../../components/VoiceAssistant/useSpeechRecognition";
 
 type DailySession = {
   status: string | null;
@@ -147,10 +158,11 @@ const ATTENDANCE_OPTIONS: { value: "present" | "late" | "absent"; label: string 
   { value: "absent", label: "Absent" },
 ];
 
-const TRAINING_OPTIONS: { value: "completed" | "in_progress" | "skipped"; label: string }[] = [
+const TRAINING_OPTIONS: { value: "completed" | "in_progress" | "skipped" | "rest"; label: string }[] = [
   { value: "completed", label: "Done" },
   { value: "in_progress", label: "Partial" },
   { value: "skipped", label: "Missed" },
+  { value: "rest", label: "Rest" },
 ];
 type SessionStatusValue = (typeof TRAINING_OPTIONS)[number]["value"];
 
@@ -173,14 +185,8 @@ const WELLNESS_SLIDERS: { key: keyof WellnessForm; label: string; lo: string; hi
   { key: "fatigue", label: "Fatigue", lo: "Rested", hi: "Spent", invert: true },
 ];
 
-function wellnessFiveToTen(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "5";
-  return String(Math.max(1, Math.min(10, Math.round(1 + ((value - 1) * 9) / 4))));
-}
-
-function wellnessTenToFive(raw: string): number {
-  const value = Math.max(1, Math.min(10, Number(raw) || 5));
-  return 1 + ((value - 1) * 4) / 9;
+function wellnessFiveToTenStr(value: number | null | undefined): string {
+  return String(wellnessFiveToTen(value));
 }
 
 function initialsOf(name: string): string {
@@ -280,10 +286,10 @@ export default function AthleteDashboardPage() {
         const todays = cardJson.card;
         setWellness({
           sleepHours: todays?.sleep.hours?.toString() ?? "",
-          sleepQuality: wellnessFiveToTen(todays?.sleep.quality),
+          sleepQuality: wellnessFiveToTenStr(todays?.sleep.quality),
           mood: "5",
           stress: "5",
-          soreness: wellnessFiveToTen(todays?.soreness),
+          soreness: wellnessFiveToTenStr(todays?.soreness),
           fatigue: "5",
         });
         setHrForm({
@@ -315,21 +321,31 @@ export default function AthleteDashboardPage() {
     router.replace("/");
   }
 
-  async function postJson(path: string, body: unknown): Promise<boolean> {
+  /** Post-fetch handling shared by every write path (manual forms and the voice assistant). */
+  async function handleActionResponse(res: Response): Promise<boolean> {
+    if (handleAuthFailure(res.status)) return false;
+    if (!res.ok) {
+      const j = (await res.json().catch(() => ({}))) as { error?: string };
+      setError(j.error ?? "Save failed.");
+      return false;
+    }
+    return true;
+  }
+
+  /** Runs a write action (an athleteActions.ts call), clearing/settings info+error consistently. */
+  async function runAction(fn: () => Promise<Response>): Promise<boolean> {
     setInfo(null);
     try {
-      const res = await apiFetch(path, { method: "POST", body: JSON.stringify(body) });
-      if (handleAuthFailure(res.status)) return false;
-      if (!res.ok) {
-        const j = (await res.json().catch(() => ({}))) as { error?: string };
-        setError(j.error ?? "Save failed.");
-        return false;
-      }
-      return true;
+      const res = await fn();
+      return await handleActionResponse(res);
     } catch {
       setError("Network error.");
       return false;
     }
+  }
+
+  async function postJson(path: string, body: unknown): Promise<boolean> {
+    return runAction(() => apiFetch(path, { method: "POST", body: JSON.stringify(body) }));
   }
 
   async function refresh() {
@@ -337,30 +353,33 @@ export default function AthleteDashboardPage() {
   }
 
   async function submitWellness() {
-    const payload = {
-      date,
-      sleepHours: wellness.sleepHours ? Number(wellness.sleepHours) : undefined,
-      sleepQuality: wellnessTenToFive(wellness.sleepQuality),
-      mood: wellnessTenToFive(wellness.mood),
-      stress: wellnessTenToFive(wellness.stress),
-      soreness: wellnessTenToFive(wellness.soreness),
-      fatigue: wellnessTenToFive(wellness.fatigue),
-    };
-    if (await postJson("/api/athlete/wellness", payload)) {
+    if (
+      await runAction(() =>
+        submitWellnessAction({
+          date,
+          sleepHours: wellness.sleepHours ? Number(wellness.sleepHours) : undefined,
+          sleepQuality: wellness.sleepQuality,
+          mood: wellness.mood,
+          stress: wellness.stress,
+          soreness: wellness.soreness,
+          fatigue: wellness.fatigue,
+        })
+      )
+    ) {
       setInfo("Check-in saved.");
       await refresh();
     }
   }
 
   async function submitAttendance(status: "present" | "late" | "absent") {
-    if (await postJson("/api/athlete/attendance", { date, status })) {
+    if (await runAction(() => submitAttendanceAction(date, status))) {
       setInfo(`Attendance: ${status}.`);
       await refresh();
     }
   }
 
-  async function submitTraining(slot: SessionSlot, status: "completed" | "in_progress" | "skipped") {
-    if (await postJson(`/api/athlete/training/${slot}`, { date, status })) {
+  async function submitTraining(slot: SessionSlot, status: "completed" | "in_progress" | "skipped" | "rest") {
+    if (await runAction(() => submitTrainingAction(date, slot, { status }))) {
       setInfo(`${slot} session: ${status}.`);
       await refresh();
     }
@@ -373,7 +392,7 @@ export default function AthleteDashboardPage() {
   }
 
   async function submitRecovery() {
-    if (await postJson("/api/athlete/recovery", { date, modalities: recoveryModalities })) {
+    if (await runAction(() => submitRecoveryAction(date, recoveryModalities))) {
       setInfo("Recovery saved.");
       await refresh();
     }
@@ -408,6 +427,78 @@ export default function AthleteDashboardPage() {
 
   const nav = athleteNav({ coachCount, coachBadge: coachComments.length });
   const greetingInitials = initialsOf(user?.name ?? "");
+
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceCoachId, setVoiceCoachId] = useState<string | null>(null);
+  const speechSupport = useSpeechRecognition();
+
+  useEffect(() => {
+    if (!voiceOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch("/api/athlete/coaches");
+        if (!res.ok || cancelled) return;
+        const json = (await res.json()) as { coaches?: { coachId: string; name: string }[] };
+        if (json.coaches?.length === 1) setVoiceCoachId(json.coaches[0].coachId);
+      } catch {
+        /* voice coach messaging just stays unavailable */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [voiceOpen]);
+
+  function handleVoiceNavigate(target: string) {
+    if (target === "messages") {
+      router.push("/athlete/messages");
+      return;
+    }
+    if (target === "today" || target === "progress" || target === "log" || target === "coach") {
+      setSection(target);
+      return;
+    }
+    if (target === "water" || target === "goals" || target === "trends") {
+      setSection("progress");
+      setProgressTab(target);
+    }
+  }
+
+  async function getVoiceStatusSummary(topic: string): Promise<string> {
+    if (topic === "hydration") {
+      try {
+        const res = await apiFetch(`/api/athlete/water?date=${date}`);
+        if (res.ok) {
+          const day = (await res.json()) as { totalMl: number; goalMl: number };
+          const remaining = Math.max(0, day.goalMl - day.totalMl);
+          return remaining <= 0
+            ? `You've hit your hydration goal of ${day.goalMl} millilitres today.`
+            : `You've had ${day.totalMl} of your ${day.goalMl} millilitre goal — ${remaining} millilitres remaining.`;
+        }
+      } catch {
+        /* fall through to the error message below */
+      }
+      return "I couldn't load your hydration data.";
+    }
+    if (topic === "training_plan") {
+      if (!card) return "No training plan loaded for today.";
+      return SESSION_SLOTS.map((slot) => {
+        const s = card.sessions[slot];
+        const label = s.workoutType || s.type || "no plan";
+        return `${SLOT_LABEL[slot]}: ${label}${s.status ? ` — ${s.status}` : ""}`;
+      }).join(". ");
+    }
+    if (topic === "coach_feedback") {
+      if (coachComments.length === 0) return "No coach feedback for today yet.";
+      return coachComments.map((c) => c.body).join(". ");
+    }
+    // readiness or general
+    if (readiness == null) return "You haven't logged a check-in today, so I don't have a readiness score yet.";
+    const word = band === "green" ? "ready" : band === "amber" ? "caution" : "recover";
+    const recoveryStatus = card?.recovery.status ?? "unknown";
+    return `Your readiness is ${Math.round(readiness)}, which is ${word}. Recovery status is ${recoveryStatus}.`;
+  }
 
   return (
     <AppShell
@@ -608,7 +699,7 @@ export default function AthleteDashboardPage() {
               <SessionLogHub
                 card={card}
                 date={date}
-                postJson={postJson}
+                runAction={runAction}
                 refresh={refresh}
                 setInfo={setInfo}
                 focusedSlot={logFocusSlot}
@@ -814,6 +905,32 @@ export default function AthleteDashboardPage() {
         hrForm={hrForm}
         setHrForm={setHrForm}
         submitHeartRate={submitHeartRate}
+      />
+
+      {speechSupport.supported ? (
+        <div className="pointer-events-none fixed inset-x-0 bottom-20 z-30 flex justify-center">
+          <div className="flex w-full max-w-md justify-end px-4">
+            <button
+              onClick={() => setVoiceOpen(true)}
+              aria-label="Open voice assistant"
+              className="pointer-events-auto flex h-14 w-14 items-center justify-center rounded-full border border-accent bg-accent text-accent-ink shadow-hero"
+            >
+              <Icon.mic />
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <VoiceAssistantSheet
+        open={voiceOpen}
+        onClose={() => setVoiceOpen(false)}
+        config={{
+          date,
+          onNavigate: handleVoiceNavigate,
+          getStatusSummary: getVoiceStatusSummary,
+          refresh,
+          coachId: voiceCoachId,
+        }}
       />
     </AppShell>
   );
@@ -1087,7 +1204,7 @@ type SessionForm = {
 type SessionLogHubProps = {
   card: DailyCardData;
   date: string;
-  postJson: (path: string, body: unknown) => Promise<boolean>;
+  runAction: (fn: () => Promise<Response>) => Promise<boolean>;
   refresh: () => Promise<void>;
   setInfo: React.Dispatch<React.SetStateAction<string | null>>;
   focusedSlot: SessionSlot | null;
@@ -1096,7 +1213,7 @@ type SessionLogHubProps = {
 function SessionLogHub({
   card,
   date,
-  postJson,
+  runAction,
   refresh,
   setInfo,
   focusedSlot,
@@ -1216,7 +1333,7 @@ function SessionLogHub({
     const enabled = !restDay;
     setSavingRest(true);
     try {
-      if (await postJson("/api/athlete/rest-day", { date, enabled })) {
+      if (await runAction(() => submitRestDayAction(date, enabled))) {
         setInfo(enabled ? "Rest day saved." : "Rest day cleared.");
         await refresh();
       }
@@ -1227,7 +1344,8 @@ function SessionLogHub({
 
   async function saveSession(slot: SessionSlot) {
     const form = forms[slot];
-    if (!form.status) {
+    const status = form.status;
+    if (!status) {
       setInfo(`Choose a status for ${SLOT_LABEL[slot]}.`);
       return;
     }
@@ -1245,33 +1363,34 @@ function SessionLogHub({
 
     setSavingSlot(slot);
     try {
-      const trainingPayload: Record<string, unknown> = {
-        date,
-        status: form.status,
-        attended: form.status === "completed",
-        workoutType: form.workoutType.trim() || undefined,
-        effortRating: form.effortRating,
-        notes: form.notes.trim() || undefined,
-      };
-      if (duration !== null) trainingPayload.actualDurationMin = duration;
+      const trainingOk = await runAction(() =>
+        submitTrainingAction(date, slot, {
+          status,
+          attended: status === "completed",
+          workoutType: form.workoutType.trim() || undefined,
+          effortRating: form.effortRating,
+          notes: form.notes.trim() || undefined,
+          actualDurationMin: duration !== null ? duration : undefined,
+        })
+      );
+      if (!trainingOk) return;
 
-      if (!(await postJson(`/api/athlete/training/${slot}`, trainingPayload))) return;
-
-      if (form.status !== "skipped") {
-        const rpePayload: Record<string, unknown> = {
-          date,
-          sessionType: slot,
-          trainingCategory: isTrainingCategory(form.workoutType) ? form.workoutType : form.trainingCategory,
-          plannedIntensityPercent: form.plannedIntensityPercent,
-          rpe: form.rpe,
-          sleepQuality: form.sleepQuality,
-          muscleSoreness: form.soreness,
-          fatigue: form.fatigue,
-          moodMotivation: form.moodMotivation,
-          bodyConditionFeedback: form.notes.trim() || undefined,
-        };
-        if (restingHeartRate !== null) rpePayload.restingHeartRate = restingHeartRate;
-        if (!(await postJson("/api/athlete/rpe-monitoring", rpePayload))) return;
+      if (status !== "skipped" && status !== "rest") {
+        const rpeOk = await runAction(() =>
+          submitRpeMonitoringAction(date, {
+            sessionType: slot,
+            trainingCategory: isTrainingCategory(form.workoutType) ? form.workoutType : form.trainingCategory,
+            plannedIntensityPercent: form.plannedIntensityPercent,
+            rpe: form.rpe,
+            sleepQuality: form.sleepQuality,
+            muscleSoreness: form.soreness,
+            fatigue: form.fatigue,
+            moodMotivation: form.moodMotivation,
+            bodyConditionFeedback: form.notes.trim() || undefined,
+            restingHeartRate: restingHeartRate !== null ? restingHeartRate : undefined,
+          })
+        );
+        if (!rpeOk) return;
       }
 
       setInfo(`${SLOT_LABEL[slot]} saved.`);
@@ -1355,7 +1474,7 @@ function SessionLogHub({
               {activeRpe ? <Chip band={activeRpe.riskFlag}>{activeRpe.riskFlag}</Chip> : null}
             </div>
 
-            <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="mt-3 grid grid-cols-4 gap-2">
               {TRAINING_OPTIONS.map((o) => (
                 <Choice
                   key={o.value}
@@ -1768,7 +1887,12 @@ function isRestDay(card: DailyCardData) {
 
 function sessionComplete(session: DailySession | undefined) {
   if (!session) return false;
-  return session.attended === true || session.status === "completed" || session.status === "skipped";
+  return (
+    session.attended === true ||
+    session.status === "completed" ||
+    session.status === "skipped" ||
+    session.status === "rest"
+  );
 }
 
 function sessionStatusText(session: DailySession | undefined) {
@@ -1776,6 +1900,7 @@ function sessionStatusText(session: DailySession | undefined) {
   if (session.attended === true || session.status === "completed") return "Done";
   if (session.status === "skipped") return "Missed";
   if (session.status === "in_progress") return "Partial";
+  if (session.status === "rest") return "Rest";
   return "Open";
 }
 

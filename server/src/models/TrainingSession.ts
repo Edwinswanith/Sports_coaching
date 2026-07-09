@@ -28,6 +28,7 @@ export const SESSION_STATUS = [
   "in_progress",
   "completed",
   "skipped",
+  "rest",
 ] as const;
 export type SessionStatus = (typeof SESSION_STATUS)[number];
 

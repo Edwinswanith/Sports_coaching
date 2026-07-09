@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Area, AreaChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { apiFetch } from "../lib/api";
+import { addWaterAction, removeWaterAction, saveHydrationGoalAction } from "../lib/athleteActions";
 import { Card } from "./Card";
 
 type Entry = { id: string; amountMl: number; loggedAt: string };
@@ -130,9 +131,7 @@ export function HydrationModule({ date }: { date: string }) {
 
   async function add(amountMl: number) {
     setAmountError(null);
-    await mutateWater(() =>
-      apiFetch("/api/athlete/water", { method: "POST", body: JSON.stringify({ date, amountMl }) })
-    );
+    await mutateWater(() => addWaterAction(date, amountMl));
   }
 
   async function addCustomAmount() {
@@ -146,7 +145,7 @@ export function HydrationModule({ date }: { date: string }) {
   }
 
   async function remove(id: string) {
-    await mutateWater(() => apiFetch(`/api/athlete/water/${id}`, { method: "DELETE" }));
+    await mutateWater(() => removeWaterAction(id));
   }
 
   async function saveGoal(nextGoal?: number) {
@@ -159,10 +158,7 @@ export function HydrationModule({ date }: { date: string }) {
     setGoalError(null);
     try {
       const rounded = Math.round(goalMl);
-      const res = await apiFetch("/api/athlete/me", {
-        method: "PATCH",
-        body: JSON.stringify({ hydrationGoalMl: rounded }),
-      });
+      const res = await saveHydrationGoalAction(rounded);
       if (!res.ok) {
         setGoalError("Could not save goal.");
         return;
