@@ -1,4 +1,4 @@
-import type { AssistantTurnResponse, DemoApiResponse, DemoState, DemoToolCall, DemoToolResult } from "./types";
+import type { AssistantConversationContext, AssistantTurnResponse, DemoApiResponse, DemoCoachWorkoutPlan, DemoState, DemoToolCall, DemoToolResult } from "./types";
 
 export async function getDemoState(): Promise<DemoState> {
   const response = await fetch("/voice-demo/api/state", { cache: "no-store" });
@@ -31,8 +31,27 @@ export function newOperationId() {
   return `manual_${crypto.randomUUID()}`;
 }
 
-export async function submitAssistantMessage(message: string): Promise<AssistantTurnResponse> {
-  return assistantRequest("/voice-demo/api/assistant/turn", { message });
+export async function submitAssistantMessage(message: string, context: AssistantConversationContext = {}): Promise<AssistantTurnResponse> {
+  return assistantRequest("/voice-demo/api/assistant/turn", { message, context });
+}
+
+export async function getCoachPlans(): Promise<{ state: DemoState; plans: DemoCoachWorkoutPlan[] }> {
+  const response = await fetch("/voice-demo/api/coach-plans", { cache: "no-store" });
+  const payload = await response.json() as { ok: true; state: DemoState; plans: DemoCoachWorkoutPlan[] } | { ok: false; message: string };
+  if (!response.ok || !payload.ok) throw new Error(payload.ok ? "Unable to load coach plans." : payload.message);
+  return { state: payload.state, plans: payload.plans };
+}
+
+export async function createCoachPlanDraft(input: unknown): Promise<{ state: DemoState; plan: DemoCoachWorkoutPlan }> {
+  return coachPlanRequest("/voice-demo/api/coach-plans", "POST", input);
+}
+
+export async function updateCoachPlanDraft(planId: string, patch: unknown): Promise<{ state: DemoState; plan: DemoCoachWorkoutPlan }> {
+  return coachPlanRequest(`/voice-demo/api/coach-plans/${encodeURIComponent(planId)}`, "PATCH", patch);
+}
+
+export async function publishCoachPlan(planId: string): Promise<{ state: DemoState; plan: DemoCoachWorkoutPlan }> {
+  return coachPlanRequest(`/voice-demo/api/coach-plans/${encodeURIComponent(planId)}/publish`, "POST");
 }
 
 export async function confirmAssistantPlan(planId: string): Promise<AssistantTurnResponse> {
@@ -54,4 +73,17 @@ async function assistantRequest(url: string, body?: unknown): Promise<AssistantT
     | { ok: false; error: string; message: string };
   if (!response.ok || !payload.ok) throw new Error(payload.ok ? "The assistant request failed." : payload.message);
   return payload.turn;
+}
+
+async function coachPlanRequest(url: string, method: "POST" | "PATCH", body?: unknown) {
+  const response = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const payload = await response.json() as
+    | { ok: true; state: DemoState; plan: DemoCoachWorkoutPlan }
+    | { ok: false; error: string; message: string };
+  if (!response.ok || !payload.ok) throw new Error(payload.ok ? "The coach plan request failed." : payload.message);
+  return { state: payload.state, plan: payload.plan };
 }

@@ -3,15 +3,21 @@ import "server-only";
 import path from "node:path";
 import dotenv from "dotenv";
 import { classifyReadOnlyQuestion, parseSingleWellnessAssignment } from "./assistantRules";
-import type { AssistantDebug, DemoState } from "./types";
+import { getActiveDemoDay, type AssistantConversationContext, type AssistantDebug, type DemoState } from "./types";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 
 export const ASSISTANT_CANDIDATE_TOOLS = [
   "get_daily_status",
-  "get_progress_guidance",
+  "get_progress_summary",
+  "compare_periods",
+  "find_best_day",
+  "get_day_details",
   "get_coach_update",
+  "get_coach_workout_plan",
+  "explain_exercise_prescription",
+  "evaluate_intensity_question",
   "add_water",
   "record_wellness",
   "update_training_session",
@@ -32,166 +38,88 @@ export class AssistantInterpreterError extends Error {
 }
 
 const FUNCTION_DECLARATIONS = [
-  {
-    name: "get_daily_status",
-    description: "Use for questions about what remains today, hydration total, wellness completion, or incomplete training.",
-    parameters: { type: "OBJECT", properties: {} },
-  },
-  {
-    name: "get_progress_guidance",
-    description: "Use for questions about progress, being on track, what to improve, priorities, feedback, or what to focus on.",
-    parameters: { type: "OBJECT", properties: {} },
-  },
-  {
-    name: "get_coach_update",
-    description: "Use for read-only questions about whether the assigned coach sent a message, what the coach said, or the latest coach message.",
-    parameters: { type: "OBJECT", properties: {} },
-  },
-  {
-    name: "add_water",
-    description: "Propose adding a stated amount of water. Omit amountMl if the athlete did not state an amount. Convert litres to millilitres.",
-    parameters: {
-      type: "OBJECT",
-      properties: { amountMl: { type: "NUMBER", description: "Explicitly stated water amount normalized to millilitres." } },
-    },
-  },
-  {
-    name: "record_wellness",
-    description: "Propose explicitly stated wellness values only. Never add a value the athlete did not say.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        sleepQuality: { type: "NUMBER", description: "Sleep quality on the athlete-facing 1 to 10 scale." },
-        mood: { type: "NUMBER", description: "Mood on the athlete-facing 1 to 10 scale." },
-        soreness: { type: "NUMBER", description: "Soreness on the athlete-facing 1 to 10 scale." },
-        fatigue: { type: "NUMBER", description: "Fatigue on the athlete-facing 1 to 10 scale." },
-      },
-    },
-  },
-  {
-    name: "update_training_session",
-    description: "Propose an athlete-reported outcome for one existing session. Never assume a slot or actual values.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        sessionReference: { type: "STRING", description: "Words the athlete used to identify the session, such as morning, evening, conditioning, or strength." },
-        status: { type: "STRING", enum: ["completed", "partial", "skipped"] },
-        sets: { type: "NUMBER", description: "Actual sets, only if explicitly stated." },
-        reps: { type: "NUMBER", description: "Actual repetitions, only if explicitly stated." },
-        effort: { type: "NUMBER", description: "Session effort on a 1 to 10 scale, only if explicitly stated." },
-      },
-    },
-  },
-  {
-    name: "record_recovery",
-    description: "Propose explicitly stated recovery activities only.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        modalities: {
-          type: "ARRAY",
-          items: { type: "STRING", enum: ["Stretching", "Mobility", "Ice bath", "Physio"] },
-        },
-      },
-    },
-  },
-  {
-    name: "send_coach_message",
-    description: "Propose sending one exact message to the assigned coach. Return only the intended message body, without 'tell my coach'.",
-    parameters: { type: "OBJECT", properties: { body: { type: "STRING" } } },
-  },
-  {
-    name: "unsupported",
-    description: "Use when the request is unrelated, unsafe, or outside the available athlete reporting tools.",
-    parameters: { type: "OBJECT", properties: { reason: { type: "STRING" } } },
-  },
+  functionDeclaration("get_daily_status", "Questions about today's reporting status, hydration, wellness, or pending training", {}),
+  functionDeclaration("get_progress_summary", "Progress, improvement priorities, trends, or being on track", {
+    rangeDays: { type: "NUMBER", description: "7, 14, or 30 when explicitly stated" },
+  }),
+  functionDeclaration("compare_periods", "Compare the first two weeks with the last two weeks", {}),
+  functionDeclaration("find_best_day", "Find a best day for a specific metric, or ask which metric if none was stated", {
+    metric: { type: "STRING", enum: ["readiness", "trainingCompletion", "sprint30m", "sprint100m", "verticalJump", "farmersWalk40m"] },
+  }),
+  functionDeclaration("get_day_details", "Explain or retrieve evidence for one recorded date", {
+    dateKey: { type: "STRING", description: "ISO date only when explicitly stated or supplied by conversation context" },
+  }),
+  functionDeclaration("get_coach_update", "Read messages received from the assigned coach", {}),
+  functionDeclaration("get_coach_workout_plan", "Read Coach Priya's published workout for a date", {
+    dateKey: { type: "STRING", description: "ISO plan date when known" },
+  }),
+  functionDeclaration("explain_exercise_prescription", "Explain sets, reps, distance, load, RPE, or rest for an exercise in the published plan", {
+    exerciseReference: { type: "STRING" },
+    planId: { type: "STRING", description: "Only use a plan ID supplied in application context" },
+  }),
+  functionDeclaration("evaluate_intensity_question", "Questions about increasing intensity or which workouts to continue; provide evidence without prescribing", {
+    mode: { type: "STRING", enum: ["increase", "continue"] },
+  }),
+  functionDeclaration("add_water", "Propose adding an explicitly stated water amount, normalized to millilitres", {
+    amountMl: { type: "NUMBER" },
+  }),
+  functionDeclaration("record_wellness", "Propose explicitly stated wellness values only", {
+    sleepQuality: { type: "NUMBER" }, mood: { type: "NUMBER" }, soreness: { type: "NUMBER" }, fatigue: { type: "NUMBER" },
+  }),
+  functionDeclaration("update_training_session", "Propose an outcome for one existing session; never assume actual values", {
+    sessionReference: { type: "STRING" },
+    status: { type: "STRING", enum: ["completed", "partial", "skipped"] },
+    sets: { type: "NUMBER" }, reps: { type: "NUMBER" }, effort: { type: "NUMBER" }, actualDurationMinutes: { type: "NUMBER" },
+  }),
+  functionDeclaration("record_recovery", "Propose explicitly stated recovery activities", {
+    modalities: { type: "ARRAY", items: { type: "STRING", enum: ["Stretching", "Mobility", "Ice bath", "Physio"] } },
+  }),
+  functionDeclaration("send_coach_message", "Propose one exact message to Coach Priya", { body: { type: "STRING" } }),
+  functionDeclaration("unsupported", "Requests outside the available reporting, analytics, and coach-plan tools", {
+    reason: { type: "STRING" },
+  }),
 ] as const;
 
-const SYSTEM_INSTRUCTION = `You are the language-understanding layer for a constrained athlete reporting assistant.
-You may only propose the declared functions. You never execute them.
-Extract only values the athlete explicitly stated. Never manufacture neutral or midpoint wellness values.
-Never invent athlete IDs, session IDs, coach IDs, dates, or permissions.
-If a session is not identified, omit sessionReference so deterministic code can resolve or ask.
-If an amount or value is missing, omit it. Do not guess.
-For compound requests, return every relevant function call so the application can ask the athlete to handle one action at a time.
-For coach messages, preserve the athlete's intended message, but remove wrapper language such as "tell my coach that".
-Use get_daily_status for factual questions about today's status. Use get_progress_guidance for progress, feedback, priorities, improvement, or focus questions. Use get_coach_update for read-only questions about messages received from the coach. Use unsupported for unrelated requests.`;
+const SYSTEM_INSTRUCTION = `You are the language-understanding layer for a constrained athlete assistant.
+You may only propose declared functions and never execute them. The application calculates every numeric fact.
+Extract only values explicitly stated by the athlete. Never invent wellness values, dates, IDs, exercise loads, permissions, or results.
+Coach Priya alone prescribes training intensity and volume. For questions about increasing intensity or continuing workouts, select evaluate_intensity_question; never prescribe a change.
+For compound write requests, return each write function so the application can ask the athlete to handle one at a time.
+For read-only questions return one best matching function. Use unsupported only when nothing applies.`;
 
-export async function interpretAssistantMessage(message: string, state: DemoState): Promise<AssistantInterpretation> {
+export async function interpretAssistantMessage(
+  message: string,
+  state: DemoState,
+  conversationContext: AssistantConversationContext = {},
+): Promise<AssistantInterpretation> {
   const startedAt = Date.now();
-  const readOnlyQuestion = classifyReadOnlyQuestion(message);
-  if (readOnlyQuestion) {
-    const tool = readOnlyQuestion === "progress_guidance"
-      ? "get_progress_guidance"
-      : readOnlyQuestion === "coach_update"
-        ? "get_coach_update"
-        : "get_daily_status";
-    return {
-      candidates: [{ tool, arguments: {} }],
-      debug: { provider: "deterministic", latencyMs: Date.now() - startedAt, candidateTools: [tool] },
-    };
-  }
-
-  const genericWellnessMatch = message.match(
-    /\bwellness\s+(?:score\s+)?(?:is|was|=)\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i,
-  );
-  if (genericWellnessMatch) {
-    return {
-      candidates: [{ tool: "record_wellness", arguments: { wellnessScore: parseOneToTen(genericWellnessMatch[1]) } }],
-      debug: { provider: "deterministic", latencyMs: Date.now() - startedAt, candidateTools: ["record_wellness"] },
-    };
-  }
-
-  const wellnessAssignment = parseSingleWellnessAssignment(message);
-  if (wellnessAssignment) {
-    const argumentsForCandidate = typeof wellnessAssignment.value === "number"
-      ? { [wellnessAssignment.field]: wellnessAssignment.value }
-      : { wellnessField: wellnessAssignment.field, wellnessValue: wellnessAssignment.value };
-    return {
-      candidates: [{ tool: "record_wellness", arguments: argumentsForCandidate }],
-      debug: { provider: "deterministic", latencyMs: Date.now() - startedAt, candidateTools: ["record_wellness"] },
-    };
-  }
-
-  const explicitCoachMessage = parseExplicitCoachMessage(message);
-  if (explicitCoachMessage) {
-    return {
-      candidates: [{ tool: "send_coach_message", arguments: { body: explicitCoachMessage } }],
-      debug: { provider: "deterministic", latencyMs: Date.now() - startedAt, candidateTools: ["send_coach_message"] },
-    };
-  }
+  const deterministic = deterministicInterpretation(message, conversationContext);
+  if (deterministic) return withDebug(deterministic, startedAt, message, conversationContext);
 
   const compoundTools = detectCompoundWriteTools(message);
   if (compoundTools.length > 1) {
-    return {
-      candidates: compoundTools.map((tool) => ({ tool, arguments: {} })),
-      debug: { provider: "deterministic", latencyMs: Date.now() - startedAt, candidateTools: compoundTools },
-    };
+    return withDebug(compoundTools.map((tool) => ({ tool, arguments: {} })), startedAt, message, conversationContext);
   }
 
   const apiKey = process.env.GOOGLE_API_KEY ?? "";
   const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
   if (!apiKey) throw new AssistantInterpreterError("gemini_not_configured", "Gemini is not configured for this local demo.");
-
-  const context = {
+  const today = getActiveDemoDay(state);
+  const applicationContext = {
     localDate: state.athlete.dateKey,
     timezone: state.athlete.timezone,
-    sessions: state.sessions.map(({ slot, title, status }) => ({ slot, title, status })),
+    todaySessions: today.sessions.map(({ slot, title, status }) => ({ slot, title, status })),
     assignedCoach: state.coach.name,
+    availableHistory: { start: state.days[0].dateKey, end: state.days.at(-1)?.dateKey },
+    validatedConversationContext: conversationContext,
   };
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: `Athlete context: ${JSON.stringify(context)}\nAthlete message: ${JSON.stringify(message)}` }],
-      },
-    ],
+    contents: [{ role: "user", parts: [{ text: `Application context: ${JSON.stringify(applicationContext)}\nAthlete message: ${JSON.stringify(message)}` }] }],
     tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
     toolConfig: { functionCallingConfig: { mode: "ANY" } },
     generationConfig: { temperature: 0 },
   };
-
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
     {
@@ -201,23 +129,16 @@ export async function interpretAssistantMessage(message: string, state: DemoStat
       signal: AbortSignal.timeout(20_000),
     },
   );
-  if (!response.ok) {
-    throw new AssistantInterpreterError("gemini_request_failed", `Gemini could not interpret this request (${response.status}).`);
-  }
-
+  if (!response.ok) throw new AssistantInterpreterError("gemini_request_failed", `Gemini could not interpret this request (${response.status}).`);
   const json = (await response.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ functionCall?: { name?: string; args?: unknown } }> } }>;
   };
-  const calls = (json.candidates ?? [])
+  const candidates = (json.candidates ?? [])
     .flatMap((candidate) => candidate.content?.parts ?? [])
     .map((part) => part.functionCall)
-    .filter((call): call is { name: string; args?: unknown } => Boolean(call?.name));
-
-  const candidates = calls.map(sanitizeFunctionCall);
-  if (!candidates.length) {
-    throw new AssistantInterpreterError("gemini_empty_function_call", "Gemini did not return a supported athlete action.");
-  }
-
+    .filter((call): call is { name: string; args?: unknown } => Boolean(call?.name))
+    .map(sanitizeFunctionCall);
+  if (!candidates.length) throw new AssistantInterpreterError("gemini_empty_function_call", "Gemini did not return a supported athlete action.");
   return {
     candidates,
     debug: {
@@ -225,6 +146,93 @@ export async function interpretAssistantMessage(message: string, state: DemoStat
       model,
       latencyMs: Date.now() - startedAt,
       candidateTools: candidates.map((candidate) => candidate.tool),
+      normalizedQuery: normalize(message),
+      context: conversationContext,
+    },
+  };
+}
+
+function deterministicInterpretation(message: string, context: AssistantConversationContext): AssistantCandidate[] | null {
+  const text = normalize(message);
+  if (/^(why|why was that|why is that)$/.test(text) && context.dateKey) {
+    return [{ tool: "get_day_details", arguments: { dateKey: context.dateKey } }];
+  }
+  if (/^(?:and |what about )?(?:the )?(sled|slide)(?: push)?$/.test(text)) {
+    return [{ tool: "explain_exercise_prescription", arguments: { exerciseReference: "sled push", ...(context.planId ? { planId: context.planId } : {}) } }];
+  }
+  if (/compare my first two weeks (?:with|to|and) my last two weeks/.test(text)) return [{ tool: "compare_periods", arguments: {} }];
+  if (/which day (?:did i perform|was my performance) best/.test(text) || /what was my best day/.test(text)) {
+    return [{ tool: "find_best_day", arguments: {} }];
+  }
+  if (/best readiness/.test(text)) return [{ tool: "find_best_day", arguments: { metric: "readiness" } }];
+  if (/best 30\s*m/.test(text)) return [{ tool: "find_best_day", arguments: { metric: "sprint30m" } }];
+  if (/best 100\s*m/.test(text)) return [{ tool: "find_best_day", arguments: { metric: "sprint100m" } }];
+  if (/best (?:vertical )?jump/.test(text)) return [{ tool: "find_best_day", arguments: { metric: "verticalJump" } }];
+  if (/best farmer/.test(text)) return [{ tool: "find_best_day", arguments: { metric: "farmersWalk40m" } }];
+  if (/should i (?:increase|raise|add).*(?:intensity|load|weight)|(?:increase|raise).*(?:intensity|load|weight)/.test(text)) {
+    return [{ tool: "evaluate_intensity_question", arguments: { mode: "increase" } }];
+  }
+  if (/which workouts? should i continue|what workouts? should i continue/.test(text)) {
+    return [{ tool: "evaluate_intensity_question", arguments: { mode: "continue" } }];
+  }
+  if (/what (?:has|did) coach priya plan(?:ned)? for monday|what(?:'s| is) (?:my )?(?:monday )?(?:coach )?workout plan/.test(text)) {
+    return [{ tool: "get_coach_workout_plan", arguments: { dateKey: "2026-07-13" } }];
+  }
+  const exercise = exerciseReference(text);
+  if (exercise && /(?:how many|how much|what intensity|what load|what rpe|what rest|should i do|plan)/.test(text)) {
+    return [{ tool: "explain_exercise_prescription", arguments: { exerciseReference: exercise, ...(context.planId ? { planId: context.planId } : {}) } }];
+  }
+  const explicitDate = parseDateReference(text);
+  if (explicitDate && /(?:what happened|how did i do|show|data|details|perform)/.test(text)) {
+    return [{ tool: "get_day_details", arguments: { dateKey: explicitDate } }];
+  }
+  if (/how did i progress (?:this|over the) month|monthly progress|progress (?:this|over the) month/.test(text)) {
+    return [{ tool: "get_progress_summary", arguments: { rangeDays: 30 } }];
+  }
+  if (/^(?:i\s+)?(?:completed|finished)\s+(?:my\s+)?(?:training|workout|session)$/.test(text)) {
+    return [{ tool: "update_training_session", arguments: { status: "completed" } }];
+  }
+  if (/last 7 days|this week|past week/.test(text) && /progress|doing|improve/.test(text)) {
+    return [{ tool: "get_progress_summary", arguments: { rangeDays: 7 } }];
+  }
+  if (/last 14 days|two weeks|past fortnight/.test(text) && /progress|doing|improve/.test(text)) {
+    return [{ tool: "get_progress_summary", arguments: { rangeDays: 14 } }];
+  }
+
+  const readOnly = classifyReadOnlyQuestion(message);
+  if (readOnly === "daily_status") return [{ tool: "get_daily_status", arguments: {} }];
+  if (readOnly === "progress_guidance") return [{ tool: "get_progress_summary", arguments: { rangeDays: 30 } }];
+  if (readOnly === "coach_update") return [{ tool: "get_coach_update", arguments: {} }];
+
+  const genericWellnessMatch = message.match(/\bwellness\s+(?:score\s+)?(?:is|was|=)\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i);
+  if (genericWellnessMatch) return [{ tool: "record_wellness", arguments: { wellnessScore: parseOneToTen(genericWellnessMatch[1]) } }];
+  const wellnessAssignment = parseSingleWellnessAssignment(message);
+  if (wellnessAssignment) {
+    return [{
+      tool: "record_wellness",
+      arguments: typeof wellnessAssignment.value === "number"
+        ? { [wellnessAssignment.field]: wellnessAssignment.value }
+        : { wellnessField: wellnessAssignment.field, wellnessValue: wellnessAssignment.value },
+    }];
+  }
+  const coachMessage = parseExplicitCoachMessage(message);
+  if (coachMessage) return [{ tool: "send_coach_message", arguments: { body: coachMessage } }];
+  return null;
+}
+
+function functionDeclaration(name: string, description: string, properties: Record<string, unknown>) {
+  return { name, description, parameters: { type: "OBJECT", properties } };
+}
+
+function withDebug(candidates: AssistantCandidate[], startedAt: number, message: string, context: AssistantConversationContext): AssistantInterpretation {
+  return {
+    candidates,
+    debug: {
+      provider: "deterministic",
+      latencyMs: Date.now() - startedAt,
+      candidateTools: candidates.map((candidate) => candidate.tool),
+      normalizedQuery: normalize(message),
+      context,
     },
   };
 }
@@ -233,16 +241,13 @@ function sanitizeFunctionCall(call: { name: string; args?: unknown }): Assistant
   const tool = ASSISTANT_CANDIDATE_TOOLS.includes(call.name as AssistantCandidateTool)
     ? (call.name as AssistantCandidateTool)
     : "unsupported";
-  const args = call.args && typeof call.args === "object" && !Array.isArray(call.args)
-    ? (call.args as Record<string, unknown>)
-    : {};
+  const args = call.args && typeof call.args === "object" && !Array.isArray(call.args) ? call.args as Record<string, unknown> : {};
   return { tool, arguments: args };
 }
 
 function detectCompoundWriteTools(message: string): AssistantCandidateTool[] {
-  const text = message.trim().toLowerCase();
+  const text = normalize(message);
   if (/^(tell|message|send)\b/.test(text)) return [];
-
   const tools: AssistantCandidateTool[] = [];
   if (/\b(water|drink|drank|hydration|litre|liter|\d+\s*ml)\b/.test(text)) tools.push("add_water");
   if (/\b(sleep|mood|soreness|fatigue|wellness|check-in)\b/.test(text)) tools.push("record_wellness");
@@ -253,16 +258,31 @@ function detectCompoundWriteTools(message: string): AssistantCandidateTool[] {
 }
 
 function parseExplicitCoachMessage(message: string): string | null {
-  const trimmed = message.trim();
   const patterns = [
     /^(?:tell|message|send)(?:\s+(?:a\s+message\s+)?to)?\s+my\s+coach(?:\s+that)?\s+(.+)$/i,
     /^(?:tell|message|send)(?:\s+(?:a\s+message\s+)?to)?\s+coach\s+\S+(?:\s+that)?\s+(.+)$/i,
   ];
   for (const pattern of patterns) {
-    const body = trimmed.match(pattern)?.[1]?.trim();
+    const body = message.trim().match(pattern)?.[1]?.trim();
     if (body) return body;
   }
   return null;
+}
+
+function exerciseReference(text: string): string | null {
+  if (/farmer/.test(text)) return "farmer's walk";
+  if (/tire\s*flip/.test(text)) return "tire flip";
+  if (/sled|slide/.test(text)) return "sled push";
+  return null;
+}
+
+function parseDateReference(text: string): string | null {
+  const iso = text.match(/\b(2026-\d{2}-\d{2})\b/)?.[1];
+  if (iso) return iso;
+  const named = text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(june|july)\b/);
+  if (!named) return null;
+  const month = named[2] === "june" ? "06" : "07";
+  return `2026-${month}-${named[1].padStart(2, "0")}`;
 }
 
 function parseOneToTen(value: string) {
@@ -271,4 +291,8 @@ function parseOneToTen(value: string) {
   return ({ one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 })[
     value.toLowerCase() as "one"
   ];
+}
+
+function normalize(value: string) {
+  return value.trim().toLowerCase().replace(/[?.!]+$/g, "").replace(/\s+/g, " ");
 }

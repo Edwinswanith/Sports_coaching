@@ -12,17 +12,23 @@ import {
   resetDemoState,
   submitAssistantMessage,
 } from "../../lib/voice-demo/client";
+import { ProgressView } from "./ProgressView";
+import { CoachPlanner } from "./CoachPlanner";
 import type {
+  AssistantConversationContext,
   AssistantDebug,
   AssistantTurnResponse,
+  DemoDay,
   DemoSession,
   DemoState,
   DemoToolCall,
   RecoveryModality,
   WellnessKey,
 } from "../../lib/voice-demo/types";
+import { getActiveDemoDay } from "../../lib/voice-demo/types";
 
-type View = "today" | "coach" | "lab";
+type View = "today" | "progress" | "coach" | "lab";
+type DemoUiState = DemoState & Pick<DemoDay, "wellness" | "hydration" | "sessions" | "recovery" | "readiness">;
 type ConversationEntry = {
   id: string;
   userMessage: string;
@@ -48,6 +54,7 @@ export function AthleteVoiceDemo() {
   const [lastAssistantMessage, setLastAssistantMessage] = useState("");
   const [conversation, setConversation] = useState<ConversationEntry[]>([]);
   const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantContext, setAssistantContext] = useState<AssistantConversationContext>({});
   const [demoState, setDemoState] = useState<DemoState | null>(null);
   const [manualAction, setManualAction] = useState<ManualAction>(null);
   const [busy, setBusy] = useState(false);
@@ -67,8 +74,14 @@ export function AthleteVoiceDemo() {
     };
   }, []);
 
+  const uiState = useMemo<DemoUiState | null>(() => {
+    if (!demoState) return null;
+    return { ...demoState, ...getActiveDemoDay(demoState) };
+  }, [demoState]);
+
   const pageMeta = useMemo(() => {
-    if (view === "coach") return { eyebrow: "Coach preview", title: "Athlete handoff" };
+    if (view === "progress") return { eyebrow: "Performance analytics", title: "30-day progress" };
+    if (view === "coach") return { eyebrow: "Coach workspace", title: "Workout planner" };
     if (view === "lab") return { eyebrow: "Test laboratory", title: "Action trace" };
     return { eyebrow: "Athlete workspace", title: "Today" };
   }, [view]);
@@ -90,8 +103,9 @@ export function AthleteVoiceDemo() {
     const entryId = crypto.randomUUID();
     setConversation((current) => [...current, { id: entryId, userMessage: trimmed, turn: null, pending: true }]);
     try {
-      const turn = await submitAssistantMessage(trimmed);
+      const turn = await submitAssistantMessage(trimmed, assistantContext);
       setAssistantTurn(turn);
+      setAssistantContext(turn.context);
       setConversation((current) => current.map((entry) => entry.id === entryId ? { ...entry, turn, pending: false } : entry));
     } catch (error) {
       const message = error instanceof Error ? error.message : "The assistant could not interpret that request.";
@@ -163,6 +177,7 @@ export function AthleteVoiceDemo() {
       setAssistantTurn(null);
       setLastAssistantMessage("");
       setConversation([]);
+      setAssistantContext({});
       setDraft("");
       setNotice({ tone: "success", text: "Demo restored to the original athlete scenario." });
     } catch (error) {
@@ -202,7 +217,7 @@ export function AthleteVoiceDemo() {
       ) : null}
 
       <div className="mx-auto grid w-full max-w-[1440px] gap-5 px-4 pb-28 pt-4 md:px-6 lg:grid-cols-[220px_minmax(0,1fr)_360px] lg:pb-8 lg:pt-6">
-        <DemoSidebar view={view} state={demoState} onChange={setView} />
+        <DemoSidebar view={view} state={uiState} onChange={setView} />
 
         <main className="min-w-0">
           <div className="mb-5 flex items-end justify-between gap-4">
@@ -215,23 +230,24 @@ export function AthleteVoiceDemo() {
             <p className="hidden text-sm text-ink-muted sm:block">{DEMO_DATE}</p>
           </div>
 
-          {!demoState ? <DemoLoading /> : null}
-          {demoState && view === "today" ? (
+          {!uiState ? <DemoLoading /> : null}
+          {uiState && view === "today" ? (
             <TodayView
-              state={demoState}
+              state={uiState}
               onOpenAssistant={() => setAssistantOpen(true)}
               onPrompt={showPrompt}
               onManual={setManualAction}
             />
           ) : null}
-          {demoState && view === "coach" ? <CoachPreview state={demoState} /> : null}
+          {demoState && view === "progress" ? <ProgressView state={demoState} /> : null}
+          {demoState && view === "coach" ? <CoachPlanner state={demoState} onStateChange={setDemoState} /> : null}
           {demoState && view === "lab" ? <TestLaboratory state={demoState} turn={assistantTurn} message={lastAssistantMessage} /> : null}
         </main>
 
         <aside className="hidden min-w-0 lg:block">
           <div className="sticky top-24">
             <AssistantPanel
-              state={demoState}
+              state={uiState}
               turn={assistantTurn}
               conversation={conversation}
               busy={assistantBusy}
@@ -273,7 +289,7 @@ export function AthleteVoiceDemo() {
         >
           <AssistantPanel
             compact
-            state={demoState}
+            state={uiState}
             turn={assistantTurn}
             conversation={conversation}
             busy={assistantBusy}
@@ -292,11 +308,11 @@ export function AthleteVoiceDemo() {
         onClose={() => !busy && setManualAction(null)}
         title={manualAction ? <ManualSheetTitle action={manualAction} /> : null}
       >
-        {manualAction && demoState ? (
+        {manualAction && uiState ? (
           <ManualActionForm
             key={manualAction.type === "training" ? `${manualAction.type}-${manualAction.sessionId}` : manualAction.type}
             action={manualAction}
-            state={demoState}
+            state={uiState}
             busy={busy}
             onSubmit={runManualAction}
           />
@@ -342,12 +358,13 @@ function DemoHeader({ busy, onReset }: { busy: boolean; onReset: () => void }) {
   );
 }
 
-function DemoSidebar({ view, state, onChange }: { view: View; state: DemoState | null; onChange: (view: View) => void }) {
+function DemoSidebar({ view, state, onChange }: { view: View; state: DemoUiState | null; onChange: (view: View) => void }) {
   const completed = state ? completedDailyItems(state) : 1;
   const progress = completed * 20;
   const items: Array<{ key: View; label: string; helper: string; icon: ReactNode }> = [
     { key: "today", label: "Athlete today", helper: "Daily reporting", icon: <Icon.home /> },
-    { key: "coach", label: "Coach preview", helper: "Shared outcomes", icon: <Icon.users /> },
+    { key: "progress", label: "Progress", helper: "30-day analytics", icon: <Icon.pulse /> },
+    { key: "coach", label: "Coach planner", helper: "Draft and publish", icon: <Icon.users /> },
     { key: "lab", label: "Test laboratory", helper: "System trace", icon: <Icon.pulse /> },
   ];
 
@@ -399,7 +416,7 @@ function TodayView({
   onPrompt,
   onManual,
 }: {
-  state: DemoState;
+  state: DemoUiState;
   onOpenAssistant: () => void;
   onPrompt: (prompt: string) => void;
   onManual: (action: ManualAction) => void;
@@ -414,6 +431,9 @@ function TodayView({
   const completed = completedDailyItems(state);
   const remaining = 5 - completed;
   const hydrationPercent = Math.min(100, Math.round((state.hydration.totalMl / state.hydration.goalMl) * 100));
+  const nextPlan = [...state.coachPlans]
+    .filter((plan) => plan.status === "published" && plan.dateKey >= state.athlete.dateKey)
+    .sort((a, b) => a.dateKey.localeCompare(b.dateKey) || b.version - a.version)[0];
 
   return (
     <div className="space-y-5">
@@ -461,6 +481,25 @@ function TodayView({
           </div>
         </div>
       </section>
+
+      {nextPlan ? (
+        <section className="rounded-[1.6rem] border border-accent/20 bg-gradient-to-br from-white to-[#eef8f3] p-5 shadow-raised">
+          <SectionHeader eyebrow="Published by Coach Priya" title={`${nextPlan.title} · ${nextPlan.dateKey}`} action={`Version ${nextPlan.version}`} />
+          <p className="mt-2 text-xs text-ink-muted">{nextPlan.focus} · {nextPlan.durationMinutes} minutes. Draft revisions remain private until published.</p>
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            {nextPlan.exercises.map((exercise) => (
+              <article key={exercise.id} className="rounded-2xl border border-line bg-white p-3.5">
+                <p className="text-sm font-bold text-ink">{exercise.name}</p>
+                <p className="mt-1 text-[11px] text-ink-muted">
+                  {exercise.reps !== undefined ? `${exercise.sets} × ${exercise.reps} reps` : `${exercise.sets} × ${exercise.distanceMeters} m`} · {exercise.loadKg} kg{exercise.loadLabel ? ` ${exercise.loadLabel}` : ""}
+                </p>
+                <p className="mt-2 text-[10px] font-bold uppercase tracking-wider text-accent-strong">Target RPE {exercise.targetRpe} · Rest {exercise.restSeconds}s</p>
+              </article>
+            ))}
+          </div>
+          <button type="button" onClick={() => onPrompt("What has Coach Priya planned for Monday?")} className="mt-4 text-sm font-bold text-accent-strong hover:underline">Ask about this plan →</button>
+        </section>
+      ) : null}
 
       <section className="grid gap-5 xl:grid-cols-[1.08fr_0.92fr]">
         <div className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
@@ -572,7 +611,7 @@ function AssistantPanel({
   onCancel,
 }: {
   compact?: boolean;
-  state: DemoState | null;
+  state: DemoUiState | null;
   turn: AssistantTurnResponse | null;
   conversation: ConversationEntry[];
   busy: boolean;
@@ -650,6 +689,7 @@ function AssistantPanel({
                     currentPlanId={turn?.kind === "plan" ? turn.plan.id : undefined}
                     busy={busy}
                     onDraftChange={onDraftChange}
+                    onPrompt={onPrompt}
                     onConfirm={onConfirm}
                     onCancel={onCancel}
                   />
@@ -683,6 +723,7 @@ function ConversationTurn({
   currentPlanId,
   busy,
   onDraftChange,
+  onPrompt,
   onConfirm,
   onCancel,
 }: {
@@ -690,6 +731,7 @@ function ConversationTurn({
   currentPlanId?: string;
   busy: boolean;
   onDraftChange: (value: string) => void;
+  onPrompt: (value: string) => void;
   onConfirm: () => Promise<void>;
   onCancel: () => Promise<void>;
 }) {
@@ -732,16 +774,35 @@ function ConversationTurn({
   return (
     <div className={`mr-8 rounded-2xl rounded-bl-md p-3.5 text-sm ${turn.kind === "unsupported" ? "border border-bad/15 bg-bad/[0.06] text-ink" : turn.kind === "completed" ? "border border-ok/15 bg-ok/[0.07] text-ink" : "bg-surface-inset text-ink"}`}>
       <p className="font-semibold">{turn.message}</p>
+      {"evidence" in turn && turn.evidence?.length ? (
+        <dl className="mt-3 grid gap-1.5">
+          {turn.evidence.map((item, index) => (
+            <div key={`${item.label}-${item.dateKey ?? "none"}-${index}`} className="rounded-xl border border-black/[0.05] bg-white/80 px-3 py-2">
+              <dt className="text-[9px] font-bold uppercase tracking-wider text-ink-faint">{item.label}{item.dateKey ? ` · ${item.dateKey}` : ""}</dt>
+              <dd className="mt-0.5 text-[11px] font-semibold leading-relaxed text-ink">{item.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {turn.kind === "clarification" && turn.options?.length ? (
         <div className="mt-3 flex flex-wrap gap-1.5">
           {turn.options.map((option) => <button type="button" onClick={() => onDraftChange(option)} key={option} className="rounded-full border border-line bg-white px-2.5 py-1 text-[10px] font-semibold text-ink-muted">{option}</button>)}
+        </div>
+      ) : null}
+      {"suggestions" in turn && turn.suggestions?.length ? (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {turn.suggestions.map((suggestion) => (
+            <button type="button" onClick={() => onPrompt(suggestion)} key={suggestion} className="rounded-full border border-accent/15 bg-white px-2.5 py-1 text-left text-[10px] font-semibold text-accent-strong hover:border-accent/40">
+              {suggestion}
+            </button>
+          ))}
         </div>
       ) : null}
     </div>
   );
 }
 
-function CoachPreview({ state }: { state: DemoState }) {
+function CoachPreview({ state }: { state: DemoUiState }) {
   const pendingWellness = (["sleepQuality", "mood", "soreness", "fatigue"] as WellnessKey[])
     .filter((key) => state.wellness[key] === null)
     .map(wellnessLabel);
@@ -863,6 +924,12 @@ function TestLaboratory({ state, turn, message }: { state: DemoState; turn: Assi
           <dl className="mt-4 space-y-3">
             <TraceValue label="Text command" value={message || "Submit a text command from Apex Assist."} />
             <TraceValue label="Candidate tool" value={debug?.candidateTools.join(", ") || "—"} mono />
+            <TraceValue label="Normalized query" value={debug?.normalizedQuery || "—"} mono />
+            <TraceValue label="Date range" value={debug?.dateRange ? `${debug.dateRange.start} → ${debug.dateRange.end}` : "—"} mono />
+            <TraceValue label="Metric" value={debug?.metric || "—"} mono />
+            <TraceValue label="Conversation context" value={debug?.context ? JSON.stringify(debug.context) : "{}"} mono />
+            <TraceValue label="Evidence records" value={debug?.evidence ? String(debug.evidence.length) : "0"} />
+            <TraceValue label="Safety decision" value={debug?.safetyDecision || "—"} />
             <TraceValue label="Provider / model" value={debug ? `${debug.provider}${debug.model ? ` · ${debug.model}` : ""}` : "—"} mono />
             <TraceValue label="Interpretation latency" value={debug ? `${debug.latencyMs} ms` : "—"} />
           </dl>
@@ -886,6 +953,7 @@ function TestLaboratory({ state, turn, message }: { state: DemoState; turn: Assi
 function MobileNav({ view, onChange, onAssistant }: { view: View; onChange: (view: View) => void; onAssistant: () => void }) {
   const items: Array<{ key: View | "assistant"; label: string; icon: ReactNode }> = [
     { key: "today", label: "Today", icon: <Icon.home /> },
+    { key: "progress", label: "Progress", icon: <Icon.pulse /> },
     { key: "assistant", label: "Assist", icon: <Icon.mic /> },
     { key: "coach", label: "Coach", icon: <Icon.users /> },
     { key: "lab", label: "Lab", icon: <Icon.pulse /> },
@@ -936,7 +1004,7 @@ function ManualActionForm({
   onSubmit,
 }: {
   action: Exclude<ManualAction, null>;
-  state: DemoState;
+  state: DemoUiState;
   busy: boolean;
   onSubmit: (call: DemoToolCall) => Promise<void>;
 }) {
@@ -1159,7 +1227,7 @@ function ProviderRow({ name, variable, status, positive = false }: { name: strin
   return <div className="flex items-center justify-between gap-3 rounded-2xl bg-surface-inset p-3"><div><p className="text-sm font-semibold text-ink">{name}</p><p className="mt-0.5 font-mono text-[10px] text-ink-faint">{variable}</p></div><span className={`rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider ${positive ? "bg-ok/10 text-ok" : "bg-white text-ink-faint"}`}>{status}</span></div>;
 }
 
-function completedDailyItems(state: DemoState) {
+function completedDailyItems(state: DemoUiState) {
   const wellnessComplete = Object.values(state.wellness).every((value) => value !== null) ? 1 : 0;
   const hydrationLogged = state.hydration.totalMl > 0 ? 1 : 0;
   const completedSessions = state.sessions.filter((session) => session.status !== "planned").length;
@@ -1167,7 +1235,7 @@ function completedDailyItems(state: DemoState) {
   return Math.min(5, wellnessComplete + hydrationLogged + completedSessions + recoveryLogged);
 }
 
-function missingDemoItems(state: DemoState): string[] {
+function missingDemoItems(state: DemoUiState): string[] {
   const missingWellness = (["sleepQuality", "mood", "soreness", "fatigue"] as WellnessKey[])
     .filter((key) => state.wellness[key] === null)
     .map((key) => wellnessLabel(key).replace(" quality", ""));
@@ -1186,7 +1254,7 @@ function wellnessLabel(key: WellnessKey) {
 function sessionActualDetail(session: DemoSession) {
   const actuals = [
     session.sets !== undefined && session.reps !== undefined ? `${session.sets} × ${session.reps}` : null,
-    session.effort !== undefined ? `Effort ${session.effort}/10` : null,
+    session.effortRating !== undefined ? `Effort ${session.effortRating}/10` : null,
   ].filter(Boolean);
   return actuals.length ? `Planned: ${session.detail} · Actual: ${actuals.join(" · ")}` : session.detail;
 }

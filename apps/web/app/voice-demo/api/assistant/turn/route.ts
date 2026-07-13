@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { AssistantInterpreterError, interpretAssistantMessage } from "@/lib/voice-demo/assistantInterpreter";
 import { readDemoState, resolveAndStoreAssistantTurn } from "@/lib/voice-demo/store";
+import { sanitizeAssistantContext } from "@/lib/voice-demo/assistantContext";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { message?: unknown };
+    const body = (await request.json()) as { message?: unknown; context?: unknown };
     const message = typeof body.message === "string" ? body.message.trim() : "";
     if (!message || message.length > 500) {
       return NextResponse.json(
@@ -14,9 +15,11 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    const interpretation = await interpretAssistantMessage(message, await readDemoState());
+    const state = await readDemoState();
+    const context = sanitizeAssistantContext(body.context, state);
+    const interpretation = await interpretAssistantMessage(message, state, context);
     return NextResponse.json(
-      { ok: true, turn: await resolveAndStoreAssistantTurn(interpretation) },
+      { ok: true, turn: await resolveAndStoreAssistantTurn(interpretation, context) },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

@@ -1,5 +1,6 @@
 import { createSeedDemoState } from "../lib/voice-demo/seed";
 import { DemoToolError, executeDemoTool } from "../lib/voice-demo/tools";
+import { getActiveDemoDay } from "../lib/voice-demo/types";
 
 describe("voice demo deterministic tools", () => {
   test("adds water once and returns the stored result for the same operation ID", () => {
@@ -9,11 +10,11 @@ describe("voice demo deterministic tools", () => {
     const first = executeDemoTool(initial, call);
     const retry = executeDemoTool(first.state, call);
 
-    expect(initial.hydration.totalMl).toBe(750);
-    expect(first.state.hydration.totalMl).toBe(1000);
-    expect(first.state.hydration.entries).toHaveLength(1);
-    expect(retry.state.hydration.totalMl).toBe(1000);
-    expect(retry.state.hydration.entries).toHaveLength(1);
+    expect(getActiveDemoDay(initial).hydration.totalMl).toBe(750);
+    expect(getActiveDemoDay(first.state).hydration.totalMl).toBe(1000);
+    expect(getActiveDemoDay(first.state).hydration.entries).toHaveLength(1);
+    expect(getActiveDemoDay(retry.state).hydration.totalMl).toBe(1000);
+    expect(getActiveDemoDay(retry.state).hydration.entries).toHaveLength(1);
     expect(retry.result.changed).toBe(false);
   });
 
@@ -25,7 +26,8 @@ describe("voice demo deterministic tools", () => {
       arguments: { sleepQuality: 8 },
     });
 
-    expect(outcome.state.wellness).toEqual({
+    expect(getActiveDemoDay(outcome.state).wellness).toEqual({
+      sleepHours: null,
       sleepQuality: 8,
       mood: 7,
       soreness: null,
@@ -65,13 +67,13 @@ describe("voice demo deterministic tools", () => {
       },
     });
 
-    expect(outcome.state.sessions.find((session) => session.id === "session_demo_pm")).toMatchObject({
+    expect(getActiveDemoDay(outcome.state).sessions.find((session) => session.id === "session_demo_pm")).toMatchObject({
       status: "completed",
       sets: 4,
       reps: 8,
-      effort: 7,
+      effortRating: 7,
     });
-    expect(outcome.state.sessions.find((session) => session.id === "session_demo_am")?.status).toBe("planned");
+    expect(getActiveDemoDay(outcome.state).sessions.find((session) => session.id === "session_demo_am")?.status).toBe("planned");
   });
 
   test("rejects an unknown training session instead of defaulting to morning", () => {
@@ -91,7 +93,7 @@ describe("voice demo deterministic tools", () => {
       arguments: { modalities: ["Stretching", "Mobility"] },
     });
 
-    expect(outcome.state.recovery.modalities).toEqual(["Stretching", "Mobility"]);
+    expect(getActiveDemoDay(outcome.state).recovery.modalities).toEqual(["Stretching", "Mobility"]);
   });
 
   test("sends one exact message only to the assigned coach", () => {
@@ -104,9 +106,9 @@ describe("voice demo deterministic tools", () => {
     const first = executeDemoTool(initial, call);
     const retry = executeDemoTool(first.state, call);
 
-    expect(first.state.coach.messages).toHaveLength(2);
+    expect(first.state.coach.messages).toHaveLength(3);
     expect(first.state.coach.messages.at(-1)?.body).toBe("I completed evening strength.");
-    expect(retry.state.coach.messages).toHaveLength(2);
+    expect(retry.state.coach.messages).toHaveLength(3);
 
     expect(() =>
       executeDemoTool(initial, {
