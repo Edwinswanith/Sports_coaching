@@ -50,12 +50,16 @@ export function executeDemoTool(current: DemoState, call: DemoToolCall): { state
     message = `Added ${amountMl.toLocaleString("en-IN")} ml. Today’s total is ${activeDay.hydration.totalMl.toLocaleString("en-IN")} ml.`;
     addActivity(state, call.operationId, "Water logged", `${amountMl.toLocaleString("en-IN")} ml added`, now);
   } else if (call.tool === "record_wellness") {
-    const entries = Object.entries(call.arguments).filter((entry): entry is [WellnessKey, number] =>
-      WELLNESS_KEYS.includes(entry[0] as WellnessKey),
+    const entries = Object.entries(call.arguments).filter((entry): entry is [WellnessKey | "sleepHours", number] =>
+      entry[0] === "sleepHours" || WELLNESS_KEYS.includes(entry[0] as WellnessKey),
     );
     if (entries.length === 0) throw new DemoToolError("missing_wellness_values", "Add at least one wellness value.");
     for (const [key, rawValue] of entries) {
-      activeDay.wellness[key] = requireInteger(rawValue, "invalid_wellness_value", 1, 10);
+      if (key === "sleepHours") {
+        activeDay.wellness.sleepHours = requireSleepHours(rawValue);
+      } else {
+        activeDay.wellness[key] = requireInteger(rawValue, "invalid_wellness_value", 1, 10);
+      }
     }
     activeDay.readiness = calculateReadiness(activeDay.wellness);
     const labels = entries.map(([key]) => wellnessLabel(key));
@@ -131,13 +135,20 @@ function requireInteger(value: number, code: string, min: number, max: number) {
   return value;
 }
 
+function requireSleepHours(value: number) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 16) {
+    throw new DemoToolError("invalid_sleep_hours", "Enter sleep hours from 0.1 to 16.");
+  }
+  return Math.round(value * 10) / 10;
+}
+
 function addActivity(state: DemoState, operationId: string, label: string, detail: string, createdAt: string) {
   const activity: DemoActivity = { id: `activity_${operationId}`, label, detail, createdAt };
   state.activity.unshift(activity);
 }
 
-function wellnessLabel(key: WellnessKey) {
-  return ({ sleepQuality: "Sleep quality", mood: "Mood", soreness: "Soreness", fatigue: "Fatigue" })[key];
+function wellnessLabel(key: WellnessKey | "sleepHours") {
+  return ({ sleepHours: "Sleep hours", sleepQuality: "Sleep quality", mood: "Mood", soreness: "Soreness", fatigue: "Fatigue" })[key];
 }
 
 function joinList(values: string[]) {

@@ -140,7 +140,7 @@ export type DemoToolCall =
   | {
       operationId: string;
       tool: "record_wellness";
-      arguments: Partial<Record<WellnessKey, number>>;
+      arguments: Partial<Record<WellnessKey, number>> & { sleepHours?: number };
     }
   | {
       operationId: string;

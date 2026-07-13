@@ -3,7 +3,7 @@ import type { WellnessKey } from "./types";
 export type ReadOnlyAssistantQuestion = "daily_status" | "progress_guidance" | "coach_update";
 
 export type ParsedWellnessAssignment = {
-  field: WellnessKey;
+  field: WellnessKey | "sleepHours";
   value: number | string;
 };
 
@@ -71,6 +71,9 @@ export function classifyReadOnlyQuestion(message: string): ReadOnlyAssistantQues
 }
 
 export function parseSingleWellnessAssignment(message: string): ParsedWellnessAssignment | null {
+  const sleepHours = parseSleepHoursAssignment(message);
+  if (sleepHours) return sleepHours;
+
   const fieldMentions = message.match(WELLNESS_FIELD_PATTERN) ?? [];
   const fields = [...new Set(fieldMentions.map(toWellnessKey).filter((value): value is WellnessKey => Boolean(value)))];
   if (fields.length !== 1) return null;
@@ -91,6 +94,21 @@ export function parseSingleWellnessAssignment(message: string): ParsedWellnessAs
     field,
     value: parsedNumber !== null && Number.isFinite(parsedNumber) ? parsedNumber : rawValue.slice(0, 80),
   };
+}
+
+function parseSleepHoursAssignment(message: string): ParsedWellnessAssignment | null {
+  const text = normalize(message);
+  const mentionsSleepDuration =
+    /\b(?:sleep|screen)\s+(?:quantity|duration|hours?|hrs?)\b/.test(text) ||
+    /\b(?:sleep|screen)\b.*\b(?:quantity|duration|hours?|hrs?)\b/.test(text) ||
+    /\b(?:hours?|hrs?)\b.*\b(?:sleep|screen)\b/.test(text);
+  if (!mentionsSleepDuration) return null;
+
+  const token = text.match(/\b(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:hours?|hrs?|h)\b/)?.[1] ??
+    text.match(/\b(?:up\s+to|to|at|is|was|as)\s+(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\b/)?.[1];
+  if (!token) return null;
+  const value = NUMBER_WORDS[token] ?? Number(token);
+  return { field: "sleepHours", value };
 }
 
 function normalize(value: string) {

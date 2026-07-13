@@ -35,6 +35,21 @@ export async function submitAssistantMessage(message: string, context: Assistant
   return assistantRequest("/voice-demo/api/assistant/turn", { message, context });
 }
 
+export async function transcribeVoiceDemoAudio(audio: Blob): Promise<string> {
+  const formData = new FormData();
+  const extension = audio.type.includes("mp4") ? "mp4" : audio.type.includes("ogg") ? "ogg" : "webm";
+  formData.append("audio", audio, `voice-demo-command.${extension}`);
+  const response = await fetch("/voice-demo/api/transcribe", {
+    method: "POST",
+    body: formData,
+  });
+  const payload = (await response.json()) as
+    | { ok: true; transcript: string }
+    | { ok: false; error: string; message: string };
+  if (!response.ok || !payload.ok) throw new Error(payload.ok ? "Voice transcription failed." : payload.message);
+  return payload.transcript;
+}
+
 export async function getCoachPlans(): Promise<{ state: DemoState; plans: DemoCoachWorkoutPlan[] }> {
   const response = await fetch("/voice-demo/api/coach-plans", { cache: "no-store" });
   const payload = await response.json() as { ok: true; state: DemoState; plans: DemoCoachWorkoutPlan[] } | { ok: false; message: string };

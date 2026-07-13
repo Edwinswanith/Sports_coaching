@@ -64,7 +64,7 @@ const FUNCTION_DECLARATIONS = [
     amountMl: { type: "NUMBER" },
   }),
   functionDeclaration("record_wellness", "Propose explicitly stated wellness values only", {
-    sleepQuality: { type: "NUMBER" }, mood: { type: "NUMBER" }, soreness: { type: "NUMBER" }, fatigue: { type: "NUMBER" },
+    sleepHours: { type: "NUMBER" }, sleepQuality: { type: "NUMBER" }, mood: { type: "NUMBER" }, soreness: { type: "NUMBER" }, fatigue: { type: "NUMBER" },
   }),
   functionDeclaration("update_training_session", "Propose an outcome for one existing session; never assume actual values", {
     sessionReference: { type: "STRING" },

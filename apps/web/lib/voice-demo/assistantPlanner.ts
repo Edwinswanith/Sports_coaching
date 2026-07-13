@@ -300,17 +300,22 @@ function buildToolProposal(state: DemoState, candidate: AssistantCandidate): Too
     };
   }
   if (candidate.tool === "record_wellness") {
-    assertOnlyKeys(args, [...WELLNESS_KEYS, "wellnessScore", "wellnessField", "wellnessValue"]);
+    assertOnlyKeys(args, ["sleepHours", ...WELLNESS_KEYS, "wellnessScore", "wellnessField", "wellnessValue"]);
     const requestedField = WELLNESS_KEYS.includes(args.wellnessField as WellnessKey) ? args.wellnessField as WellnessKey : null;
     if (requestedField) return wellnessValueClarification(requestedField);
-    const values: Partial<Record<WellnessKey, number>> = {};
+    const values: Partial<Record<WellnessKey, number>> & { sleepHours?: number } = {};
+    if (args.sleepHours !== undefined) {
+      const sleepHours = numberValue(args.sleepHours);
+      if (sleepHours === null || sleepHours <= 0 || sleepHours > 16) return { clarification: "How many hours did you sleep? Enter a number from 0.1 to 16." };
+      values.sleepHours = Math.round(sleepHours * 10) / 10;
+    }
     for (const key of WELLNESS_KEYS) {
       if (args[key] === undefined) continue;
       const value = integer(args[key]);
       if (value === null || value < 1 || value > 10) return wellnessValueClarification(key);
       values[key] = value;
     }
-    const entries = Object.entries(values) as Array<[WellnessKey, number]>;
+    const entries = Object.entries(values) as Array<[WellnessKey | "sleepHours", number]>;
     if (!entries.length) {
       const score = integer(args.wellnessScore);
       return {
@@ -322,7 +327,7 @@ function buildToolProposal(state: DemoState, candidate: AssistantCandidate): Too
     }
     return {
       summary: `Update ${joinList(entries.map(([key]) => wellnessLabel(key)))}`,
-      displayFields: entries.map(([key, value]) => ({ label: wellnessLabel(key), value: `${value} / 10` })),
+      displayFields: entries.map(([key, value]) => ({ label: wellnessLabel(key), value: key === "sleepHours" ? `${value} h` : `${value} / 10` })),
       toolCall: { tool: "record_wellness", arguments: values },
     };
   }
@@ -491,6 +496,7 @@ function assertOnlyKeys(args: Record<string, unknown>, allowed: readonly string[
 }
 
 function integer(value: unknown) { return typeof value === "number" && Number.isInteger(value) ? value : null; }
+function numberValue(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : null; }
 function optionalInteger(value: unknown, min: number, max: number, label: string): number | undefined | string {
   if (value === undefined) return undefined;
   const parsed = integer(value);
@@ -506,7 +512,7 @@ function candidateLabel(tool: AssistantCandidate["tool"]) {
     unsupported: "an unsupported request",
   })[tool];
 }
-function wellnessLabel(key: WellnessKey) { return ({ sleepQuality: "sleep quality", mood: "mood", soreness: "soreness", fatigue: "fatigue" })[key]; }
+function wellnessLabel(key: WellnessKey | "sleepHours") { return ({ sleepHours: "sleep hours", sleepQuality: "sleep quality", mood: "mood", soreness: "soreness", fatigue: "fatigue" })[key]; }
 function sessionName(session: DemoSession) { return `${capitalize(session.slot)} ${session.title}`; }
 function capitalize(value: string) { return value.charAt(0).toUpperCase() + value.slice(1); }
 function joinList(values: string[]) { if (values.length < 2) return values[0] ?? ""; if (values.length === 2) return `${values[0]} and ${values[1]}`; return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`; }

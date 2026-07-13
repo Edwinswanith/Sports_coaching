@@ -36,6 +36,21 @@ describe("voice demo deterministic tools", () => {
     expect(outcome.result.message).toMatch(/Unmentioned wellness values were left unchanged/);
   });
 
+  test("updates sleep hours without treating them as sleep quality", () => {
+    const initial = createSeedDemoState();
+    const outcome = executeDemoTool(initial, {
+      operationId: "operation_sleep_hours",
+      tool: "record_wellness",
+      arguments: { sleepHours: 7 },
+    });
+
+    expect(getActiveDemoDay(outcome.state).wellness).toMatchObject({
+      sleepHours: 7,
+      sleepQuality: null,
+    });
+    expect(outcome.result.message).toMatch(/Sleep hours updated/);
+  });
+
   test("rejects invalid wellness and water values", () => {
     expect(() =>
       executeDemoTool(createSeedDemoState(), {

@@ -181,6 +181,15 @@ describe("voice demo assistant write regressions", () => {
     expect(resolved.plan?.displayFields).toEqual([{ label: "sleep quality", value: "8 / 10" }]);
   });
 
+  test("sleep quantity commands create a sleep-hours plan", () => {
+    expect(parseSingleWellnessAssignment("Saved the sleep quantity up to seven hours.")).toEqual({ field: "sleepHours", value: 7 });
+    expect(parseSingleWellnessAssignment("Save this screen quantity to seven hours.")).toEqual({ field: "sleepHours", value: 7 });
+
+    const resolved = resolve("record_wellness", { sleepHours: 7 });
+    expect(resolved.plan?.toolCall).toMatchObject({ tool: "record_wellness", arguments: { sleepHours: 7 } });
+    expect(resolved.plan?.displayFields).toEqual([{ label: "sleep hours", value: "7 h" }]);
+  });
+
   test("generic wellness score asks which field instead of guessing", () => {
     const resolved = resolve("record_wellness", { wellnessScore: 2 });
     expect(resolved.response.kind).toBe("clarification");

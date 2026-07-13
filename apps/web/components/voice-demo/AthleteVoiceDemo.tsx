@@ -11,6 +11,7 @@ import {
   newOperationId,
   resetDemoState,
   submitAssistantMessage,
+  transcribeVoiceDemoAudio,
 } from "../../lib/voice-demo/client";
 import { ProgressView } from "./ProgressView";
 import { CoachPlanner } from "./CoachPlanner";
@@ -26,6 +27,12 @@ import type {
   WellnessKey,
 } from "../../lib/voice-demo/types";
 import { getActiveDemoDay } from "../../lib/voice-demo/types";
+
+declare global {
+  interface Window {
+    webkitAudioContext?: typeof AudioContext;
+  }
+}
 
 type View = "today" | "progress" | "coach" | "lab";
 type DemoUiState = DemoState & Pick<DemoDay, "wellness" | "hydration" | "sessions" | "recovery" | "readiness">;
@@ -43,12 +50,17 @@ type ManualAction =
   | { type: "recovery" }
   | { type: "message" }
   | null;
+type AssistantMode = "closed" | "voice" | "input";
+type VoiceRecordStatus = "idle" | "listening" | "speaking" | "transcribing";
 
 const DEMO_DATE = "Sunday, 12 July";
+const MAX_RECORDING_MS = 12_000;
+const VAD_START_THRESHOLD = 0.055;
+const VAD_STOP_THRESHOLD = 0.026;
+const VAD_SILENCE_MS = 900;
 
 export function AthleteVoiceDemo() {
   const [view, setView] = useState<View>("today");
-  const [assistantOpen, setAssistantOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [assistantTurn, setAssistantTurn] = useState<AssistantTurnResponse | null>(null);
   const [lastAssistantMessage, setLastAssistantMessage] = useState("");
@@ -59,6 +71,18 @@ export function AthleteVoiceDemo() {
   const [manualAction, setManualAction] = useState<ManualAction>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+  const [assistantMode, setAssistantMode] = useState<AssistantMode>("closed");
+  const [voiceRecordStatus, setVoiceRecordStatus] = useState<VoiceRecordStatus>("idle");
+  const [voiceLevel, setVoiceLevel] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const vadFrameRef = useRef<number | null>(null);
+  const silenceStartedAtRef = useRef<number | null>(null);
+  const discardRecordingRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -74,6 +98,13 @@ export function AthleteVoiceDemo() {
     };
   }, []);
 
+  useEffect(
+    () => () => {
+      stopVoiceListening({ discard: true });
+    },
+    [],
+  );
+
   const uiState = useMemo<DemoUiState | null>(() => {
     if (!demoState) return null;
     return { ...demoState, ...getActiveDemoDay(demoState) };
@@ -88,11 +119,11 @@ export function AthleteVoiceDemo() {
 
   function showPrompt(prompt: string) {
     setDraft(prompt);
-    setAssistantOpen(true);
+    setAssistantMode("input");
     void sendAssistantMessage(prompt);
   }
 
-  async function sendAssistantMessage(message: string) {
+  async function sendAssistantMessage(message: string, options: { autoConfirmPlan?: boolean } = {}) {
     const trimmed = message.trim();
     if (!trimmed || assistantBusy) return;
     setDraft("");
@@ -104,15 +135,217 @@ export function AthleteVoiceDemo() {
     setConversation((current) => [...current, { id: entryId, userMessage: trimmed, turn: null, pending: true }]);
     try {
       const turn = await submitAssistantMessage(trimmed, assistantContext);
-      setAssistantTurn(turn);
       setAssistantContext(turn.context);
+      setAssistantTurn(turn);
       setConversation((current) => current.map((entry) => entry.id === entryId ? { ...entry, turn, pending: false } : entry));
+      if (options.autoConfirmPlan && turn.kind === "plan") {
+        const completedTurn = await confirmAssistantPlan(turn.plan.id);
+        setAssistantTurn(completedTurn);
+        setConversation((current) => current.map((entry) => entry.id === entryId ? { ...entry, turn: completedTurn, pending: false } : entry));
+        if (completedTurn.kind === "completed") {
+          setDemoState(completedTurn.state);
+          setNotice({ tone: "success", text: completedTurn.message });
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "The assistant could not interpret that request.";
       setConversation((current) => current.map((entry) => entry.id === entryId ? { ...entry, pending: false, error: message } : entry));
       setNotice({ tone: "error", text: message });
     } finally {
       setAssistantBusy(false);
+    }
+  }
+
+  async function startVoiceMode() {
+    if (assistantBusy || assistantTurn?.kind === "plan") return;
+    setAssistantMode("voice");
+    await startVoiceListening();
+  }
+
+  async function toggleVoiceRecording() {
+    if (voiceRecordStatus === "speaking") {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    if (voiceRecordStatus === "listening") {
+      stopVoiceListening();
+      return;
+    }
+    await startVoiceMode();
+  }
+
+  function activateInputMode() {
+    stopVoiceListening({ discard: true });
+    setAssistantMode("input");
+  }
+
+  function closeMobileAssistant() {
+    stopVoiceListening({ discard: true });
+    setAssistantMode("closed");
+  }
+
+  function stopVoiceListening(options: { discard?: boolean } = {}) {
+    discardRecordingRef.current = Boolean(options.discard);
+    if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
+    recordingTimeoutRef.current = null;
+    if (vadFrameRef.current) cancelAnimationFrame(vadFrameRef.current);
+    vadFrameRef.current = null;
+    silenceStartedAtRef.current = null;
+    const recorder = mediaRecorderRef.current;
+    if (recorder?.state === "recording") {
+      recorder.stop();
+    } else {
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      audioChunksRef.current = [];
+      discardRecordingRef.current = false;
+      setVoiceRecordStatus("idle");
+      setVoiceLevel(0);
+    }
+    void audioContextRef.current?.close();
+    audioContextRef.current = null;
+    analyserRef.current = null;
+  }
+
+  async function startVoiceListening() {
+    if (voiceRecordStatus !== "idle" || assistantBusy || assistantTurn?.kind === "plan") return;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setNotice({ tone: "error", text: "This browser does not support microphone recording." });
+      setAssistantMode("closed");
+      return;
+    }
+
+    try {
+      setNotice(null);
+      discardRecordingRef.current = false;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = preferredAudioMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const AudioContextCtor = window.AudioContext ?? window.webkitAudioContext;
+      const audioContext = new AudioContextCtor();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.72;
+      source.connect(analyser);
+
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      audioContextRef.current = audioContext;
+      analyserRef.current = analyser;
+      audioChunksRef.current = [];
+      setVoiceRecordStatus("listening");
+      setVoiceLevel(0.08);
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => {
+        setVoiceRecordStatus("idle");
+        setAssistantMode("closed");
+        setNotice({ tone: "error", text: "Recording failed. Check microphone permission and try again." });
+      };
+      recorder.onstop = () => {
+        if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
+        if (vadFrameRef.current) cancelAnimationFrame(vadFrameRef.current);
+        stream.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        void audioContext.close();
+        audioContextRef.current = null;
+        analyserRef.current = null;
+        vadFrameRef.current = null;
+        silenceStartedAtRef.current = null;
+        const audio = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        audioChunksRef.current = [];
+        if (discardRecordingRef.current) {
+          discardRecordingRef.current = false;
+          setVoiceRecordStatus("idle");
+          setVoiceLevel(0);
+          return;
+        }
+        if (!audio.size) {
+          setVoiceRecordStatus("idle");
+          setVoiceLevel(0);
+          setNotice({ tone: "error", text: "No audio was captured. Try recording again." });
+          return;
+        }
+        void transcribeAndSubmit(audio);
+      };
+
+      runVadLoop();
+    } catch (error) {
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      setVoiceRecordStatus("idle");
+      setAssistantMode("closed");
+      setNotice({
+        tone: "error",
+        text: error instanceof DOMException && error.name === "NotAllowedError"
+          ? "Microphone permission was blocked."
+          : "Unable to start microphone recording.",
+      });
+    }
+  }
+
+  function runVadLoop() {
+    const analyser = analyserRef.current;
+    const recorder = mediaRecorderRef.current;
+    if (!analyser || !recorder) return;
+    const samples = new Uint8Array(analyser.fftSize);
+
+    const tick = () => {
+      analyser.getByteTimeDomainData(samples);
+      let sum = 0;
+      for (const sample of samples) {
+        const centered = (sample - 128) / 128;
+        sum += centered * centered;
+      }
+      const rms = Math.sqrt(sum / samples.length);
+      const level = Math.min(1, Math.max(0.04, rms * 5.8));
+      setVoiceLevel(level);
+
+      if (recorder.state === "inactive" && rms > VAD_START_THRESHOLD) {
+        audioChunksRef.current = [];
+        recorder.start();
+        setVoiceRecordStatus("speaking");
+        silenceStartedAtRef.current = null;
+        recordingTimeoutRef.current = setTimeout(() => {
+          if (recorder.state === "recording") recorder.stop();
+        }, MAX_RECORDING_MS);
+      } else if (recorder.state === "recording") {
+        if (rms < VAD_STOP_THRESHOLD) {
+          silenceStartedAtRef.current ??= performance.now();
+          if (performance.now() - silenceStartedAtRef.current > VAD_SILENCE_MS) recorder.stop();
+        } else {
+          silenceStartedAtRef.current = null;
+          setVoiceRecordStatus("speaking");
+        }
+      }
+
+      if (mediaRecorderRef.current === recorder && recorder.state !== "recording") {
+        setVoiceRecordStatus((status) => status === "transcribing" ? status : "listening");
+      }
+      vadFrameRef.current = requestAnimationFrame(tick);
+    };
+
+    vadFrameRef.current = requestAnimationFrame(tick);
+  }
+
+  async function transcribeAndSubmit(audio: Blob) {
+    setVoiceRecordStatus("transcribing");
+    try {
+      const transcript = await transcribeVoiceDemoAudio(audio);
+      setDraft(transcript);
+      await sendAssistantMessage(transcript, { autoConfirmPlan: true });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "Voice transcription failed." });
+    } finally {
+      setVoiceRecordStatus("idle");
+      setAssistantMode("closed");
+      setVoiceLevel(0);
+      discardRecordingRef.current = false;
     }
   }
 
@@ -189,7 +422,7 @@ export function AthleteVoiceDemo() {
 
   return (
     <div
-      className="min-h-[100dvh] bg-[#f3f6f2] text-ink"
+      className="min-h-[100dvh] max-w-full overflow-x-clip bg-[#f3f6f2] text-ink"
       style={
         {
           "--accent-rgb": "15 118 86",
@@ -234,7 +467,7 @@ export function AthleteVoiceDemo() {
           {uiState && view === "today" ? (
             <TodayView
               state={uiState}
-              onOpenAssistant={() => setAssistantOpen(true)}
+              onOpenAssistant={activateInputMode}
               onPrompt={showPrompt}
               onManual={setManualAction}
             />
@@ -252,9 +485,11 @@ export function AthleteVoiceDemo() {
               conversation={conversation}
               busy={assistantBusy}
               draft={draft}
+              voiceRecordStatus={voiceRecordStatus}
               onDraftChange={setDraft}
               onPrompt={showPrompt}
               onSubmit={sendAssistantMessage}
+              onToggleVoiceRecording={toggleVoiceRecording}
               onConfirm={confirmCurrentPlan}
               onCancel={cancelCurrentPlan}
             />
@@ -264,44 +499,26 @@ export function AthleteVoiceDemo() {
 
       <button
         type="button"
-        onClick={() => setAssistantOpen(true)}
+        onClick={() => void startVoiceMode()}
         aria-label="Open Apex Assist"
-        className="fixed bottom-20 right-4 z-30 flex h-14 items-center gap-2 rounded-2xl bg-ink px-4 font-semibold text-white shadow-hero transition hover:-translate-y-0.5 lg:hidden"
+        className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-5 z-40 grid h-14 w-14 place-items-center rounded-full bg-ink text-white shadow-hero ring-4 ring-white/80 transition hover:-translate-y-0.5 lg:hidden ${assistantMode === "input" ? "hidden" : ""}`}
       >
-        <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/10">
-          <Icon.mic />
-        </span>
-        Ask Apex
+        <Icon.spark />
       </button>
 
-      <MobileNav view={view} onChange={setView} onAssistant={() => setAssistantOpen(true)} />
+      <MobileAssistantSurface
+        mode={assistantMode}
+        draft={draft}
+        busy={assistantBusy}
+        voiceStatus={voiceRecordStatus}
+        voiceLevel={voiceLevel}
+        onInputFocus={activateInputMode}
+        onDraftChange={setDraft}
+        onSubmit={(message) => sendAssistantMessage(message, { autoConfirmPlan: true })}
+        onClose={closeMobileAssistant}
+      />
 
-      <div className="lg:hidden">
-        <BottomSheet
-          open={assistantOpen}
-          onClose={() => setAssistantOpen(false)}
-          title={
-            <div>
-              <p className="font-semibold text-ink">Apex Assist</p>
-              <p className="text-[11px] text-ink-muted">Text assistant · review before saving</p>
-            </div>
-          }
-        >
-          <AssistantPanel
-            compact
-            state={uiState}
-            turn={assistantTurn}
-            conversation={conversation}
-            busy={assistantBusy}
-            draft={draft}
-            onDraftChange={setDraft}
-            onPrompt={showPrompt}
-            onSubmit={sendAssistantMessage}
-            onConfirm={confirmCurrentPlan}
-            onCancel={cancelCurrentPlan}
-          />
-        </BottomSheet>
-      </div>
+      <MobileNav view={view} onChange={setView} onAssistant={activateInputMode} />
 
       <BottomSheet
         open={manualAction !== null}
@@ -318,6 +535,126 @@ export function AthleteVoiceDemo() {
           />
         ) : null}
       </BottomSheet>
+    </div>
+  );
+}
+
+function preferredAudioMimeType() {
+  if (typeof MediaRecorder === "undefined") return "";
+  return ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+}
+
+function MobileAssistantSurface({
+  mode,
+  draft,
+  busy,
+  voiceStatus,
+  voiceLevel,
+  onInputFocus,
+  onDraftChange,
+  onSubmit,
+  onClose,
+}: {
+  mode: AssistantMode;
+  draft: string;
+  busy: boolean;
+  voiceStatus: VoiceRecordStatus;
+  voiceLevel: number;
+  onInputFocus: () => void;
+  onDraftChange: (value: string) => void;
+  onSubmit: (message: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const glowLevel = voiceStatus === "speaking" ? Math.max(0.45, voiceLevel) : voiceStatus === "transcribing" ? 0.32 : 0.18;
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!draft.trim() || busy) return;
+    void onSubmit(draft);
+    onClose();
+  }
+
+  if (mode === "voice") {
+    return (
+      <div className="fixed inset-0 z-40 lg:hidden" aria-live="polite">
+        <button type="button" aria-label="Close assistant" onClick={onClose} className="absolute inset-0 cursor-default" />
+        <div
+          className="pointer-events-none absolute inset-0 transition-opacity duration-150"
+          style={{
+            opacity: glowLevel,
+            boxShadow: `inset 0 0 ${28 + voiceLevel * 54}px ${8 + voiceLevel * 18}px rgb(73 150 255 / 0.5), inset 0 0 ${52 + voiceLevel * 72}px ${14 + voiceLevel * 28}px rgb(214 75 255 / 0.22)`,
+          }}
+        />
+        <div className="pointer-events-none absolute inset-x-0 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] mx-auto w-[90vw] max-w-md">
+          <div className="rounded-[2rem] border border-white/70 bg-white/90 px-5 py-4 shadow-hero backdrop-blur-xl">
+            <div className="mx-auto mb-3 h-1 w-16 rounded-full bg-black/20" />
+            <div className="flex items-center justify-between gap-4">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-[#eef6ff] text-[#1a73e8]">
+                <Icon.spark />
+              </div>
+              <VoiceWave level={voiceLevel} status={voiceStatus} />
+              <div className="grid h-12 w-12 place-items-center rounded-full bg-surface-inset text-ink">
+                {voiceStatus === "transcribing" ? <Icon.spark /> : <Icon.mic />}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode !== "input") return null;
+
+  return (
+    <div className="fixed inset-0 z-40 lg:hidden">
+      <button type="button" aria-label="Close assistant" onClick={onClose} className="absolute inset-0 cursor-default" />
+      <form
+        onSubmit={submit}
+        className="absolute inset-x-0 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] mx-auto w-[90vw] max-w-md"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <input
+          autoFocus
+          value={draft}
+          disabled={busy}
+          onFocus={onInputFocus}
+          onChange={(event) => onDraftChange(event.target.value)}
+          placeholder="Ask Apex"
+          aria-label="Ask Apex"
+          className="h-14 w-full rounded-full border border-line bg-white px-6 text-base text-ink shadow-hero outline-none transition placeholder:text-ink-faint focus:border-accent/40 focus:ring-4 focus:ring-accent/10 disabled:opacity-60"
+        />
+      </form>
+    </div>
+  );
+}
+
+function VoiceWave({ level, status }: { level: number; status: VoiceRecordStatus }) {
+  const active = status === "speaking";
+  const processing = status === "transcribing";
+  const bars = Array.from({ length: 18 }, (_, index) => {
+    const phase = index / 17;
+    const wave = Math.sin((phase * Math.PI * 2) + level * 5);
+    const height = processing
+      ? 14 + Math.abs(Math.sin(phase * Math.PI * 3)) * 18
+      : active
+        ? 12 + Math.abs(wave) * 38 * Math.max(0.25, level)
+        : 10 + Math.sin(phase * Math.PI) * 8;
+    return height;
+  });
+  return (
+    <div className="flex h-14 min-w-0 flex-1 items-center justify-center gap-1.5">
+      {bars.map((height, index) => (
+        <span
+          key={index}
+          className={`w-1.5 rounded-full bg-gradient-to-t from-[#1a73e8] via-[#8b5cf6] to-[#ec4899] ${processing ? "animate-pulse" : ""}`}
+          style={{
+            height,
+            opacity: active || processing ? 0.95 : 0.38,
+            transform: active ? `scaleY(${1 + level * 0.35})` : undefined,
+            transition: "height 80ms linear, opacity 160ms ease, transform 80ms linear",
+          }}
+        />
+      ))}
     </div>
   );
 }
@@ -604,9 +941,11 @@ function AssistantPanel({
   conversation,
   busy,
   draft,
+  voiceRecordStatus,
   onDraftChange,
   onPrompt,
   onSubmit,
+  onToggleVoiceRecording,
   onConfirm,
   onCancel,
 }: {
@@ -616,15 +955,25 @@ function AssistantPanel({
   conversation: ConversationEntry[];
   busy: boolean;
   draft: string;
+  voiceRecordStatus: VoiceRecordStatus;
   onDraftChange: (value: string) => void;
   onPrompt: (prompt: string) => void;
   onSubmit: (message: string) => Promise<void>;
+  onToggleVoiceRecording: () => Promise<void>;
   onConfirm: () => Promise<void>;
   onCancel: () => Promise<void>;
 }) {
   const pendingChips = state ? missingDemoItems(state) : ["Sleep", "Soreness", "Fatigue", "2 sessions"];
   const historyRef = useRef<HTMLDivElement>(null);
   const hasOpenPlan = turn?.kind === "plan";
+  const micDisabled = busy || hasOpenPlan || voiceRecordStatus === "transcribing";
+  const micLabel = voiceRecordStatus === "speaking"
+    ? "Stop recording"
+    : voiceRecordStatus === "listening"
+      ? "Stop listening"
+    : voiceRecordStatus === "transcribing"
+      ? "Transcribing voice command"
+      : "Record voice command";
 
   useEffect(() => {
     const element = historyRef.current;
@@ -648,7 +997,7 @@ function AssistantPanel({
                 <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-white/60"><span className="h-1.5 w-1.5 rounded-full bg-[#75e3b8]" /> Ready for a command</div>
               </div>
             </div>
-            <span className="rounded-full bg-white/10 px-2 py-1 text-[9px] font-bold uppercase tracking-widest text-white/70">Text assistant</span>
+            <span className="rounded-full bg-white/10 px-2 py-1 text-[9px] font-bold uppercase tracking-widest text-white/70">Voice enabled</span>
           </div>
           <p className="mt-4 text-sm leading-relaxed text-white/70">Tell me what you completed. I’ll show the exact update before anything is saved.</p>
         </div>
@@ -699,7 +1048,7 @@ function AssistantPanel({
           </div>
         ) : null}
 
-        <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
+        <div className="mb-3 flex flex-wrap gap-2 pb-1">
           {["What is left today?", "Add 250 ml water", "I completed evening strength"].map((prompt) => (
             <button type="button" key={prompt} disabled={busy || hasOpenPlan} onClick={() => onPrompt(prompt)} className="shrink-0 rounded-full border border-line bg-surface-inset px-3 py-2 text-[10px] font-semibold text-ink-muted transition hover:border-accent/30 hover:text-accent-strong disabled:opacity-40">
               {prompt}
@@ -708,11 +1057,24 @@ function AssistantPanel({
         </div>
 
         <form onSubmit={submit} className="flex items-center gap-2 rounded-2xl border border-line-strong bg-surface-inset p-2 focus-within:border-accent/40 focus-within:ring-2 focus-within:ring-accent/10">
-          <input value={draft} disabled={hasOpenPlan} onChange={(event) => onDraftChange(event.target.value)} placeholder={hasOpenPlan ? "Confirm or cancel the proposed update" : "Type a command…"} aria-label="Type a command" className="min-w-0 flex-1 bg-transparent px-2 text-sm text-ink outline-none placeholder:text-ink-faint disabled:cursor-not-allowed" />
+          <input value={voiceRecordStatus === "listening" ? "Listening..." : voiceRecordStatus === "speaking" ? "Recording..." : draft} disabled={hasOpenPlan || voiceRecordStatus !== "idle"} onChange={(event) => onDraftChange(event.target.value)} placeholder={hasOpenPlan ? "Confirm or cancel the proposed update" : "Type or record a command..."} aria-label="Type a command" className="min-w-0 flex-1 bg-transparent px-2 text-sm text-ink outline-none placeholder:text-ink-faint disabled:cursor-not-allowed" />
           <button type="submit" disabled={busy || hasOpenPlan || !draft.trim()} aria-label="Send text command" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-ink text-white transition hover:bg-accent-strong disabled:opacity-40"><Icon.chevron /></button>
-          <button type="button" disabled aria-label="Voice input available in the next phase" title="Voice input arrives in the Deepgram phase" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent text-white opacity-45"><Icon.mic /></button>
+          <button
+            type="button"
+            disabled={micDisabled}
+            onClick={() => void onToggleVoiceRecording()}
+            aria-label={micLabel}
+            title={micLabel}
+            className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-white transition disabled:opacity-40 ${
+              voiceRecordStatus === "speaking" ? "bg-bad shadow-[0_0_0_4px_rgb(239_68_68_/_0.12)]" : voiceRecordStatus === "listening" ? "bg-[#1a73e8] shadow-[0_0_0_4px_rgb(26_115_232_/_0.14)]" : "bg-accent hover:bg-accent-strong"
+            }`}
+          >
+            {voiceRecordStatus === "transcribing" ? <Icon.spark /> : <Icon.mic />}
+          </button>
         </form>
-        <p className="mt-2 text-center text-[10px] text-ink-faint">Your data changes only after you review and confirm.</p>
+        <p className="mt-2 text-center text-[10px] text-ink-faint">
+          {voiceRecordStatus === "listening" ? "Listening. Start speaking to record." : voiceRecordStatus === "speaking" ? "Recording. I will stop after you finish speaking." : voiceRecordStatus === "transcribing" ? "Transcribing voice command..." : "Your data changes only after you review and confirm."}
+        </p>
       </div>
     </section>
   );
@@ -881,9 +1243,9 @@ function CoachPreview({ state }: { state: DemoUiState }) {
 function TestLaboratory({ state, turn, message }: { state: DemoState; turn: AssistantTurnResponse | null; message: string }) {
   const debug = turn && "debug" in turn ? turn.debug : undefined;
   const steps = [
-    ["01", "Audio capture", "Browser microphone", "Phase 4"],
-    ["02", "Speech to text", "Deepgram prerecorded API", "Not connected"],
-    ["03", "Text input", "Editable athlete command", "Active"],
+    ["01", "Audio capture", "Browser microphone", "Active"],
+    ["02", "Speech to text", "Deepgram prerecorded API", "Active"],
+    ["03", "Transcript input", "Editable athlete command", "Active"],
     ["04", "Tool proposal", "Gemini constrained function call", "Active"],
     ["05", "Validation", "Deterministic schemas and entity resolution", "Active"],
     ["06", "Confirmation", "Exact update shown before execution", "Active"],
@@ -898,7 +1260,7 @@ function TestLaboratory({ state, turn, message }: { state: DemoState; turn: Assi
             <h2 className="mt-2 max-w-2xl text-3xl font-bold tracking-[-0.04em]">See exactly where an assistant request succeeds or fails.</h2>
             <p className="mt-3 max-w-xl text-sm leading-relaxed text-white/55">This view separates transcription, interpretation, validation and execution so a wrong action is diagnosable.</p>
           </div>
-          <span className="self-start rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-white/60">Text assistant active</span>
+          <span className="self-start rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-white/60">Voice assistant active</span>
         </div>
       </section>
 
@@ -937,7 +1299,7 @@ function TestLaboratory({ state, turn, message }: { state: DemoState; turn: Assi
         <div className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
           <SectionHeader eyebrow="Environment" title="Provider readiness" action="Local only" />
           <div className="mt-4 space-y-3">
-            <ProviderRow name="Deepgram" variable="DEEP_GRAM" status="Deferred" />
+            <ProviderRow name="Deepgram" variable="DEEP_GRAM" status="Active" positive />
             <ProviderRow name="Gemini" variable={debug?.model ?? "Server-side key"} status="Active" positive />
             <ProviderRow name="Local demo store" variable={`${state.operations.length} operation${state.operations.length === 1 ? "" : "s"} recorded`} status="Connected" positive />
           </div>
