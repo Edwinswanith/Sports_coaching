@@ -6,6 +6,8 @@ coverage
 .env
 .env.local
 .env.*.local
+.voice-demo-data/
+apps/web/.voice-demo-data/
 # Cloud Run deploy secrets (keep the .example template only)
 env.server.yaml
 *.log
@@ -32,4 +34,3 @@ env.server.yaml
 
 # Coach-uploaded media (local disk storage) — never committed, never publicly served
 /server/uploads/
-
