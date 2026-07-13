@@ -82,6 +82,25 @@ const scenarios = [
   },
   answerScenario("unrecorded date boundary", "What happened on 1 June?", (response) =>
     /don’t have recorded data/i.test(response.message) && /won’t invent/i.test(response.message)),
+  answerScenario("runtime difficult-day analysis", "Which day I didn't perform well?", (response) =>
+    response.debug?.analysisQuery?.goal === "difficult_days" &&
+    response.context?.dateKey === "2026-06-21" &&
+    response.evidence?.some((item) => item.dateKey === "2026-06-21")),
+  answerScenario("grounded relationship analysis", "Did sleep quality move with readiness this month?", (response) =>
+    response.debug?.analysisQuery?.goal === "relationship" &&
+    response.debug?.analysisCoverage?.pairedObservations >= 20 &&
+    response.evidence?.some((item) => item.label === "Relationship")),
+  {
+    name: "analytics follow-up around contextual day",
+    async run() {
+      const before = await reset();
+      const difficult = await turn("Which day I didn't perform well?");
+      const response = await turn("What changed afterward?", difficult.context);
+      const after = await state();
+      const passed = response.kind === "answer" && response.debug?.analysisQuery?.goal === "trend" && response.debug?.analysisQuery?.anchorDate === "2026-06-21" && before.operations.length === after.operations.length;
+      return result(passed, response, after);
+    },
+  },
   answerScenario("coach message lookup", "Did coach sent any message?", (response) =>
     response.message.includes("Coach Priya") && response.message.includes("Monday’s strongman session is published")),
   writeScenario("clear hydration command", "Add 250 ml of water.", (before, after) =>
@@ -115,9 +134,10 @@ const scenarios = [
 ];
 
 const geminiMatrix = [
-  { name: "Gemini water paraphrase", message: "Please record that I consumed 0.25 litres of water", tool: "add_water" },
-  { name: "Gemini training paraphrase", message: "Please note that the evening strength work is finished with four sets of eight and effort seven", tool: "update_training_session" },
-  { name: "Gemini recovery paraphrase", message: "Please save mobility and stretching as my recovery work", tool: "record_recovery" },
+  { name: "Gemini water paraphrase", message: "Please record that I consumed 0.25 litres of water", tool: "add_water", kind: "plan" },
+  { name: "Gemini training paraphrase", message: "Please note that the evening strength work is finished with four sets of eight and effort seven", tool: "update_training_session", kind: "plan" },
+  { name: "Gemini recovery paraphrase", message: "Please save mobility and stretching as my recovery work", tool: "record_recovery", kind: "plan" },
+  { name: "Gemini open analytics planner", message: "Review the logs and investigate whether several wellness signals clustered on a difficult day", tool: "analyze_athlete_data", kind: "answer" },
 ];
 
 let failures = 0;
@@ -137,7 +157,7 @@ for (const item of geminiMatrix) {
     await reset();
     const response = await turn(item.message);
     const after = await state();
-    const passed = response.kind === "plan" && response.debug?.provider === "gemini" && response.debug?.candidateTools?.includes(item.tool) && after.operations.length === 0;
+    const passed = response.kind === item.kind && response.debug?.provider === "gemini" && response.debug?.candidateTools?.includes(item.tool) && after.operations.length === 0;
     if (!passed) failures += 1;
     console.log(`${passed ? "PASS" : "FAIL"} | ${item.name} | kind=${response.kind} | provider=${response.debug?.provider ?? "n/a"} | tools=${response.debug?.candidateTools?.join(",") ?? "n/a"} | pre-confirm operations=${after.operations.length}`);
   } catch (error) {

@@ -245,7 +245,7 @@ export function AthleteVoiceDemo() {
         </main>
 
         <aside className="hidden min-w-0 lg:block">
-          <div className="sticky top-24">
+          <div className="sticky top-24 h-[calc(100dvh-7.5rem)] max-h-[880px]">
             <AssistantPanel
               state={uiState}
               turn={assistantTurn}
@@ -637,9 +637,14 @@ function AssistantPanel({
   }
 
   return (
-    <section className={`${compact ? "" : "overflow-hidden rounded-[1.75rem] border border-line bg-white shadow-hero"}`}>
+    <section
+      data-testid="assistant-panel"
+      className={`${compact
+        ? "flex h-[calc(88dvh-5.75rem)] min-h-0 max-h-[720px] flex-col"
+        : "flex h-full min-h-0 flex-col overflow-hidden rounded-[1.75rem] border border-line bg-white shadow-hero"}`}
+    >
       {!compact ? (
-        <div className="border-b border-line bg-gradient-to-br from-[#15382e] to-[#1d4e40] p-5 text-white">
+        <div className="shrink-0 border-b border-line bg-gradient-to-br from-[#15382e] to-[#1d4e40] p-5 text-white">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="grid h-10 w-10 place-items-center rounded-2xl bg-white/10"><Icon.spark /></div>
@@ -650,12 +655,12 @@ function AssistantPanel({
             </div>
             <span className="rounded-full bg-white/10 px-2 py-1 text-[9px] font-bold uppercase tracking-widest text-white/70">Text assistant</span>
           </div>
-          <p className="mt-4 text-sm leading-relaxed text-white/70">Tell me what you completed. I’ll show the exact update before anything is saved.</p>
+          <p className="mt-4 text-sm leading-relaxed text-white/70">Ask about your progress or tell me what you completed. I’ll ground insights in your records and preview every update.</p>
         </div>
       ) : null}
 
-      <div className={`${compact ? "" : "p-4"}`}>
-        <div className="mb-4 rounded-2xl border border-accent/15 bg-accent/[0.055] p-3.5">
+      <div className={`flex min-h-0 flex-1 flex-col ${compact ? "" : "p-4"}`}>
+        <div className="mb-3 shrink-0 rounded-2xl border border-accent/15 bg-accent/[0.055] p-3.5">
           <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-accent-strong">Still needed today</p>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {pendingChips.length ? pendingChips.map((item) => <span key={item} className="rounded-full border border-accent/15 bg-white px-2.5 py-1 text-[10px] font-semibold text-ink-muted">{item}</span>) : <span className="text-xs font-semibold text-ok">Everything is complete</span>}
@@ -663,15 +668,15 @@ function AssistantPanel({
         </div>
 
         {!conversation.length ? (
-          <div className="py-4 text-center">
+          <div className="grid min-h-0 flex-1 place-content-center py-4 text-center">
             <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#15382e] text-white shadow-raised"><Icon.chat /></div>
-            <h3 className="mt-4 font-bold text-ink">What did you get done?</h3>
-            <p className="mx-auto mt-1 max-w-[260px] text-xs leading-relaxed text-ink-muted">Use a starter below, or type the way you would naturally speak.</p>
+            <h3 className="mt-4 font-bold text-ink">What would you like to review or update?</h3>
+            <p className="mx-auto mt-1 max-w-[280px] text-xs leading-relaxed text-ink-muted">Ask about patterns in your history, or log today’s work in your own words.</p>
           </div>
         ) : null}
 
         {conversation.length ? (
-          <div className="mb-3">
+          <div className="mb-3 flex min-h-0 flex-1 flex-col">
             <div className="mb-2 flex items-center justify-between px-1">
               <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-ink-faint">Conversation</p>
               <p className="text-[9px] text-ink-faint">{conversation.length} turn{conversation.length === 1 ? "" : "s"} · scroll for history</p>
@@ -679,7 +684,8 @@ function AssistantPanel({
             <div
               ref={historyRef}
               data-testid="assistant-conversation-history"
-              className={`space-y-4 overflow-y-auto overscroll-contain rounded-2xl border border-line bg-[#fafbf9] p-3 pr-2 ${compact ? "max-h-[46dvh]" : "max-h-[42vh] min-h-40"}`}
+              aria-live="polite"
+              className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain rounded-2xl border border-line bg-[#fafbf9] p-3 pr-2 [scrollbar-gutter:stable]"
             >
               {conversation.map((entry) => (
                 <div key={entry.id} data-conversation-entry={entry.id} className="space-y-2">
@@ -699,20 +705,27 @@ function AssistantPanel({
           </div>
         ) : null}
 
-        <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
-          {["What is left today?", "Add 250 ml water", "I completed evening strength"].map((prompt) => (
-            <button type="button" key={prompt} disabled={busy || hasOpenPlan} onClick={() => onPrompt(prompt)} className="shrink-0 rounded-full border border-line bg-surface-inset px-3 py-2 text-[10px] font-semibold text-ink-muted transition hover:border-accent/30 hover:text-accent-strong disabled:opacity-40">
-              {prompt}
-            </button>
-          ))}
+        <div data-testid="assistant-composer" className="mt-auto shrink-0 border-t border-line bg-white pt-3">
+          {!conversation.length ? (
+            <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
+              {["What stands out in my data?", "Which day was difficult?", "What is left today?", "Add 250 ml water"].map((prompt) => (
+                <button type="button" key={prompt} disabled={busy || hasOpenPlan} onClick={() => onPrompt(prompt)} className="shrink-0 rounded-full border border-line bg-surface-inset px-3 py-2 text-[10px] font-semibold text-ink-muted transition hover:border-accent/30 hover:text-accent-strong disabled:opacity-40">
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="mb-1.5 flex items-center justify-between px-1">
+            <label htmlFor={compact ? "assistant-input-mobile" : "assistant-input-desktop"} className="text-[10px] font-bold uppercase tracking-[0.12em] text-ink-muted">Message Apex</label>
+            <span className="text-[9px] text-ink-faint">Enter to send</span>
+          </div>
+          <form onSubmit={submit} className="flex items-center gap-2 rounded-2xl border-2 border-accent/25 bg-surface-inset p-2 shadow-sm focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/10">
+            <input id={compact ? "assistant-input-mobile" : "assistant-input-desktop"} value={draft} disabled={hasOpenPlan} onChange={(event) => onDraftChange(event.target.value)} placeholder={hasOpenPlan ? "Confirm or cancel the proposed update" : "Ask a question or log an update…"} aria-label="Message Apex" className="min-w-0 flex-1 bg-transparent px-2 text-sm text-ink outline-none placeholder:text-ink-faint disabled:cursor-not-allowed" />
+            <button type="submit" disabled={busy || hasOpenPlan || !draft.trim()} aria-label="Send text command" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-ink text-white transition hover:bg-accent-strong disabled:opacity-40"><Icon.chevron /></button>
+            <button type="button" disabled aria-label="Voice input available in the next phase" title="Voice input arrives in the Deepgram phase" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent text-white opacity-45"><Icon.mic /></button>
+          </form>
+          <p className="mt-2 text-center text-[10px] text-ink-faint">Your data changes only after you review and confirm.</p>
         </div>
-
-        <form onSubmit={submit} className="flex items-center gap-2 rounded-2xl border border-line-strong bg-surface-inset p-2 focus-within:border-accent/40 focus-within:ring-2 focus-within:ring-accent/10">
-          <input value={draft} disabled={hasOpenPlan} onChange={(event) => onDraftChange(event.target.value)} placeholder={hasOpenPlan ? "Confirm or cancel the proposed update" : "Type a command…"} aria-label="Type a command" className="min-w-0 flex-1 bg-transparent px-2 text-sm text-ink outline-none placeholder:text-ink-faint disabled:cursor-not-allowed" />
-          <button type="submit" disabled={busy || hasOpenPlan || !draft.trim()} aria-label="Send text command" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-ink text-white transition hover:bg-accent-strong disabled:opacity-40"><Icon.chevron /></button>
-          <button type="button" disabled aria-label="Voice input available in the next phase" title="Voice input arrives in the Deepgram phase" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent text-white opacity-45"><Icon.mic /></button>
-        </form>
-        <p className="mt-2 text-center text-[10px] text-ink-faint">Your data changes only after you review and confirm.</p>
       </div>
     </section>
   );
@@ -927,11 +940,20 @@ function TestLaboratory({ state, turn, message }: { state: DemoState; turn: Assi
             <TraceValue label="Normalized query" value={debug?.normalizedQuery || "—"} mono />
             <TraceValue label="Date range" value={debug?.dateRange ? `${debug.dateRange.start} → ${debug.dateRange.end}` : "—"} mono />
             <TraceValue label="Metric" value={debug?.metric || "—"} mono />
+            <TraceValue label="Analytics query" value={debug?.analysisQuery ? JSON.stringify(debug.analysisQuery) : "—"} mono />
+            <TraceValue
+              label="Analysis coverage"
+              value={debug?.analysisCoverage
+                ? `${debug.analysisCoverage.recordedDays} days · ${debug.analysisCoverage.missingObservations} missing${debug.analysisCoverage.pairedObservations !== undefined ? ` · ${debug.analysisCoverage.pairedObservations} paired` : ""}`
+                : "—"}
+            />
             <TraceValue label="Conversation context" value={debug?.context ? JSON.stringify(debug.context) : "{}"} mono />
             <TraceValue label="Evidence records" value={debug?.evidence ? String(debug.evidence.length) : "0"} />
+            <TraceValue label="Grounding facts" value={debug?.groundingFacts ? String(debug.groundingFacts.length) : "0"} />
             <TraceValue label="Safety decision" value={debug?.safetyDecision || "—"} />
             <TraceValue label="Provider / model" value={debug ? `${debug.provider}${debug.model ? ` · ${debug.model}` : ""}` : "—"} mono />
             <TraceValue label="Interpretation latency" value={debug ? `${debug.latencyMs} ms` : "—"} />
+            <TraceValue label="Response humanizer" value={debug?.humanizer ? `${debug.humanizer}${debug.humanizerLatencyMs !== undefined ? ` · ${debug.humanizerLatencyMs} ms` : ""}` : "—"} />
           </dl>
         </div>
         <div className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
@@ -1220,7 +1242,7 @@ function OutcomeStep({ number, title, detail }: { number: string; title: string;
 }
 
 function TraceValue({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return <div><dt className="text-[9px] font-bold uppercase tracking-wider text-ink-faint">{label}</dt><dd className={`mt-1 rounded-xl bg-surface-inset p-2.5 text-xs leading-relaxed text-ink ${mono ? "font-mono" : ""}`}>{value}</dd></div>;
+  return <div className="min-w-0"><dt className="text-[9px] font-bold uppercase tracking-wider text-ink-faint">{label}</dt><dd className={`mt-1 min-w-0 break-words rounded-xl bg-surface-inset p-2.5 text-xs leading-relaxed text-ink [overflow-wrap:anywhere] ${mono ? "font-mono" : ""}`}>{value}</dd></div>;
 }
 
 function ProviderRow({ name, variable, status, positive = false }: { name: string; variable: string; status: string; positive?: boolean }) {

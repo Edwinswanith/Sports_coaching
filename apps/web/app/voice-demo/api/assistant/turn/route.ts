@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { AssistantInterpreterError, interpretAssistantMessage } from "@/lib/voice-demo/assistantInterpreter";
 import { readDemoState, resolveAndStoreAssistantTurn } from "@/lib/voice-demo/store";
 import { sanitizeAssistantContext } from "@/lib/voice-demo/assistantContext";
+import { humanizeAnalyticsTurn } from "@/lib/voice-demo/assistantHumanizer";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +19,10 @@ export async function POST(request: Request) {
     const state = await readDemoState();
     const context = sanitizeAssistantContext(body.context, state);
     const interpretation = await interpretAssistantMessage(message, state, context);
+    const resolved = await resolveAndStoreAssistantTurn(interpretation, context);
+    const turn = await humanizeAnalyticsTurn(resolved, message);
     return NextResponse.json(
-      { ok: true, turn: await resolveAndStoreAssistantTurn(interpretation, context) },
+      { ok: true, turn },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

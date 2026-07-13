@@ -5,6 +5,33 @@ export type SessionStatus = "planned" | "completed" | "partial" | "skipped";
 export type RecoveryModality = "Stretching" | "Mobility" | "Ice bath" | "Physio";
 export type PerformanceMetric = "sprint30m" | "sprint100m" | "verticalJump" | "farmersWalk40m";
 export type ProgressRangeDays = 7 | 14 | 30;
+export type AthleteAnalyticsMetric =
+  | "readiness"
+  | "sleepHours"
+  | "sleepQuality"
+  | "mood"
+  | "soreness"
+  | "fatigue"
+  | "hydrationPercent"
+  | "trainingCompletion"
+  | "trainingLoad"
+  | PerformanceMetric;
+export type AthleteAnalyticsGoal =
+  | "overview"
+  | "difficult_days"
+  | "strong_days"
+  | "trend"
+  | "relationship"
+  | "compare_periods";
+export type AthleteAnalyticsQuery = {
+  goal: AthleteAnalyticsGoal;
+  metrics: AthleteAnalyticsMetric[];
+  rangeDays?: ProgressRangeDays;
+  startDate?: string;
+  endDate?: string;
+  anchorDate?: string;
+  limit: number;
+};
 
 export type DemoWellness = Record<WellnessKey, number | null> & {
   sleepHours: number | null;
@@ -181,7 +208,8 @@ export type AssistantTopic =
   | "coach_message"
   | "coach_plan"
   | "exercise"
-  | "intensity";
+  | "intensity"
+  | "analytics";
 
 export type AssistantConversationContext = {
   topic?: AssistantTopic;
@@ -189,6 +217,8 @@ export type AssistantConversationContext = {
   rangeStart?: string;
   rangeEnd?: string;
   metric?: PerformanceMetric | "readiness" | "trainingCompletion";
+  metrics?: AthleteAnalyticsMetric[];
+  analysisGoal?: AthleteAnalyticsGoal;
   dateKey?: string;
   planId?: string;
   exerciseId?: string;
@@ -207,6 +237,11 @@ export type AssistantDebug = {
   context?: AssistantConversationContext;
   evidence?: AssistantEvidence[];
   safetyDecision?: string;
+  analysisQuery?: AthleteAnalyticsQuery;
+  analysisCoverage?: { recordedDays: number; pairedObservations?: number; missingObservations: number };
+  groundingFacts?: Array<{ id: string; label: string; value: string; dateKey?: string }>;
+  humanizer?: "gemini" | "deterministic_fallback";
+  humanizerLatencyMs?: number;
 };
 
 type AssistantReplyBase = {

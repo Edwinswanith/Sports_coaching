@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AssistantCandidate, AssistantInterpretation } from "./assistantInterpreter";
+import { executeAthleteAnalyticsQuery, validateAthleteAnalyticsQuery } from "./analyticsQuery";
 import {
   PERFORMANCE_METRICS,
   compareFirstAndLastTwoWeeks,
@@ -130,6 +131,25 @@ function resolveReadOnlyCandidate(
       evidence: summary.evidence,
       suggestions: ["Compare my first two weeks with my last two weeks.", "Which day had my best readiness?", "What should I improve?"],
       safetyDecision: "Analysis is calculated from stored demo data; no training change was prescribed.",
+    });
+  }
+  if (candidate.tool === "analyze_athlete_data") {
+    const validation = validateAthleteAnalyticsQuery(candidate.arguments, state);
+    if (!validation.ok) {
+      return validation.kind === "clarification"
+        ? reply("clarification", validation.message, debug, previousContext, { options: validation.options })
+        : unsupported(validation.message, debug, previousContext);
+    }
+    const analysis = executeAthleteAnalyticsQuery(state, validation.query);
+    return reply("answer", analysis.message, {
+      ...debug,
+      analysisQuery: validation.query,
+      analysisCoverage: analysis.coverage,
+      groundingFacts: analysis.facts.map(({ id, label, value, dateKey }) => ({ id, label, value, ...(dateKey ? { dateKey } : {}) })),
+    }, analysis.context, {
+      evidence: analysis.evidence,
+      suggestions: analysis.suggestions,
+      safetyDecision: analysis.safetyDecision,
     });
   }
   if (candidate.tool === "compare_periods") {
@@ -498,7 +518,7 @@ function optionalInteger(value: unknown, min: number, max: number, label: string
 }
 function candidateLabel(tool: AssistantCandidate["tool"]) {
   return ({
-    get_daily_status: "checking daily status", get_progress_summary: "reviewing progress", compare_periods: "comparing periods",
+    get_daily_status: "checking daily status", get_progress_summary: "reviewing progress", analyze_athlete_data: "analyzing recorded athlete data", compare_periods: "comparing periods",
     find_best_day: "finding a best day", get_day_details: "reviewing a day", get_coach_update: "checking coach messages",
     get_coach_workout_plan: "reviewing the coach plan", explain_exercise_prescription: "explaining an exercise",
     evaluate_intensity_question: "reviewing intensity evidence", add_water: "adding water", record_wellness: "updating wellness",
