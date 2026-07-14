@@ -3,7 +3,14 @@ import "server-only";
 import path from "node:path";
 import dotenv from "dotenv";
 import { classifyReadOnlyQuestion, parseSingleWellnessAssignment } from "./assistantRules";
-import { getActiveDemoDay, type AssistantConversationContext, type AssistantDebug, type DemoState } from "./types";
+import { ATHLETE_ANALYTICS_GOALS, ATHLETE_ANALYTICS_METRICS } from "./analyticsQuery";
+import {
+  getActiveDemoDay,
+  type AssistantConversationContext,
+  type AssistantDebug,
+  type AthleteAnalyticsMetric,
+  type DemoState,
+} from "./types";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
@@ -11,6 +18,7 @@ dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 export const ASSISTANT_CANDIDATE_TOOLS = [
   "get_daily_status",
   "get_progress_summary",
+  "analyze_athlete_data",
   "compare_periods",
   "find_best_day",
   "get_day_details",
@@ -41,6 +49,15 @@ const FUNCTION_DECLARATIONS = [
   functionDeclaration("get_daily_status", "Questions about today's reporting status, hydration, wellness, or pending training", {}),
   functionDeclaration("get_progress_summary", "Progress, improvement priorities, trends, or being on track", {
     rangeDays: { type: "NUMBER", description: "7, 14, or 30 when explicitly stated" },
+  }),
+  functionDeclaration("analyze_athlete_data", "Open-ended, read-only analysis across recorded athlete history. Use this for patterns, difficult or strong periods, trends, relationships, and novel analytics questions", {
+    goal: { type: "STRING", enum: ATHLETE_ANALYTICS_GOALS },
+    metrics: { type: "ARRAY", items: { type: "STRING", enum: ATHLETE_ANALYTICS_METRICS } },
+    rangeDays: { type: "NUMBER", description: "Use only 7, 14, or 30 when the athlete states a relative range" },
+    startDate: { type: "STRING", description: "ISO date only when explicitly requested" },
+    endDate: { type: "STRING", description: "ISO date only when explicitly requested" },
+    anchorDate: { type: "STRING", description: "ISO date supplied by validated context for before/after analysis" },
+    limit: { type: "NUMBER", description: "Number of ranked dates requested, from 1 to 5" },
   }),
   functionDeclaration("compare_periods", "Compare the first two weeks with the last two weeks", {}),
   functionDeclaration("find_best_day", "Find a best day for a specific metric, or ask which metric if none was stated", {
@@ -83,6 +100,9 @@ const FUNCTION_DECLARATIONS = [
 const SYSTEM_INSTRUCTION = `You are the language-understanding layer for a constrained athlete assistant.
 You may only propose declared functions and never execute them. The application calculates every numeric fact.
 Extract only values explicitly stated by the athlete. Never invent wellness values, dates, IDs, exercise loads, permissions, or results.
+For open-ended analytics, select analyze_athlete_data and create a typed query. Never calculate or state the answer yourself.
+Treat words such as performance as broad unless a recorded metric is named. The application will transparently compare recorded signals at query time.
+Use relationship only when two metrics are identifiable. A relationship is not causation.
 Coach Priya alone prescribes training intensity and volume. For questions about increasing intensity or continuing workouts, select evaluate_intensity_question; never prescribe a change.
 For compound write requests, return each write function so the application can ask the athlete to handle one at a time.
 For read-only questions return one best matching function. Use unsupported only when nothing applies.`;
@@ -159,6 +179,35 @@ function deterministicInterpretation(message: string, context: AssistantConversa
   }
   if (/^(?:and |what about )?(?:the )?(sled|slide)(?: push)?$/.test(text)) {
     return [{ tool: "explain_exercise_prescription", arguments: { exerciseReference: "sled push", ...(context.planId ? { planId: context.planId } : {}) } }];
+  }
+  const analyticsMetrics = extractAnalyticsMetrics(text);
+  if (/^(?:and )?what (?:about|of) (?:my )?(?:sleep|sleep quality|fatigue|soreness|mood|hydration|readiness|training load|training completion)$/.test(text) && context.analysisGoal) {
+    return [{
+      tool: "analyze_athlete_data",
+      arguments: {
+        goal: context.analysisGoal,
+        metrics: analyticsMetrics,
+        ...(context.rangeDays ? { rangeDays: context.rangeDays } : {}),
+        ...(context.rangeStart && context.rangeEnd ? { startDate: context.rangeStart, endDate: context.rangeEnd } : {}),
+      },
+    }];
+  }
+  if (/what changed (?:after|afterward)|how did i respond after/.test(text) && context.dateKey) {
+    return [{ tool: "analyze_athlete_data", arguments: { goal: "trend", metrics: context.metrics ?? [], anchorDate: context.dateKey } }];
+  }
+  if (
+    /which (?:day|days).*(?:didn.?t|did not).*(?:perform|go) well|which (?:day|days).*(?:struggl|difficult|off day|underperform)|when did i (?:struggle|underperform)|what (?:was|were) my (?:most )?difficult (?:day|days)/.test(text)
+  ) {
+    return [{ tool: "analyze_athlete_data", arguments: { goal: "difficult_days", metrics: analyticsMetrics } }];
+  }
+  if (/which (?:day|days).*(?:strong|stood out positively)|when was i strongest|show my strongest (?:day|days)/.test(text)) {
+    return [{ tool: "analyze_athlete_data", arguments: { goal: "strong_days", metrics: analyticsMetrics } }];
+  }
+  if (analyticsMetrics.length >= 2 && /relationship|correlat|connected|move with|moved with|linked|associated/.test(text)) {
+    return [{ tool: "analyze_athlete_data", arguments: { goal: "relationship", metrics: analyticsMetrics.slice(0, 2), rangeDays: requestedRange(text) ?? 30 } }];
+  }
+  if (/what stands out|analyse my data|analyze my data|review my data|show me (?:a )?pattern|find (?:a |the )?pattern|anything notable/.test(text)) {
+    return [{ tool: "analyze_athlete_data", arguments: { goal: "overview", metrics: analyticsMetrics, rangeDays: requestedRange(text) ?? 30 } }];
   }
   if (/compare my first two weeks (?:with|to|and) my last two weeks/.test(text)) return [{ tool: "compare_periods", arguments: {} }];
   if (/which day (?:did i perform|was my performance) best/.test(text) || /what was my best day/.test(text)) {
@@ -273,6 +322,31 @@ function exerciseReference(text: string): string | null {
   if (/farmer/.test(text)) return "farmer's walk";
   if (/tire\s*flip/.test(text)) return "tire flip";
   if (/sled|slide/.test(text)) return "sled push";
+  return null;
+}
+
+function extractAnalyticsMetrics(text: string): AthleteAnalyticsMetric[] {
+  const metrics: AthleteAnalyticsMetric[] = [];
+  if (/readiness|ready/.test(text)) metrics.push("readiness");
+  if (/sleep (?:hours|duration)|hours? (?:of )?sleep/.test(text)) metrics.push("sleepHours");
+  if (/sleep quality|sleep/.test(text)) metrics.push("sleepQuality");
+  if (/mood|motivation/.test(text)) metrics.push("mood");
+  if (/soreness|sore/.test(text)) metrics.push("soreness");
+  if (/fatigue|tired/.test(text)) metrics.push("fatigue");
+  if (/hydration|water/.test(text)) metrics.push("hydrationPercent");
+  if (/completion|attendance|completed sessions?/.test(text)) metrics.push("trainingCompletion");
+  if (/training load|workload/.test(text)) metrics.push("trainingLoad");
+  if (/30\s*m|30 metre|30 meter/.test(text)) metrics.push("sprint30m");
+  if (/100\s*m|100 metre|100 meter/.test(text)) metrics.push("sprint100m");
+  if (/vertical jump|jump height/.test(text)) metrics.push("verticalJump");
+  if (/farmer/.test(text)) metrics.push("farmersWalk40m");
+  return [...new Set(metrics)];
+}
+
+function requestedRange(text: string): 7 | 14 | 30 | null {
+  if (/last 7 days|past week|this week/.test(text)) return 7;
+  if (/last 14 days|past two weeks|two weeks|fortnight/.test(text)) return 14;
+  if (/30 days|month|monthly/.test(text)) return 30;
   return null;
 }
 
