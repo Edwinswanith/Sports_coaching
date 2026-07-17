@@ -83,6 +83,8 @@ export function AthleteVoiceDemo() {
   const vadFrameRef = useRef<number | null>(null);
   const silenceStartedAtRef = useRef<number | null>(null);
   const discardRecordingRef = useRef(false);
+  const askAgentHoldTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const askAgentLongPressRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -160,6 +162,28 @@ export function AthleteVoiceDemo() {
     if (assistantBusy || assistantTurn?.kind === "plan") return;
     setAssistantMode("voice");
     await startVoiceListening();
+  }
+
+  function beginAskAgentPress() {
+    askAgentLongPressRef.current = false;
+    if (askAgentHoldTimeoutRef.current) clearTimeout(askAgentHoldTimeoutRef.current);
+    askAgentHoldTimeoutRef.current = setTimeout(() => {
+      askAgentLongPressRef.current = true;
+      activateInputMode();
+    }, 2_000);
+  }
+
+  function endAskAgentPress() {
+    if (askAgentHoldTimeoutRef.current) clearTimeout(askAgentHoldTimeoutRef.current);
+    askAgentHoldTimeoutRef.current = null;
+  }
+
+  async function activateAskAgentFromTap() {
+    if (askAgentLongPressRef.current) {
+      askAgentLongPressRef.current = false;
+      return;
+    }
+    await startVoiceMode();
   }
 
   async function toggleVoiceRecording() {
@@ -422,7 +446,7 @@ export function AthleteVoiceDemo() {
 
   return (
     <div
-      className="min-h-[100dvh] max-w-full overflow-x-clip bg-[#f3f6f2] text-ink"
+      className="h-[100dvh] max-w-full overflow-hidden bg-[#f3f6f2] text-ink"
       style={
         {
           "--accent-rgb": "15 118 86",
@@ -449,32 +473,34 @@ export function AthleteVoiceDemo() {
         </div>
       ) : null}
 
-      <div className="mx-auto grid w-full max-w-[1440px] gap-5 px-4 pb-28 pt-4 md:px-6 lg:grid-cols-[220px_minmax(0,1fr)_360px] lg:pb-8 lg:pt-6">
+      <div className="mx-auto flex h-[calc(100dvh-68px)] w-full max-w-[1440px] flex-col gap-3 px-4 pb-[5.5rem] pt-2 md:px-6 lg:grid lg:grid-cols-[220px_minmax(0,1fr)_360px] lg:gap-5 lg:pb-8 lg:pt-6">
         <DemoSidebar view={view} state={uiState} onChange={setView} />
 
-        <main className="min-w-0">
-          <div className="mb-5 flex items-end justify-between gap-4">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:overflow-visible">
+          <div className="mb-2 flex shrink-0 items-end justify-between gap-4 lg:mb-5">
             <div>
               <p className="label text-accent-strong">{pageMeta.eyebrow}</p>
-              <h1 className="mt-1 font-display text-2xl font-bold tracking-[-0.03em] text-ink">
+              <h1 className="mt-0.5 font-display text-xl font-bold tracking-[-0.03em] text-ink lg:mt-1 lg:text-2xl">
                 {pageMeta.title}
               </h1>
             </div>
             <p className="hidden text-sm text-ink-muted sm:block">{DEMO_DATE}</p>
           </div>
 
-          {!uiState ? <DemoLoading /> : null}
-          {uiState && view === "today" ? (
-            <TodayView
-              state={uiState}
-              onOpenAssistant={activateInputMode}
-              onPrompt={showPrompt}
-              onManual={setManualAction}
-            />
-          ) : null}
-          {demoState && view === "progress" ? <ProgressView state={demoState} /> : null}
-          {demoState && view === "coach" ? <CoachPlanner state={demoState} onStateChange={setDemoState} /> : null}
-          {demoState && view === "lab" ? <TestLaboratory state={demoState} turn={assistantTurn} message={lastAssistantMessage} /> : null}
+          <div className="min-h-0 flex-1 lg:block">
+            {!uiState ? <DemoLoading /> : null}
+            {uiState && view === "today" ? (
+              <TodayView
+                state={uiState}
+                onOpenAssistant={startVoiceMode}
+                onPrompt={showPrompt}
+                onManual={setManualAction}
+              />
+            ) : null}
+            {demoState && view === "progress" ? <ProgressView state={demoState} /> : null}
+            {demoState && view === "coach" ? <CoachPlanner state={demoState} onStateChange={setDemoState} /> : null}
+            {demoState && view === "lab" ? <TestLaboratory state={demoState} turn={assistantTurn} message={lastAssistantMessage} /> : null}
+          </div>
         </main>
 
         <aside className="hidden min-w-0 lg:block">
@@ -497,28 +523,29 @@ export function AthleteVoiceDemo() {
         </aside>
       </div>
 
-      <button
-        type="button"
-        onClick={() => void startVoiceMode()}
-        aria-label="Open Apex Assist"
-        className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-5 z-40 grid h-14 w-14 place-items-center rounded-full bg-ink text-white shadow-hero ring-4 ring-white/80 transition hover:-translate-y-0.5 lg:hidden ${assistantMode === "input" ? "hidden" : ""}`}
-      >
-        <Icon.spark />
-      </button>
+      <MobileAskAgentButton
+        hidden={assistantMode === "input"}
+        active={assistantMode === "voice"}
+        busy={assistantBusy || assistantTurn?.kind === "plan"}
+        voiceStatus={voiceRecordStatus}
+        voiceLevel={voiceLevel}
+        onPointerDown={beginAskAgentPress}
+        onPointerUp={endAskAgentPress}
+        onPointerCancel={endAskAgentPress}
+        onClick={() => void activateAskAgentFromTap()}
+      />
 
       <MobileAssistantSurface
         mode={assistantMode}
         draft={draft}
         busy={assistantBusy}
-        voiceStatus={voiceRecordStatus}
-        voiceLevel={voiceLevel}
         onInputFocus={activateInputMode}
         onDraftChange={setDraft}
         onSubmit={(message) => sendAssistantMessage(message, { autoConfirmPlan: true })}
         onClose={closeMobileAssistant}
       />
 
-      <MobileNav view={view} onChange={setView} onAssistant={activateInputMode} />
+      <MobileNav view={view} onChange={setView} onAssistant={startVoiceMode} />
 
       <BottomSheet
         open={manualAction !== null}
@@ -544,12 +571,59 @@ function preferredAudioMimeType() {
   return ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
 }
 
+function MobileAskAgentButton({
+  hidden,
+  active,
+  busy,
+  voiceStatus,
+  voiceLevel,
+  onPointerDown,
+  onPointerUp,
+  onPointerCancel,
+  onClick,
+}: {
+  hidden: boolean;
+  active: boolean;
+  busy: boolean;
+  voiceStatus: VoiceRecordStatus;
+  voiceLevel: number;
+  onPointerDown: () => void;
+  onPointerUp: () => void;
+  onPointerCancel: () => void;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onPointerDown={onPointerDown}
+      onPointerUp={onPointerUp}
+      onPointerLeave={onPointerCancel}
+      onPointerCancel={onPointerCancel}
+      onClick={onClick}
+      onContextMenu={(event) => event.preventDefault()}
+      aria-label="Ask agent. Hold for text input."
+      className={`fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-5 z-40 flex h-12 w-12 select-none items-center justify-center overflow-hidden rounded-full shadow-hero transition [touch-action:none] lg:hidden disabled:opacity-45 ${
+        hidden ? "pointer-events-none scale-95 opacity-0" : "opacity-100"
+      } ${
+        active
+          ? "bg-white text-ink ring-4 ring-[#8bb8ff]/35 shadow-[0_0_0_1px_rgb(26_115_232_/_0.18),0_18px_42px_-22px_rgb(26_115_232_/_0.8)]"
+          : "bg-ink text-white ring-4 ring-white/80 hover:-translate-y-0.5"
+      }`}
+    >
+      {active ? (
+        <VoiceWave level={voiceLevel} status={voiceStatus} bars={8} className="h-7 w-7 flex-none gap-0.5" />
+      ) : (
+        <Icon.mic />
+      )}
+    </button>
+  );
+}
+
 function MobileAssistantSurface({
   mode,
   draft,
   busy,
-  voiceStatus,
-  voiceLevel,
   onInputFocus,
   onDraftChange,
   onSubmit,
@@ -558,49 +632,16 @@ function MobileAssistantSurface({
   mode: AssistantMode;
   draft: string;
   busy: boolean;
-  voiceStatus: VoiceRecordStatus;
-  voiceLevel: number;
   onInputFocus: () => void;
   onDraftChange: (value: string) => void;
   onSubmit: (message: string) => Promise<void>;
   onClose: () => void;
 }) {
-  const glowLevel = voiceStatus === "speaking" ? Math.max(0.45, voiceLevel) : voiceStatus === "transcribing" ? 0.32 : 0.18;
-
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!draft.trim() || busy) return;
     void onSubmit(draft);
     onClose();
-  }
-
-  if (mode === "voice") {
-    return (
-      <div className="fixed inset-0 z-40 lg:hidden" aria-live="polite">
-        <button type="button" aria-label="Close assistant" onClick={onClose} className="absolute inset-0 cursor-default" />
-        <div
-          className="pointer-events-none absolute inset-0 transition-opacity duration-150"
-          style={{
-            opacity: glowLevel,
-            boxShadow: `inset 0 0 ${28 + voiceLevel * 54}px ${8 + voiceLevel * 18}px rgb(73 150 255 / 0.5), inset 0 0 ${52 + voiceLevel * 72}px ${14 + voiceLevel * 28}px rgb(214 75 255 / 0.22)`,
-          }}
-        />
-        <div className="pointer-events-none absolute inset-x-0 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] mx-auto w-[90vw] max-w-md">
-          <div className="rounded-[2rem] border border-white/70 bg-white/90 px-5 py-4 shadow-hero backdrop-blur-xl">
-            <div className="mx-auto mb-3 h-1 w-16 rounded-full bg-black/20" />
-            <div className="flex items-center justify-between gap-4">
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-[#eef6ff] text-[#1a73e8]">
-                <Icon.spark />
-              </div>
-              <VoiceWave level={voiceLevel} status={voiceStatus} />
-              <div className="grid h-12 w-12 place-items-center rounded-full bg-surface-inset text-ink">
-                {voiceStatus === "transcribing" ? <Icon.spark /> : <Icon.mic />}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
   }
 
   if (mode !== "input") return null;
@@ -628,11 +669,21 @@ function MobileAssistantSurface({
   );
 }
 
-function VoiceWave({ level, status }: { level: number; status: VoiceRecordStatus }) {
+function VoiceWave({
+  level,
+  status,
+  bars = 18,
+  className = "h-14 min-w-0 flex-1 gap-1.5",
+}: {
+  level: number;
+  status: VoiceRecordStatus;
+  bars?: number;
+  className?: string;
+}) {
   const active = status === "speaking";
   const processing = status === "transcribing";
-  const bars = Array.from({ length: 18 }, (_, index) => {
-    const phase = index / 17;
+  const heights = Array.from({ length: bars }, (_, index) => {
+    const phase = bars === 1 ? 0 : index / (bars - 1);
     const wave = Math.sin((phase * Math.PI * 2) + level * 5);
     const height = processing
       ? 14 + Math.abs(Math.sin(phase * Math.PI * 3)) * 18
@@ -642,13 +693,13 @@ function VoiceWave({ level, status }: { level: number; status: VoiceRecordStatus
     return height;
   });
   return (
-    <div className="flex h-14 min-w-0 flex-1 items-center justify-center gap-1.5">
-      {bars.map((height, index) => (
+    <div className={`flex items-center justify-center ${className}`}>
+      {heights.map((height, index) => (
         <span
           key={index}
-          className={`w-1.5 rounded-full bg-gradient-to-t from-[#1a73e8] via-[#8b5cf6] to-[#ec4899] ${processing ? "animate-pulse" : ""}`}
+          className={`w-1 rounded-full bg-gradient-to-t from-[#1a73e8] via-[#8b5cf6] to-[#ec4899] ${processing ? "animate-pulse" : ""}`}
           style={{
-            height,
+            height: Math.min(height, 28),
             opacity: active || processing ? 0.95 : 0.38,
             transform: active ? `scaleY(${1 + level * 0.35})` : undefined,
             transition: "height 80ms linear, opacity 160ms ease, transform 80ms linear",
@@ -773,162 +824,143 @@ function TodayView({
     .sort((a, b) => a.dateKey.localeCompare(b.dateKey) || b.version - a.version)[0];
 
   return (
-    <div className="space-y-5">
-      <section className="relative overflow-hidden rounded-[2rem] bg-[#15382e] p-5 text-white shadow-hero sm:p-7">
+    <div className="space-y-3 lg:space-y-5">
+      <section className="relative overflow-hidden rounded-[1.35rem] bg-[#15382e] p-3 text-white shadow-hero lg:rounded-[2rem] lg:p-7">
         <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full border-[42px] border-white/[0.04]" />
-        <div className="relative grid gap-6 sm:grid-cols-[1fr_auto] sm:items-center">
-          <div>
-            <div className="mb-4 flex items-center gap-2 text-xs font-semibold text-[#91dabc]">
-              <Icon.sun />
-              <span>Good morning, Aarav</span>
-            </div>
-            <h2 className="max-w-xl font-display text-[2rem] font-bold leading-[1.05] tracking-[-0.04em] sm:text-[2.6rem]">
-              Finish today&apos;s reporting in under a minute.
-            </h2>
-            <p className="mt-3 max-w-lg text-sm leading-relaxed text-white/65">
-              You have {remaining} item{remaining === 1 ? "" : "s"} left. Speak naturally, type a command, or use the manual controls.
-            </p>
-            <div className="mt-5 flex flex-wrap gap-2.5">
-              <button type="button" onClick={onOpenAssistant} className="inline-flex h-11 items-center gap-2 rounded-xl bg-white px-4 text-sm font-bold text-[#15382e] transition hover:bg-[#effbf5]">
-                <Icon.mic />
-                Talk to Apex
-              </button>
-              <button type="button" onClick={() => onManual({ type: "wellness" })} className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/[0.06] px-4 text-sm font-semibold text-white transition hover:bg-white/10">
-                Manual check-in
-              </button>
-            </div>
+        <div className="relative">
+          <div className="mb-1.5 flex items-center gap-2 text-[10px] font-semibold text-[#91dabc] lg:mb-4 lg:text-xs">
+            <Icon.sun />
+            <span>Good morning, Aarav</span>
           </div>
-
-          <div className="flex items-center gap-4 rounded-2xl border border-white/10 bg-white/[0.06] p-4 backdrop-blur sm:block sm:w-40">
+          <h2 className="max-w-xl font-display text-base font-bold leading-tight tracking-[-0.04em] lg:text-[2.6rem] lg:leading-[1.05]">
+            Finish today&apos;s reporting in under a minute.
+          </h2>
+          <p className="mt-1 line-clamp-1 max-w-lg text-[10px] leading-relaxed text-white/65 lg:mt-3 lg:line-clamp-none lg:text-sm">
+            You have {remaining} item{remaining === 1 ? "" : "s"} left. Speak naturally or use the assistant.
+          </p>
+          <div className="mt-2 flex items-center gap-2.5 rounded-xl border border-white/10 bg-white/[0.06] p-2 backdrop-blur lg:mt-5 lg:gap-3 lg:rounded-2xl lg:p-3">
             <div
-              className="relative grid h-20 w-20 place-items-center rounded-full sm:mx-auto sm:h-24 sm:w-24"
+              className="relative grid h-11 w-11 shrink-0 place-items-center rounded-full lg:h-24 lg:w-24"
               style={{ background: `conic-gradient(#75e3b8 ${completed * 20}%, rgba(255,255,255,0.1) 0)` }}
             >
-              <div className="grid h-[68px] w-[68px] place-items-center rounded-full bg-[#15382e] sm:h-[82px] sm:w-[82px]">
+              <div className="grid h-[38px] w-[38px] place-items-center rounded-full bg-[#15382e] lg:h-[82px] lg:w-[82px]">
                 <div className="text-center">
-                  <p className="nums text-xl font-bold sm:text-2xl">{completed}/5</p>
-                  <p className="text-[9px] uppercase tracking-widest text-white/50">done</p>
+                  <p className="nums text-xs font-bold lg:text-2xl">{completed}/5</p>
+                  <p className="text-[7px] uppercase tracking-widest text-white/50 lg:text-[9px]">done</p>
                 </div>
               </div>
             </div>
-            <div className="sm:mt-3 sm:text-center">
-              <p className="text-sm font-semibold">Daily progress</p>
-              <p className="mt-0.5 text-[11px] text-white/50">Updated 8:20 AM</p>
+            <div>
+              <p className="text-[11px] font-semibold lg:text-sm">Daily progress</p>
+              <p className="mt-0.5 text-[9px] text-white/50 lg:text-[11px]">Updated 8:20 AM</p>
             </div>
           </div>
         </div>
       </section>
 
+      <div className="space-y-3 lg:contents">
       {nextPlan ? (
-        <section className="rounded-[1.6rem] border border-accent/20 bg-gradient-to-br from-white to-[#eef8f3] p-5 shadow-raised">
+        <section className="rounded-[1.15rem] border border-accent/20 bg-gradient-to-br from-white to-[#eef8f3] p-2.5 shadow-raised lg:rounded-[1.6rem] lg:p-5">
           <SectionHeader eyebrow="Published by Coach Priya" title={`${nextPlan.title} · ${nextPlan.dateKey}`} action={`Version ${nextPlan.version}`} />
-          <p className="mt-2 text-xs text-ink-muted">{nextPlan.focus} · {nextPlan.durationMinutes} minutes. Draft revisions remain private until published.</p>
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <p className="mt-0.5 text-[9px] text-ink-muted lg:mt-2 lg:text-xs">{nextPlan.focus} · {nextPlan.durationMinutes} min · Draft revisions stay private until published.</p>
+          <div className="mt-1.5 flex flex-col gap-1.5 lg:mt-4 lg:grid lg:grid-cols-3 lg:gap-2">
             {nextPlan.exercises.map((exercise) => (
-              <article key={exercise.id} className="rounded-2xl border border-line bg-white p-3.5">
-                <p className="text-sm font-bold text-ink">{exercise.name}</p>
-                <p className="mt-1 text-[11px] text-ink-muted">
+              <article key={exercise.id} className="shrink-0 rounded-lg border border-line bg-white p-2 lg:rounded-2xl lg:p-3.5">
+                <p className="text-[11px] font-bold text-ink lg:text-sm">{exercise.name}</p>
+                <p className="mt-0.5 text-[9px] text-ink-muted lg:text-[11px]">
                   {exercise.reps !== undefined ? `${exercise.sets} × ${exercise.reps} reps` : `${exercise.sets} × ${exercise.distanceMeters} m`} · {exercise.loadKg} kg{exercise.loadLabel ? ` ${exercise.loadLabel}` : ""}
                 </p>
-                <p className="mt-2 text-[10px] font-bold uppercase tracking-wider text-accent-strong">Target RPE {exercise.targetRpe} · Rest {exercise.restSeconds}s</p>
+                <p className="mt-0.5 text-[8px] font-bold uppercase tracking-wider text-accent-strong lg:text-[10px]">Target RPE {exercise.targetRpe} · Rest {exercise.restSeconds}s</p>
               </article>
             ))}
           </div>
-          <button type="button" onClick={() => onPrompt("What has Coach Priya planned for Monday?")} className="mt-4 text-sm font-bold text-accent-strong hover:underline">Ask about this plan →</button>
+          <button type="button" onClick={() => onPrompt("What has Coach Priya planned for Monday?")} className="mt-1.5 shrink-0 text-[10px] font-bold text-accent-strong hover:underline lg:mt-4 lg:text-sm">Ask about this plan →</button>
         </section>
       ) : null}
 
-      <section className="grid gap-5 xl:grid-cols-[1.08fr_0.92fr]">
-        <div className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
+      <section className="rounded-[1.15rem] border border-line bg-white p-2.5 shadow-raised lg:rounded-[1.6rem] lg:p-5">
           <SectionHeader
             eyebrow="Morning check-in"
             title={wellnessLogged === 4 ? "All signals are logged" : `${4 - wellnessLogged} signal${4 - wellnessLogged === 1 ? " is" : "s are"} missing`}
             action={`${wellnessLogged} of 4 logged`}
           />
-          <div className="mt-4 grid grid-cols-2 gap-2.5">
+          <div className="mt-1.5 flex flex-col gap-1.5 lg:mt-4 lg:grid lg:grid-cols-2 lg:gap-2.5">
             {wellness.map((item) => (
-              <div key={item.label} className={`rounded-2xl border p-3.5 ${item.done ? "border-accent/20 bg-accent/[0.06]" : "border-dashed border-line-strong bg-surface-inset/60"}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-medium text-ink-muted">{item.label}</p>
-                  <span className={`h-2 w-2 rounded-full ${item.done ? "bg-ok" : "bg-warn"}`} />
+              <div key={item.label} className={`rounded-lg border p-2 lg:rounded-2xl lg:p-3.5 ${item.done ? "border-accent/20 bg-accent/[0.06]" : "border-dashed border-line-strong bg-surface-inset/60"}`}>
+                <div className="flex items-center justify-between gap-1">
+                  <p className="text-[10px] font-medium text-ink-muted lg:text-xs">{item.label}</p>
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full lg:h-2 lg:w-2 ${item.done ? "bg-ok" : "bg-warn"}`} />
                 </div>
-                <p className={`nums mt-2 text-base font-bold ${item.done ? "text-ink" : "text-ink-faint"}`}>{item.value}</p>
+                <p className={`nums mt-0.5 text-xs font-bold lg:mt-2 lg:text-base ${item.done ? "text-ink" : "text-ink-faint"}`}>{item.value}</p>
               </div>
             ))}
           </div>
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => onManual({ type: "wellness" })} className="btn-secondary">Manual entry</button>
-            <button type="button" onClick={() => onPrompt("My sleep quality was eight")} className="btn-primary"><Icon.mic /> Use assistant</button>
-          </div>
-        </div>
+        </section>
 
-        <div className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
+        <section className="rounded-[1.15rem] border border-line bg-white p-2.5 shadow-raised lg:rounded-[1.6rem] lg:p-5">
           <SectionHeader eyebrow="Hydration" title={`${state.hydration.totalMl.toLocaleString("en-IN")} ml logged`} action={`${hydrationPercent}% of goal`} />
-          <div className="mt-6 flex items-center gap-5">
-            <div className="relative h-32 w-20 overflow-hidden rounded-[1.7rem] border-4 border-[#dce8e2] bg-[#f6faf8]">
+          <div className="mt-2 flex items-center gap-3 lg:mt-6 lg:gap-5">
+            <div className="relative h-24 w-16 shrink-0 overflow-hidden rounded-[1.35rem] border-4 border-[#dce8e2] bg-[#f6faf8] lg:h-32 lg:w-20 lg:rounded-[1.7rem]">
               <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#55b9de] to-[#9adcf4] transition-all" style={{ height: `${hydrationPercent}%` }} />
               <div className="absolute inset-0 grid place-items-center">
                 <Icon.water />
               </div>
             </div>
-            <div className="flex-1">
-              <p className="nums text-3xl font-bold tracking-[-0.04em] text-ink">{state.hydration.totalMl.toLocaleString("en-IN")} <span className="text-base font-semibold text-ink-muted">ml</span></p>
-              <p className="mt-1 text-sm text-ink-muted">of {state.hydration.goalMl.toLocaleString("en-IN")} ml daily goal</p>
-              <div className="mt-4 h-2 overflow-hidden rounded-full bg-surface-inset">
+            <div className="min-w-0 flex-1">
+              <p className="nums text-xl font-bold tracking-[-0.04em] text-ink lg:text-3xl">{state.hydration.totalMl.toLocaleString("en-IN")} <span className="text-xs font-semibold text-ink-muted lg:text-base">ml</span></p>
+              <p className="mt-0.5 text-[10px] text-ink-muted lg:mt-1 lg:text-sm">of {state.hydration.goalMl.toLocaleString("en-IN")} ml daily goal</p>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-inset lg:mt-4 lg:h-2">
                 <div className="h-full rounded-full bg-[#55b9de] transition-all" style={{ width: `${hydrationPercent}%` }} />
               </div>
-              <div className="mt-4 flex flex-wrap gap-3 text-sm font-bold">
-                <button type="button" onClick={() => onManual({ type: "water" })} className="text-accent-strong hover:underline">+ Manual log</button>
-                <button type="button" onClick={() => onPrompt("Add 250 ml of water")} className="text-ink-muted hover:text-accent-strong">Use assistant</button>
-              </div>
+              <button type="button" onClick={() => onManual({ type: "water" })} className="mt-2 text-[10px] font-bold text-accent-strong hover:underline lg:mt-4 lg:text-sm">+ Manual log</button>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
 
-      <section className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
+      <section className="rounded-[1.15rem] border border-line bg-white p-2.5 shadow-raised lg:rounded-[1.6rem] lg:p-5">
         <SectionHeader
           eyebrow="Training plan"
-          title="Two sessions scheduled"
+          title={`${state.sessions.length} session${state.sessions.length === 1 ? "" : "s"} scheduled`}
           action={`${state.sessions.filter((session) => session.status === "planned").length} pending`}
         />
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <div className="mt-1.5 flex flex-col gap-1.5 lg:mt-4 lg:grid lg:gap-3 md:grid-cols-2">
           {state.sessions.map((session) => (
-            <article key={session.id} className="group rounded-2xl border border-line bg-[#fafbf9] p-4 transition hover:-translate-y-0.5 hover:border-accent/25 hover:shadow-raised">
-              <div className="flex items-start justify-between gap-3">
-                <div className={`grid h-10 w-10 place-items-center rounded-xl ${session.slot === "morning" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+            <article key={session.id} className="group rounded-lg border border-line bg-[#fafbf9] p-2.5 transition hover:border-accent/25 lg:rounded-2xl lg:p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className={`grid h-8 w-8 place-items-center rounded-lg lg:h-10 lg:w-10 lg:rounded-xl ${session.slot === "morning" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
                   <Icon.dumbbell />
                 </div>
-                <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${session.status === "completed" ? "bg-ok/10 text-ok" : session.status === "planned" ? "bg-warn/10 text-warn" : "bg-surface-inset text-ink-muted"}`}>{session.status === "planned" ? "Pending" : session.status}</span>
+                <span className={`rounded-full px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider lg:px-2.5 lg:py-1 lg:text-[10px] ${session.status === "completed" ? "bg-ok/10 text-ok" : session.status === "planned" ? "bg-warn/10 text-warn" : "bg-surface-inset text-ink-muted"}`}>{session.status === "planned" ? "Pending" : session.status}</span>
               </div>
-              <div className="mt-5 flex items-end justify-between gap-3">
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-ink-faint">{capitalize(session.slot)} · {session.time}</p>
-                  <h3 className="mt-1 text-lg font-bold tracking-[-0.02em] text-ink">{session.title}</h3>
-                  <p className="mt-1 text-xs text-ink-muted">{sessionActualDetail(session)}</p>
+              <div className="mt-2 flex items-end justify-between gap-2 lg:mt-5 lg:gap-3">
+                <div className="min-w-0">
+                  <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-ink-faint lg:text-[10px]">{capitalize(session.slot)} · {session.time}</p>
+                  <h3 className="mt-0.5 text-sm font-bold tracking-[-0.02em] text-ink lg:mt-1 lg:text-lg">{session.title}</h3>
+                  <p className="mt-0.5 text-[10px] text-ink-muted lg:mt-1 lg:text-xs">{sessionActualDetail(session)}</p>
                 </div>
-                <button type="button" onClick={() => onManual({ type: "training", sessionId: session.id })} aria-label={`Log ${session.title}`} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-line bg-white text-ink-muted transition group-hover:border-accent/30 group-hover:text-accent-strong">
+                <button type="button" onClick={() => onManual({ type: "training", sessionId: session.id })} aria-label={`Log ${session.title}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line bg-white text-ink-muted transition group-hover:border-accent/30 group-hover:text-accent-strong lg:h-10 lg:w-10 lg:rounded-xl">
                   <Icon.chevron />
                 </button>
               </div>
             </article>
           ))}
         </div>
-        <div className="mt-4 flex gap-2 rounded-2xl border border-warn/20 bg-warn/[0.06] px-4 py-3 text-xs leading-relaxed text-ink-muted">
-          <span className="mt-0.5 text-warn"><Icon.spark /></span>
+        <div className="mt-2 flex gap-2 rounded-xl border border-warn/20 bg-warn/[0.06] px-3 py-2 text-[10px] leading-relaxed text-ink-muted lg:mt-4 lg:rounded-2xl lg:px-4 lg:py-3 lg:text-xs">
+          <span className="mt-0.5 shrink-0 text-warn"><Icon.spark /></span>
           <p>
             {state.sessions.filter((session) => session.status === "planned").length > 1
               ? "Because two sessions are incomplete, “I completed training” should ask which session—never guess."
               : state.sessions.filter((session) => session.status === "planned").length === 1
-                ? "Only Morning Conditioning remains, so the assistant can resolve “I completed training” to that session and show it for confirmation."
+                ? "Only one session remains, so the assistant can resolve “I completed training” to that session and show it for confirmation."
                 : "Both sessions have an athlete-reported outcome for today."}
           </p>
         </div>
       </section>
 
-      <section className="grid gap-5 md:grid-cols-2">
-        <MiniCard icon={<Icon.heart />} eyebrow="Recovery" title={state.recovery.modalities.length ? state.recovery.modalities.join(" · ") : "Not logged yet"} detail="Stretching, mobility, ice bath or physio" cta="Log recovery" onClick={() => onManual({ type: "recovery" })} />
-        <MiniCard icon={<Icon.message />} eyebrow={state.coach.name} title="Focus on clean form" detail={state.coach.latestGuidance} cta="Reply to coach" onClick={() => onManual({ type: "message" })} />
+      <section className="flex flex-col gap-1.5 lg:grid lg:grid-cols-2 lg:gap-5">
+        <MiniCard compact icon={<Icon.heart />} eyebrow="Recovery" title={state.recovery.modalities.length ? state.recovery.modalities.join(" · ") : "Not logged yet"} detail="Stretching, mobility, ice bath or physio" cta="Log recovery" onClick={() => onManual({ type: "recovery" })} />
+        <MiniCard compact icon={<Icon.message />} eyebrow={state.coach.name} title="Focus on clean form" detail={state.coach.latestGuidance} cta="Reply to coach" onClick={() => onManual({ type: "message" })} />
       </section>
     </div>
   );
@@ -1265,21 +1297,24 @@ function TestLaboratory({ state, turn, message }: { state: DemoState; turn: Assi
   ];
 
   return (
-    <div className="space-y-5">
-      <section className="rounded-[2rem] bg-[#111b18] p-6 text-white shadow-hero">
-        <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#78d8b0]">Diagnostic workspace</p>
-            <h2 className="mt-2 max-w-2xl text-3xl font-bold tracking-[-0.04em]">See exactly where an assistant request succeeds or fails.</h2>
-            <p className="mt-3 max-w-xl text-sm leading-relaxed text-white/55">This view separates transcription, interpretation, validation and execution so a wrong action is diagnosable.</p>
-          </div>
-          <span className="self-start rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-white/60">Voice assistant active</span>
-        </div>
+    <div className="space-y-3 lg:space-y-5">
+      <section className="shrink-0 rounded-[1.25rem] bg-[#111b18] p-3 text-white shadow-hero lg:rounded-[2rem] lg:p-6">
+        <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-[#78d8b0] lg:text-[10px]">Diagnostic workspace</p>
+        <h2 className="mt-1 line-clamp-2 text-base font-bold tracking-[-0.04em] lg:mt-2 lg:line-clamp-none lg:max-w-2xl lg:text-3xl">See exactly where an assistant request succeeds or fails.</h2>
+        <p className="mt-1 hidden text-sm leading-relaxed text-white/55 lg:mt-3 lg:block lg:max-w-xl">This view separates transcription, interpretation, validation and execution so a wrong action is diagnosable.</p>
       </section>
 
-      <section className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
+      <section className="shrink-0 rounded-[1.25rem] border border-line bg-white p-3 shadow-raised lg:rounded-[1.6rem] lg:p-5">
         <SectionHeader eyebrow="Request pipeline" title="Six observable checkpoints" action="Gemini connected" />
-        <div className="mt-5 divide-y divide-line">
+        <div className="mt-2 flex justify-between gap-1 lg:mt-5 lg:hidden">
+          {steps.map(([number]) => (
+            <div key={number} className="flex flex-col items-center gap-0.5">
+              <span className="nums text-[8px] font-bold text-ink-faint">{number}</span>
+              <span className="grid h-6 w-6 place-items-center rounded-full bg-ok/10 text-ok"><Icon.check /></span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-5 hidden divide-y divide-line lg:block">
           {steps.map(([number, title, detail, status]) => (
             <div key={number} className="grid gap-3 py-4 sm:grid-cols-[48px_1fr_auto] sm:items-center">
               <span className="nums text-xs font-bold text-ink-faint">{number}</span>
@@ -1293,39 +1328,27 @@ function TestLaboratory({ state, turn, message }: { state: DemoState; turn: Assi
         </div>
       </section>
 
-      <section className="grid gap-5 md:grid-cols-2">
-        <div className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
+      <section className="grid gap-2 lg:grid-cols-2 lg:gap-5">
+        <div className="flex flex-col rounded-[1.25rem] border border-line bg-white p-3 shadow-raised lg:rounded-[1.6rem] lg:p-5">
           <SectionHeader eyebrow="Latest trace" title={turn ? capitalize(turn.kind) : "No command yet"} action={debug?.provider ?? "Waiting"} />
-          <dl className="mt-4 space-y-3">
-            <TraceValue label="Text command" value={message || "Submit a text command from Apex Assist."} />
-            <TraceValue label="Candidate tool" value={debug?.candidateTools.join(", ") || "—"} mono />
-            <TraceValue label="Normalized query" value={debug?.normalizedQuery || "—"} mono />
-            <TraceValue label="Date range" value={debug?.dateRange ? `${debug.dateRange.start} → ${debug.dateRange.end}` : "—"} mono />
-            <TraceValue label="Metric" value={debug?.metric || "—"} mono />
-            <TraceValue label="Analytics query" value={debug?.analysisQuery ? JSON.stringify(debug.analysisQuery) : "—"} mono />
-            <TraceValue
-              label="Analysis coverage"
-              value={debug?.analysisCoverage
-                ? `${debug.analysisCoverage.recordedDays} days · ${debug.analysisCoverage.missingObservations} missing${debug.analysisCoverage.pairedObservations !== undefined ? ` · ${debug.analysisCoverage.pairedObservations} paired` : ""}`
-                : "—"}
-            />
-            <TraceValue label="Conversation context" value={debug?.context ? JSON.stringify(debug.context) : "{}"} mono />
-            <TraceValue label="Evidence records" value={debug?.evidence ? String(debug.evidence.length) : "0"} />
-            <TraceValue label="Grounding facts" value={debug?.groundingFacts ? String(debug.groundingFacts.length) : "0"} />
-            <TraceValue label="Safety decision" value={debug?.safetyDecision || "—"} />
-            <TraceValue label="Provider / model" value={debug ? `${debug.provider}${debug.model ? ` · ${debug.model}` : ""}` : "—"} mono />
-            <TraceValue label="Interpretation latency" value={debug ? `${debug.latencyMs} ms` : "—"} />
-            <TraceValue label="Response humanizer" value={debug?.humanizer ? `${debug.humanizer}${debug.humanizerLatencyMs !== undefined ? ` · ${debug.humanizerLatencyMs} ms` : ""}` : "—"} />
+          <dl className="mt-2 grid grid-cols-2 gap-1.5 lg:mt-4 lg:block lg:space-y-3">
+            <TraceValue compact label="Text command" value={message || "Submit a text command from Apex Assist."} />
+            <TraceValue compact label="Candidate tool" value={debug?.candidateTools.join(", ") || "—"} mono />
+            <TraceValue compact label="Normalized query" value={debug?.normalizedQuery || "—"} mono />
+            <TraceValue compact label="Date range" value={debug?.dateRange ? `${debug.dateRange.start} → ${debug.dateRange.end}` : "—"} mono />
+            <TraceValue compact label="Metric" value={debug?.metric || "—"} mono />
+            <TraceValue compact label="Evidence records" value={debug?.evidence ? String(debug.evidence.length) : "0"} />
+            <TraceValue compact label="Provider / model" value={debug ? `${debug.provider}${debug.model ? ` · ${debug.model}` : ""}` : "—"} mono className="col-span-2 lg:col-span-1" />
           </dl>
         </div>
-        <div className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
+        <div className="shrink-0 rounded-[1.25rem] border border-line bg-white p-3 shadow-raised lg:rounded-[1.6rem] lg:p-5">
           <SectionHeader eyebrow="Environment" title="Provider readiness" action="Local only" />
-          <div className="mt-4 space-y-3">
-            <ProviderRow name="Deepgram" variable="DEEP_GRAM" status="Active" positive />
-            <ProviderRow name="Gemini" variable={debug?.model ?? "Server-side key"} status="Active" positive />
-            <ProviderRow name="Local demo store" variable={`${state.operations.length} operation${state.operations.length === 1 ? "" : "s"} recorded`} status="Connected" positive />
+          <div className="mt-2 grid grid-cols-3 gap-1.5 lg:mt-4 lg:block lg:space-y-3">
+            <ProviderRow compact name="Deepgram" variable="DEEP_GRAM" status="Active" positive />
+            <ProviderRow compact name="Gemini" variable={debug?.model ?? "Server-side key"} status="Active" positive />
+            <ProviderRow compact name="Local demo store" variable={`${state.operations.length} ops`} status="Connected" positive />
           </div>
-          <div className="mt-4 rounded-2xl border border-dashed border-line-strong bg-surface-inset/60 p-3 text-[11px] leading-relaxed text-ink-muted">
+          <div className="mt-2 hidden rounded-2xl border border-dashed border-line-strong bg-surface-inset/60 p-3 text-[11px] leading-relaxed text-ink-muted lg:mt-4 lg:block">
             API keys will be read server-side only. They will never use a <code className="font-mono text-ink">NEXT_PUBLIC_</code> variable or appear in the browser bundle.
           </div>
         </div>
@@ -1334,11 +1357,10 @@ function TestLaboratory({ state, turn, message }: { state: DemoState; turn: Assi
   );
 }
 
-function MobileNav({ view, onChange, onAssistant }: { view: View; onChange: (view: View) => void; onAssistant: () => void }) {
-  const items: Array<{ key: View | "assistant"; label: string; icon: ReactNode }> = [
+function MobileNav({ view, onChange }: { view: View; onChange: (view: View) => void; onAssistant: () => void }) {
+  const items: Array<{ key: View; label: string; icon: ReactNode }> = [
     { key: "today", label: "Today", icon: <Icon.home /> },
     { key: "progress", label: "Progress", icon: <Icon.pulse /> },
-    { key: "assistant", label: "Assist", icon: <Icon.mic /> },
     { key: "coach", label: "Coach", icon: <Icon.users /> },
     { key: "lab", label: "Lab", icon: <Icon.pulse /> },
   ];
@@ -1350,7 +1372,7 @@ function MobileNav({ view, onChange, onAssistant }: { view: View; onChange: (vie
           const active = item.key === view;
           return (
             <li key={item.key} className="flex flex-1">
-              <button type="button" onClick={() => item.key === "assistant" ? onAssistant() : onChange(item.key)} className={`tab-item ${active ? "tab-item--active" : ""}`} aria-current={active ? "page" : undefined}>
+              <button type="button" onClick={() => onChange(item.key)} className={`tab-item ${active ? "tab-item--active" : ""}`} aria-current={active ? "page" : undefined}>
                 <span className={`grid h-7 w-12 place-items-center rounded-lg ${active ? "bg-accent-soft" : ""}`}>{item.icon}</span>
                 {item.label}
               </button>
@@ -1579,14 +1601,32 @@ function SectionHeader({ eyebrow, title, action }: { eyebrow: string; title: str
   );
 }
 
-function MiniCard({ icon, eyebrow, title, detail, cta, onClick }: { icon: ReactNode; eyebrow: string; title: string; detail: string; cta: string; onClick: () => void }) {
+function MiniCard({
+  icon,
+  eyebrow,
+  title,
+  detail,
+  cta,
+  onClick,
+  compact = false,
+  className = "",
+}: {
+  icon: ReactNode;
+  eyebrow: string;
+  title: string;
+  detail: string;
+  cta: string;
+  onClick: () => void;
+  compact?: boolean;
+  className?: string;
+}) {
   return (
-    <article className="rounded-[1.6rem] border border-line bg-white p-5 shadow-raised">
-      <div className="grid h-10 w-10 place-items-center rounded-xl bg-accent/10 text-accent-strong">{icon}</div>
-      <p className="mt-4 text-[10px] font-bold uppercase tracking-[0.15em] text-ink-faint">{eyebrow}</p>
-      <h3 className="mt-1 text-lg font-bold text-ink">{title}</h3>
-      <p className="mt-1 text-xs leading-relaxed text-ink-muted">{detail}</p>
-      <button type="button" onClick={onClick} className="mt-4 text-sm font-bold text-accent-strong hover:underline">{cta} →</button>
+    <article className={`rounded-2xl border border-line bg-white shadow-raised ${compact ? "p-2.5" : "rounded-[1.6rem] p-5"} ${className}`}>
+      <div className={`grid place-items-center rounded-xl bg-accent/10 text-accent-strong ${compact ? "h-7 w-7" : "h-10 w-10"}`}>{icon}</div>
+      <p className={`font-bold uppercase tracking-[0.15em] text-ink-faint ${compact ? "mt-2 text-[8px]" : "mt-4 text-[10px]"}`}>{eyebrow}</p>
+      <h3 className={`font-bold text-ink ${compact ? "mt-0.5 line-clamp-1 text-xs" : "mt-1 text-lg"}`}>{title}</h3>
+      {detail ? <p className={`leading-relaxed text-ink-muted ${compact ? "mt-1 line-clamp-2 text-[10px]" : "mt-1 text-xs"}`}>{detail}</p> : null}
+      <button type="button" onClick={onClick} className={`font-bold text-accent-strong hover:underline ${compact ? "mt-1 text-[10px]" : "mt-4 text-sm"}`}>{cta} →</button>
     </article>
   );
 }
@@ -1603,11 +1643,24 @@ function OutcomeStep({ number, title, detail }: { number: string; title: string;
   return <div className="rounded-2xl bg-surface-inset p-4"><p className="nums text-xs font-bold text-accent-strong">{number}</p><h3 className="mt-4 text-sm font-bold text-ink">{title}</h3><p className="mt-1 text-xs leading-relaxed text-ink-muted">{detail}</p></div>;
 }
 
-function TraceValue({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return <div className="min-w-0"><dt className="text-[9px] font-bold uppercase tracking-wider text-ink-faint">{label}</dt><dd className={`mt-1 min-w-0 break-words rounded-xl bg-surface-inset p-2.5 text-xs leading-relaxed text-ink [overflow-wrap:anywhere] ${mono ? "font-mono" : ""}`}>{value}</dd></div>;
+function TraceValue({ label, value, mono = false, compact = false, className = "" }: { label: string; value: string; mono?: boolean; compact?: boolean; className?: string }) {
+  return (
+    <div className={`min-w-0 ${className}`}>
+      <dt className={`font-bold uppercase tracking-wider text-ink-faint ${compact ? "text-[7px]" : "text-[9px]"}`}>{label}</dt>
+      <dd className={`min-w-0 break-words rounded-lg bg-surface-inset text-ink [overflow-wrap:anywhere] ${compact ? "mt-0.5 line-clamp-2 p-1.5 text-[9px] leading-snug" : "mt-1 rounded-xl p-2.5 text-xs leading-relaxed"} ${mono ? "font-mono" : ""}`}>{value}</dd>
+    </div>
+  );
 }
 
-function ProviderRow({ name, variable, status, positive = false }: { name: string; variable: string; status: string; positive?: boolean }) {
+function ProviderRow({ name, variable, status, positive = false, compact = false }: { name: string; variable: string; status: string; positive?: boolean; compact?: boolean }) {
+  if (compact) {
+    return (
+      <div className="rounded-xl border border-line bg-surface-inset p-2 text-center">
+        <p className="text-[10px] font-semibold text-ink">{name}</p>
+        <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider ${positive ? "bg-ok/10 text-ok" : "bg-white text-ink-faint"}`}>{status}</span>
+      </div>
+    );
+  }
   return <div className="flex items-center justify-between gap-3 rounded-2xl bg-surface-inset p-3"><div><p className="text-sm font-semibold text-ink">{name}</p><p className="mt-0.5 font-mono text-[10px] text-ink-faint">{variable}</p></div><span className={`rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider ${positive ? "bg-ok/10 text-ok" : "bg-white text-ink-faint"}`}>{status}</span></div>;
 }
 

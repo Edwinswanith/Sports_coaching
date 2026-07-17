@@ -164,7 +164,7 @@ export default function CoachRosterPage() {
       onSignOut={logout}
     >
       <section className="space-y-4">
-        <div className="space-y-2">
+        <div className="space-y-2" data-tour="coach-roster-page">
           <div className="flex items-center gap-2">
             <div className="relative min-w-0 flex-1">
               <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint">

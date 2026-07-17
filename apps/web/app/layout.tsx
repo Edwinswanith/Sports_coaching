@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ServiceWorkerRegister } from "../components/ServiceWorkerRegister";
+import { TourProvider } from "../lib/tour/TourProvider";
 
 // The app uses the native-first system font stack defined in tailwind.config.ts.
 export const metadata: Metadata = {
@@ -31,10 +32,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen font-sans antialiased">
         <ServiceWorkerRegister />
-        {children}
+        <TourProvider>{children}</TourProvider>
       </body>
     </html>
   );

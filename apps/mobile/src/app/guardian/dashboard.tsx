@@ -2,12 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { Text } from "../../components/AppText";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { AppFrame, type NativeNavItem } from "../../components/AppFrame";
 import { Card, Muted } from "../../components/ui";
 import { DatePickerPill } from "../../components/DatePickerPill";
+import { AskAgentControl } from "../../components/AskAgentControl";
 import { Gauge } from "../../components/Gauge";
 import { apiJson } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
+import { useAutoStartMobileTour, useTourHighlight } from "../../lib/tour/MobileTourProvider";
 
 type LinkedAthlete = { athleteId: string; name: string; sport: string; position: string | null };
 type AthletesResponse = { athletes: LinkedAthlete[] };
@@ -34,6 +37,22 @@ const BAND_COLOR: Record<Band, string> = {
 function litres(ml: number) {
   return (ml / 1000).toFixed(ml % 1000 === 0 ? 0 : 1);
 }
+
+function dateFromKey(key: string) {
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(year, (month || 1) - 1, day || 1);
+}
+
+function keyFromDate(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function addDays(key: string, days: number) {
+  const date = dateFromKey(key);
+  date.setDate(date.getDate() + days);
+  return keyFromDate(date);
+}
+
 
 function sleepBand(quality: number | null): Band {
   if (quality === null) return "neutral";
@@ -81,12 +100,20 @@ function initialsOf(name: string): string {
  * restriction (the API itself never returns anything else).
  */
 export default function GuardianDashboard() {
+  const router = useRouter();
+  useAutoStartMobileTour("guardian");
+  const { highlightStyle: headerHighlight } = useTourHighlight("mobile-guardian-header");
+  const { highlightStyle: switcherHighlight } = useTourHighlight("mobile-guardian-switcher");
+  const { highlightStyle: sleepHighlight } = useTourHighlight("mobile-guardian-sleep");
+  const { highlightStyle: waterHighlight } = useTourHighlight("mobile-guardian-water");
+  const { highlightStyle: attendanceHighlight } = useTourHighlight("mobile-guardian-attendance");
   const [date, setDate] = useState(today());
   const [athletes, setAthletes] = useState<LinkedAthlete[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [summary, setSummary] = useState<GuardianSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [calendarOpenSignal, setCalendarOpenSignal] = useState(0);
 
   const loadAthletes = useCallback(async () => {
     setError(null);
@@ -128,6 +155,40 @@ export default function GuardianDashboard() {
   const hasGoal = Boolean(summary && summary.water.goalMl > 0);
   const waterPct = summary && hasGoal ? Math.min(100, Math.round((summary.water.totalMl / summary.water.goalMl) * 100)) : 0;
 
+  async function handleAskAgent(command: string) {
+    const lower = command.toLowerCase();
+    setError(null);
+    if (/\bnotification/.test(lower)) {
+      router.push("/notifications" as never);
+      return;
+    }
+    if (/\bcalendar|calender/.test(lower)) {
+      setCalendarOpenSignal((value) => value + 1);
+      return;
+    }
+    if (/\byesterday\b/.test(lower)) {
+      setDate(addDays(today(), -1));
+      return;
+    }
+    if (/\btomorrow\b/.test(lower)) {
+      setDate(addDays(today(), 1));
+      return;
+    }
+    if (/\bnext day\b/.test(lower)) {
+      setDate((value) => addDays(value, 1));
+      return;
+    }
+    if (/\b(previous|prev|back) day\b/.test(lower)) {
+      setDate((value) => addDays(value, -1));
+      return;
+    }
+    if (/\bathlete|child|detail\b/.test(lower) && selectedId) {
+      router.push({ pathname: "/guardian/athletes/[athleteId]", params: { athleteId: selectedId } } as never);
+      return;
+    }
+    setError("Try: open calendar, next day, open athlete details, or open notifications.");
+  }
+
   return (
     <AppFrame
       role="guardian"
@@ -136,7 +197,11 @@ export default function GuardianDashboard() {
       nav={NAV}
       activeKey="today"
       onNavigate={() => undefined}
-      headerAction={<DatePickerPill value={date} onChange={setDate} />}
+      headerAction={
+        <View style={headerHighlight}>
+          <DatePickerPill value={date} onChange={setDate} openSignal={calendarOpenSignal} />
+        </View>
+      }
     >
       <ScrollView
         contentContainerStyle={styles.content}
@@ -145,6 +210,7 @@ export default function GuardianDashboard() {
         {error ? <Notice text={error} /> : null}
 
         {athletes.length > 1 ? (
+          <View style={switcherHighlight}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.athleteSwitch}>
             {athletes.map((athlete) => {
               const active = athlete.athleteId === selectedId;
@@ -164,6 +230,7 @@ export default function GuardianDashboard() {
               );
             })}
           </ScrollView>
+          </View>
         ) : null}
 
         {loading && athletes.length === 0 ? (
@@ -179,12 +246,19 @@ export default function GuardianDashboard() {
           </Card>
         ) : (
           <View style={styles.stack}>
-            <SleepCard quality={summary.sleep.quality} hours={summary.sleep.hours} />
-            <WaterCard totalMl={summary.water.totalMl} goalMl={summary.water.goalMl} pct={waterPct} hasGoal={hasGoal} />
-            <AttendanceCard status={summary.attendance.status} note={summary.attendance.note} />
+            <View style={sleepHighlight}>
+              <SleepCard quality={summary.sleep.quality} hours={summary.sleep.hours} />
+            </View>
+            <View style={waterHighlight}>
+              <WaterCard totalMl={summary.water.totalMl} goalMl={summary.water.goalMl} pct={waterPct} hasGoal={hasGoal} />
+            </View>
+            <View style={attendanceHighlight}>
+              <AttendanceCard status={summary.attendance.status} note={summary.attendance.note} />
+            </View>
           </View>
         )}
       </ScrollView>
+      <AskAgentControl accent={theme.accent} accentInk={theme.accentInk} onCommand={handleAskAgent} />
     </AppFrame>
   );
 }

@@ -7,6 +7,7 @@ import { apiFetch, apiJson } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { Banner, Card, Muted, PrimaryButton } from "../../components/ui";
 import { ScreenHeader } from "../../components/ScreenHeader";
+import { useTourHighlight } from "../../lib/tour/MobileTourProvider";
 
 type Announcement = { id?: string; body: string; recipientCount?: number; createdAt?: string };
 type AnnouncementsResponse = { announcements: Announcement[] };
@@ -23,6 +24,7 @@ function timeAgo(iso?: string): string {
 }
 
 export default function Announcements() {
+  const { highlightStyle: announceHighlight } = useTourHighlight("mobile-coach-announce");
   const accent = ROLE_THEMES.coach.accent;
   const [items, setItems] = useState<Announcement[] | null>(null);
   const [recipientCount, setRecipientCount] = useState(0);
@@ -95,6 +97,7 @@ export default function Announcements() {
             subtitle="Broadcast to your whole squad"
           />
 
+          <View style={announceHighlight}>
           <Card style={styles.composeCard}>
             <Text style={styles.cardTitle}>Message your squad</Text>
             <TextInput
@@ -124,6 +127,7 @@ export default function Announcements() {
               accentInk="#fff"
             />
           </Card>
+          </View>
 
           <Text style={styles.sentLabel}>Sent</Text>
 

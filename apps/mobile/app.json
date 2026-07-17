@@ -42,6 +42,14 @@
       "expo-audio",
       "expo-video",
       [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow Apex to use the microphone for the Ask Agent voice assistant.",
+          "speechRecognitionPermission": "Allow Apex to use speech recognition for the Ask Agent voice assistant.",
+          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+        }
+      ],
+      [
         "react-native-ble-plx",
         {
           "isBackgroundEnabled": false,

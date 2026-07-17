@@ -132,6 +132,7 @@ export default function CoachesPage() {
       onSignOut={logout}
     >
       <section className="space-y-4">
+        <div data-tour="coach-coaches-page">
         <Card title="Add a coach">
           {created ? (
             <div className="space-y-3">
@@ -164,6 +165,7 @@ export default function CoachesPage() {
             </form>
           )}
         </Card>
+        </div>
 
         <div>
           <p className="label mb-2">Academy coaches</p>

@@ -9,6 +9,7 @@ import { ROLE_THEMES, colors, radius } from "../../../lib/theme";
 import { Card, Muted } from "../../../components/ui";
 import { ScreenHeader } from "../../../components/ScreenHeader";
 import { Avatar, type AvatarInfo } from "../../../components/Avatar";
+import { useTourHighlight } from "../../../lib/tour/MobileTourProvider";
 
 type Athlete = {
   athleteId: string;
@@ -63,6 +64,7 @@ function attentionRank(summary: SummaryCard | undefined): number {
 }
 
 export default function Roster() {
+  const { highlightStyle: rosterHighlight } = useTourHighlight("mobile-coach-roster");
   const accent = ROLE_THEMES.coach.accent;
   const router = useRouter();
   const [athletes, setAthletes] = useState<Athlete[] | null>(null);
@@ -152,7 +154,7 @@ export default function Roster() {
           </Card>
         ) : athletes && athletes.length > 0 ? (
           <View style={{ gap: 10 }}>
-            <View style={styles.searchBlock}>
+            <View style={[styles.searchBlock, rosterHighlight]}>
               <View style={styles.searchRow}>
                 <View style={styles.searchWrap}>
                   <Ionicons name="search-outline" size={17} color={colors.inkFaint} />

@@ -4,6 +4,7 @@ import { StyleSheet, View } from "react-native";
 import { Text } from "../../components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ROLE_THEMES, colors } from "../../lib/theme";
+import { CoachAskAgentOverlay } from "../../components/RoleAskAgentOverlays";
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -11,61 +12,64 @@ export default function CoachLayout() {
   const accent = ROLE_THEMES.coach.accent;
   const insets = useSafeAreaInsets();
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarShowLabel: false,
-        tabBarActiveTintColor: accent,
-        tabBarInactiveTintColor: colors.inkFaint,
-        tabBarStyle: {
-          height: 82 + insets.bottom,
-          paddingTop: 8,
-          paddingBottom: Math.max(18, insets.bottom + 14),
-          backgroundColor: colors.surfaceRaised,
-          borderTopColor: colors.line,
-        },
-        tabBarItemStyle: { paddingVertical: 4 },
-        sceneStyle: { backgroundColor: colors.surface },
-      }}
-    >
-      <Tabs.Screen
-        name="dashboard"
-        options={{
-          title: "Squad",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name="speedometer-outline" label="Squad" color={String(color)} focused={focused} />
-          ),
+    <>
+      <Tabs
+        screenOptions={{
+          headerShown: false,
+          tabBarShowLabel: false,
+          tabBarActiveTintColor: accent,
+          tabBarInactiveTintColor: colors.inkFaint,
+          tabBarStyle: {
+            height: 82 + insets.bottom,
+            paddingTop: 8,
+            paddingBottom: Math.max(18, insets.bottom + 14),
+            backgroundColor: colors.surfaceRaised,
+            borderTopColor: colors.line,
+          },
+          tabBarItemStyle: { paddingVertical: 4 },
+          sceneStyle: { backgroundColor: colors.surface },
         }}
-      />
-      <Tabs.Screen
-        name="athletes"
-        options={{
-          title: "Roster",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name="people-outline" label="Roster" color={String(color)} focused={focused} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="messages"
-        options={{
-          title: "Messages",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name="chatbubble-ellipses-outline" label="Messages" color={String(color)} focused={focused} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="announcements"
-        options={{
-          title: "Announce",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name="megaphone-outline" label="Announce" color={String(color)} focused={focused} />
-          ),
-        }}
-      />
-      <Tabs.Screen name="coaches" options={{ href: null }} />
-    </Tabs>
+      >
+        <Tabs.Screen
+          name="dashboard"
+          options={{
+            title: "Squad",
+            tabBarIcon: ({ color, focused }) => (
+              <TabIcon name="speedometer-outline" label="Squad" color={String(color)} focused={focused} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="athletes"
+          options={{
+            title: "Roster",
+            tabBarIcon: ({ color, focused }) => (
+              <TabIcon name="people-outline" label="Roster" color={String(color)} focused={focused} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="messages"
+          options={{
+            title: "Messages",
+            tabBarIcon: ({ color, focused }) => (
+              <TabIcon name="chatbubble-ellipses-outline" label="Messages" color={String(color)} focused={focused} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="announcements"
+          options={{
+            title: "Announce",
+            tabBarIcon: ({ color, focused }) => (
+              <TabIcon name="megaphone-outline" label="Announce" color={String(color)} focused={focused} />
+            ),
+          }}
+        />
+        <Tabs.Screen name="coaches" options={{ href: null }} />
+      </Tabs>
+      <CoachAskAgentOverlay />
+    </>
   );
 }
 

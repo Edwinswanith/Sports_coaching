@@ -110,7 +110,7 @@ export default function AthleteMessagesPage() {
       onNavigate={navigate}
       onSignOut={logout}
     >
-      <section className="space-y-4">
+      <section className="space-y-4" data-tour="athlete-chat">
         {loading ? (
           <div className="space-y-2">
             <div className="h-16 animate-pulse rounded-2xl bg-surface-inset" />

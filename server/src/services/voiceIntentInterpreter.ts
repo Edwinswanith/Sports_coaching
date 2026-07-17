@@ -21,8 +21,11 @@ export const VOICE_INTENTS = [
   "fill_wellness",
   "fill_attendance",
   "fill_training",
+  "fill_rpe",
+  "fill_heart_rate",
   "fill_recovery",
   "add_water",
+  "add_note",
   "send_coach_message",
   "query_status",
   "unsupported",
@@ -58,8 +61,11 @@ const WRITE_INTENTS: VoiceIntentName[] = [
   "fill_wellness",
   "fill_attendance",
   "fill_training",
+  "fill_rpe",
+  "fill_heart_rate",
   "fill_recovery",
   "add_water",
+  "add_note",
   "send_coach_message",
 ];
 
@@ -84,23 +90,23 @@ const RESPONSE_SCHEMA = {
           description: "navigate: which section/tab to open.",
         },
         sleepHours: { type: "NUMBER", description: "fill_wellness: hours slept, 0-14." },
-        sleepQuality: { type: "NUMBER", description: "fill_wellness: spoken 1-10 scale." },
-        mood: { type: "NUMBER", description: "fill_wellness: spoken 1-10 scale." },
+        sleepQuality: { type: "NUMBER", description: "fill_wellness, fill_rpe: spoken 1-10 scale." },
+        mood: { type: "NUMBER", description: "fill_wellness, fill_rpe: spoken 1-10 scale." },
         stress: { type: "NUMBER", description: "fill_wellness: spoken 1-10 scale." },
-        soreness: { type: "NUMBER", description: "fill_wellness: spoken 1-10 scale." },
-        fatigue: { type: "NUMBER", description: "fill_wellness: spoken 1-10 scale." },
+        soreness: { type: "NUMBER", description: "fill_wellness, fill_rpe: spoken 1-10 scale." },
+        fatigue: { type: "NUMBER", description: "fill_wellness, fill_rpe: spoken 1-10 scale." },
         status: {
           type: "STRING",
           enum: ["present", "absent", "late", "excused", "rest", "planned", "in_progress", "completed", "skipped"],
           description: "fill_attendance: present/absent/late/excused/rest. fill_training: planned/in_progress/completed/skipped/rest.",
         },
-        slot: { type: "STRING", enum: ["AM", "AFT", "PM"], description: "fill_training: which session slot." },
+        slot: { type: "STRING", enum: ["AM", "AFT", "PM"], description: "fill_training, fill_rpe: which session slot." },
         attended: { type: "BOOLEAN", description: "fill_training: whether the athlete attended/completed the session." },
         workoutType: { type: "STRING", description: "fill_training: short workout/drill label, e.g. 'Sprints'." },
         sets: { type: "NUMBER", description: "fill_training: number of sets." },
         reps: { type: "STRING", description: "fill_training: reps or distance per set, e.g. '100m'." },
         actualDurationMin: { type: "NUMBER", description: "fill_training: minutes trained, 0-600." },
-        effortRating: { type: "NUMBER", description: "fill_training: effort/RPE, spoken 1-10 scale." },
+        effortRating: { type: "NUMBER", description: "fill_training, fill_rpe: effort/RPE, spoken 1-10 scale." },
         notes: { type: "STRING", description: "fill_training: free-text notes, e.g. workout description or soreness callout." },
         modalities: {
           type: "ARRAY",
@@ -108,7 +114,19 @@ const RESPONSE_SCHEMA = {
           description: "fill_recovery: recovery modalities completed today.",
         },
         amountMl: { type: "NUMBER", description: "add_water: amount in millilitres, 1-4000." },
-        body: { type: "STRING", description: "send_coach_message: the message to send to the coach." },
+        body: {
+          type: "STRING",
+          description: "send_coach_message: the message to send to the coach. add_note: the note text to save for the athlete's own record.",
+        },
+        trainingCategory: {
+          type: "STRING",
+          description: "fill_rpe: the training category/drill type, e.g. 'Max Speed', 'Endurance', free text.",
+        },
+        plannedIntensityPercent: { type: "NUMBER", description: "fill_rpe: planned intensity, 0-100 percent." },
+        bodyConditionFeedback: { type: "STRING", description: "fill_rpe: free-text body condition/feedback for this session." },
+        restingHeartRate: { type: "NUMBER", description: "fill_rpe: resting heart rate for this session, 20-220 bpm." },
+        wakeHr: { type: "NUMBER", description: "fill_heart_rate: morning/waking resting heart rate, 25-220 bpm." },
+        bedHr: { type: "NUMBER", description: "fill_heart_rate: night/bedtime resting heart rate, 25-220 bpm." },
         topic: {
           type: "STRING",
           enum: ["readiness", "hydration", "training_plan", "coach_feedback", "general"],
@@ -141,7 +159,14 @@ const SYSTEM_PROMPT =
   `${VOICE_INTENTS.join(", ")}. Extract only fields that were explicitly said or unambiguously implied — ` +
   "never invent numbers or facts. Wellness/effort fields are on a spoken 1-10 scale (not the app's " +
   "internal 1-5 scale — do not convert). For fill_training, map natural workout descriptions like " +
-  "'four by one hundred sprint repeats' to sets=4, reps='100m', workoutType='Sprints'. For " +
+  "'four by one hundred sprint repeats' to sets=4, reps='100m', workoutType='Sprints'. " +
+  "fill_wellness is the athlete's own daily check-in (sleep, mood, stress, soreness, fatigue for the " +
+  "whole day) — use it for phrases like 'log my check-in' or 'I slept 7 hours'. fill_rpe is a " +
+  "per-session post-training report (slot, trainingCategory, effortRating/RPE, planned intensity, " +
+  "sleepQuality, mood, soreness, fatigue, resting heart rate, body condition feedback) — use it when " +
+  "the athlete describes how a specific AM/afternoon/PM session felt. fill_heart_rate is only for " +
+  "'waking'/'wake up' or 'bedtime'/'before bed' resting heart rate readings (wakeHr/bedHr). add_note " +
+  "is a private note to self (NOT to the coach — that is send_coach_message). For " +
   "query_status, classify the topic only — never state a readiness score, water total, or any other " +
   "number yourself, since you do not have access to real data. If a follow-up conversation turn is " +
   "provided (pendingIntent), merge newly-stated fields with the ones already collected and only ask " +
@@ -321,6 +346,33 @@ export class MockVoiceIntentInterpreter implements VoiceIntentInterpreter {
       };
     }
 
+    if (/\b(add|save|write)?\s*(?:a\s+)?note\b/.test(t) && !t.includes("coach")) {
+      const body = input.transcript.replace(/^(add|save|write)?\s*(?:a\s+)?note\s*(?:that|to myself|:|-)?\s*/i, "").trim();
+      return {
+        intent: "add_note",
+        fields: { body: body || input.transcript },
+        missingFields: [],
+        requiresConfirmation: true,
+        spokenResponse: "Save this note?",
+      };
+    }
+
+    if (/\bheart\s*rate\b|\bresting\s+hr\b/.test(t) && /\bwake|waking|morning|bed|night|sleeping\b/.test(t)) {
+      const m = t.match(/(\d{2,3})/);
+      const bpm = m ? Number(m[1]) : undefined;
+      const isWake = /\bwake|waking|morning\b/.test(t);
+      const fields: Record<string, unknown> = {};
+      if (bpm !== undefined) fields[isWake ? "wakeHr" : "bedHr"] = bpm;
+      return {
+        intent: "fill_heart_rate",
+        fields,
+        missingFields: bpm === undefined ? [isWake ? "wakeHr" : "bedHr"] : [],
+        followUpQuestion: bpm === undefined ? "What was the reading, in beats per minute?" : undefined,
+        requiresConfirmation: true,
+        spokenResponse: bpm === undefined ? "What was the reading?" : `Save ${isWake ? "wake" : "bed"} heart rate ${bpm}?`,
+      };
+    }
+
     if (/\bpresent\b|\battendance\b/.test(t)) {
       const status = t.includes("late") ? "late" : t.includes("absent") ? "absent" : "present";
       return {
@@ -332,15 +384,25 @@ export class MockVoiceIntentInterpreter implements VoiceIntentInterpreter {
       };
     }
 
-    if (/sleep|mood|stress|soreness|fatigue/.test(t)) {
+    if (/sleep|mood|stress|soreness|fatigue|check.?in/.test(t)) {
       const fields: Record<string, unknown> = {};
-      const numFor = (label: string) => {
-        const m = t.match(new RegExp(`${label}[^0-9]{0,15}(\\d{1,2})`));
-        return m ? Number(m[1]) : undefined;
+      const numNear = (label: RegExp) => {
+        const after = t.match(new RegExp(`(?:${label.source})[^0-9]{0,20}(\\d{1,2})`));
+        if (after) return Number(after[1]);
+        const before = t.match(new RegExp(`(\\d{1,2})[^a-z0-9]{0,12}(?:${label.source})`));
+        return before ? Number(before[1]) : undefined;
       };
-      for (const key of ["sleepQuality", "mood", "stress", "soreness", "fatigue"] as const) {
-        const label = key.toLowerCase();
-        const value = numFor(label);
+      const hours = t.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b/);
+      if (hours) fields.sleepHours = Number(hours[1]);
+      const quality = numNear(/sleep\s*quality|quality|sleep/);
+      if (quality !== undefined) fields.sleepQuality = quality;
+      for (const [key, label] of [
+        ["mood", /mood/],
+        ["stress", /stress/],
+        ["soreness", /soreness|sore/],
+        ["fatigue", /fatigue|tired/],
+      ] as const) {
+        const value = numNear(label);
         if (value !== undefined) fields[key] = value;
       }
       return {
@@ -349,6 +411,23 @@ export class MockVoiceIntentInterpreter implements VoiceIntentInterpreter {
         missingFields: [],
         requiresConfirmation: true,
         spokenResponse: "Save this check-in?",
+      };
+    }
+
+    if (/\brpe\b|\brpm\b|\bplanned intensity\b/.test(t)) {
+      const rpeMatch = t.match(/(?:rpe|rpm)[^0-9]{0,15}(\d{1,2})/);
+      const slotMatch =
+        /\bam\b|morning/.test(t) ? "AM" : /\baft\b|afternoon/.test(t) ? "AFT" : /\bpm\b|evening|night/.test(t) ? "PM" : undefined;
+      const fields: Record<string, unknown> = {};
+      if (rpeMatch) fields.effortRating = Number(rpeMatch[1]);
+      if (slotMatch) fields.slot = slotMatch;
+      return {
+        intent: "fill_rpe",
+        fields,
+        missingFields: slotMatch ? [] : ["slot"],
+        followUpQuestion: slotMatch ? undefined : "Which session — AM, afternoon, or PM?",
+        requiresConfirmation: true,
+        spokenResponse: "Save this session report?",
       };
     }
 

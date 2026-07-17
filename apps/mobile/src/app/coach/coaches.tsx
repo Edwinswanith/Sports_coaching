@@ -7,12 +7,14 @@ import { apiFetch, apiJson, isAuthFailure, ApiError } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { Banner, Card, Label, Muted, PrimaryButton, TextField } from "../../components/ui";
 import { ScreenHeader } from "../../components/ScreenHeader";
+import { useTourHighlight } from "../../lib/tour/MobileTourProvider";
 
 type Coach = { userId: string; name: string; email: string; isAcademyOwner: boolean };
 type Response = { coaches: Coach[] };
 const accent = ROLE_THEMES.coach.accent;
 
 export default function Coaches() {
+  const { highlightStyle: coachesHighlight } = useTourHighlight("mobile-coach-coaches");
   const [coaches, setCoaches] = useState<Coach[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +95,7 @@ export default function Coaches() {
               !forbidden ? (
                 <Pressable
                   onPress={() => { setAdding((a) => !a); setCreated(null); }}
-                  style={[styles.addBtn, { backgroundColor: accent }]}
+                  style={[styles.addBtn, { backgroundColor: accent }, coachesHighlight]}
                   hitSlop={8}
                   accessibilityLabel={adding ? "Cancel add coach" : "Add coach"}
                 >

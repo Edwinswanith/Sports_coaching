@@ -134,6 +134,7 @@ export default function CoachAnnouncementsPage() {
       onSignOut={logout}
     >
       <section className="space-y-4">
+        <div data-tour="coach-announce-page">
         <Card title="Message your squad">
           <textarea
             value={body}
@@ -154,6 +155,7 @@ export default function CoachAnnouncementsPage() {
             {sending ? "Sending…" : `Send to ${athleteCount} athlete${athleteCount === 1 ? "" : "s"}`}
           </button>
         </Card>
+        </div>
 
         <div>
           <p className="label mb-2">Sent</p>

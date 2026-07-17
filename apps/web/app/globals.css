@@ -188,3 +188,12 @@
     scroll-behavior: auto !important;
   }
 }
+
+@keyframes ask-agent-wave {
+  from {
+    transform: scaleY(0.55);
+  }
+  to {
+    transform: scaleY(1.25);
+  }
+}

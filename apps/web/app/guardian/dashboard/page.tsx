@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon, CompactDatePicker } from "../../../components/ui";
 import { ProfileMenu } from "../../../components/ProfileMenu";
 import { Gauge } from "../../../components/Gauge";
 import { AppShell, type NavItem } from "../../../components/AppShell";
+import { AskAgentButton, AskAgentSheet, type AskAgentHandle } from "../../../components/AskAgentSheet";
+import { useAutoStartTour } from "../../../lib/tour/TourProvider";
 import {
   apiFetch,
   clearSession,
@@ -91,6 +93,9 @@ export default function GuardianDashboardPage() {
   const [summary, setSummary] = useState<GuardianSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const askAgentRef = useRef<AskAgentHandle>(null);
+  const [askAgentInputOpen, setAskAgentInputOpen] = useState(false);
+  const [askAgentListening, setAskAgentListening] = useState(false);
 
   const guard = useCallback(
     (status: number) => {
@@ -132,6 +137,8 @@ export default function GuardianDashboardPage() {
     };
   }, [router, guard]);
 
+  useAutoStartTour("guardian");
+
   useEffect(() => {
     if (!selectedId) {
       setSummary(null);
@@ -164,6 +171,19 @@ export default function GuardianDashboardPage() {
   const nav: NavItem[] = [{ key: "today", label: "Summary", icon: <Icon.home /> }];
   const hasGoal = Boolean(summary && summary.water.goalMl > 0);
   const waterPct = summary && hasGoal ? Math.min(100, Math.round((summary.water.totalMl / summary.water.goalMl) * 100)) : 0;
+  const guardianAgentContext = {
+    athleteName: selectedName,
+    sleepLabel: summary
+      ? `${sleepLabel(summary.sleep.quality)}${summary.sleep.hours != null ? `, ${summary.sleep.hours}h logged` : ""}`
+      : "No data for this date",
+    waterLabel: summary ? `${litres(summary.water.totalMl)} of ${litres(summary.water.goalMl)} L` : "No data for this date",
+    attendanceLabel: summary ? attendanceLabel(summary.attendance.status) : "No data for this date",
+  };
+  const startAskAgentVoice = () => {
+    setAskAgentInputOpen(false);
+    askAgentRef.current?.startVoice();
+  };
+  const openAskAgentInput = () => setAskAgentInputOpen(true);
 
   return (
     <AppShell
@@ -185,7 +205,17 @@ export default function GuardianDashboardPage() {
           </div>
         </div>
       }
-      headerIcon={<CompactDatePicker value={date} onChange={setDate} label="Date" />}
+      headerIcon={
+        <>
+          <AskAgentButton
+            active={askAgentListening}
+            onVoice={startAskAgentVoice}
+            onInput={openAskAgentInput}
+            tourId="guardian-ask-agent"
+          />
+          <CompactDatePicker value={date} onChange={setDate} label="Date" />
+        </>
+      }
     >
       <div className="space-y-3">
         {error ? (
@@ -194,7 +224,7 @@ export default function GuardianDashboardPage() {
 
         {/* Linked-athlete switcher — visible when there's more than one. */}
         {athletes.length > 1 ? (
-          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1" data-tour="guardian-switcher">
             {athletes.map((a) => {
               const active = a.athleteId === selectedId;
               return (
@@ -237,12 +267,26 @@ export default function GuardianDashboardPage() {
           </div>
         ) : (
           <div className="animate-rise space-y-3">
-            <SleepCard quality={summary.sleep.quality} hours={summary.sleep.hours} />
-            <WaterCard totalMl={summary.water.totalMl} goalMl={summary.water.goalMl} pct={waterPct} hasGoal={hasGoal} />
-            <AttendanceCard status={summary.attendance.status} note={summary.attendance.note} />
+            <div data-tour="guardian-sleep">
+              <SleepCard quality={summary.sleep.quality} hours={summary.sleep.hours} />
+            </div>
+            <div data-tour="guardian-water">
+              <WaterCard totalMl={summary.water.totalMl} goalMl={summary.water.goalMl} pct={waterPct} hasGoal={hasGoal} />
+            </div>
+            <div data-tour="guardian-attendance">
+              <AttendanceCard status={summary.attendance.status} note={summary.attendance.note} />
+            </div>
           </div>
         )}
       </div>
+      <AskAgentSheet
+        ref={askAgentRef}
+        role="guardian"
+        inputOpen={askAgentInputOpen}
+        onCloseInput={() => setAskAgentInputOpen(false)}
+        onListeningChange={setAskAgentListening}
+        guardianContext={guardianAgentContext}
+      />
     </AppShell>
   );
 }

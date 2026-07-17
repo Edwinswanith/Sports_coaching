@@ -16,6 +16,7 @@ import {
 import { AuthProvider, useAuth } from "../lib/auth";
 import { dashboardPathForRole } from "../lib/roles";
 import { colors } from "../lib/theme";
+import { MobileTourProvider } from "../lib/tour/MobileTourProvider";
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
@@ -70,8 +71,10 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider onLayout={onLayoutRootView}>
       <AuthProvider>
-        <StatusBar style="dark" />
-        <Gate />
+        <MobileTourProvider>
+          <StatusBar style="dark" />
+          <Gate />
+        </MobileTourProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

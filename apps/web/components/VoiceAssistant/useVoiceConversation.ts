@@ -46,6 +46,8 @@ export type VoiceConversationConfig = {
   /** The athlete's single active coach, if exactly one — required for send_coach_message. */
   coachId: string | null;
   speak: (text: string) => void;
+  /** When true, write intents are executed immediately after interpretation. */
+  autoConfirmWrites?: boolean;
 };
 
 function isSessionSlot(v: unknown): v is SessionSlot {
@@ -293,7 +295,7 @@ export function useVoiceConversation(config: VoiceConversationConfig) {
         }
 
         pendingIntentRef.current = null;
-        if (result.requiresConfirmation) {
+        if (result.requiresConfirmation && !config.autoConfirmWrites) {
           const summary = summarize(result.intent, collected);
           setPending({ intent: result.intent, fields: collected, summary });
           say(summary);

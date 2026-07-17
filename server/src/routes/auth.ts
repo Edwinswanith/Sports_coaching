@@ -141,6 +141,8 @@ function readRefreshToken(req: Request): string | null {
 }
 
 function checkLoginRateLimit(req: Request): boolean {
+  if (env.nodeEnv === "test") return true;
+
   const key = req.ip || req.socket.remoteAddress || "unknown";
   const now = Date.now();
   const current = loginAttempts.get(key);

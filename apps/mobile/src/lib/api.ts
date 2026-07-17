@@ -6,9 +6,15 @@
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 
-// Point at the deployed API. Override per-build with EXPO_PUBLIC_API_BASE_URL.
+// API base selection:
+// - EXPO_PUBLIC_API_BASE_URL always wins for EAS/native builds and custom dev.
+// - Expo web dev runs on http://localhost:8081, so default to the local API to
+//   avoid Cloud Run CORS blocking localhost origins.
+// - Native defaults to the deployed API because device localhost is the device,
+//   not the laptop running the Express server.
 export const API_BASE =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://scp-server-futtj2vwgq-el.a.run.app";
+  process.env.EXPO_PUBLIC_API_BASE_URL ??
+  (Platform.OS === "web" ? "http://localhost:4000" : "https://scp-server-futtj2vwgq-el.a.run.app");
 
 const TOKEN_KEY = "scp.accessToken";
 const REFRESH_KEY = "scp.refreshToken";

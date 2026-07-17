@@ -36,6 +36,12 @@ function pidsOnPort(port) {
         stdio: ["ignore", "pipe", "ignore"],
       });
       for (const pid of out.split(/\s+/).map((s) => s.trim()).filter(Boolean)) pids.add(pid);
+
+      const ssOut = execSync(`ss -ltnp 'sport = :${port}' || true`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      for (const match of ssOut.matchAll(/pid=(\d+)/g)) pids.add(match[1]);
     }
   } catch {
     // netstat/lsof unavailable or nothing bound — treat as no pids.

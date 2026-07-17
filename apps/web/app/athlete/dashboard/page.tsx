@@ -37,8 +37,8 @@ import {
   submitRpeMonitoringAction,
   submitRecoveryAction,
 } from "../../../lib/athleteActions";
-import { VoiceAssistantSheet } from "../../../components/VoiceAssistant/VoiceAssistantSheet";
-import { useSpeechRecognition } from "../../../components/VoiceAssistant/useSpeechRecognition";
+import { AskAgentButton, AskAgentFab, AskAgentSheet, type AskAgentHandle } from "../../../components/AskAgentSheet";
+import { useAutoStartTour, useTourAction } from "../../../lib/tour/TourProvider";
 
 type DailySession = {
   status: string | null;
@@ -316,6 +316,13 @@ export default function AthleteDashboardPage() {
     loadAll(date);
   }, [date, router, loadAll]);
 
+  useAutoStartTour("athlete");
+  useTourAction("athlete:section:progress", useCallback(() => setSection("progress"), []));
+  useTourAction("athlete:progress:water", useCallback(() => setProgressTab("water"), []));
+  useTourAction("athlete:progress:trends", useCallback(() => setProgressTab("trends"), []));
+  useTourAction("athlete:section:log", useCallback(() => setSection("log"), []));
+  useTourAction("athlete:section:coach", useCallback(() => setSection("coach"), []));
+
   async function logout() {
     await apiLogout();
     router.replace("/");
@@ -428,12 +435,12 @@ export default function AthleteDashboardPage() {
   const nav = athleteNav({ coachCount, coachBadge: coachComments.length });
   const greetingInitials = initialsOf(user?.name ?? "");
 
-  const [voiceOpen, setVoiceOpen] = useState(false);
+  const askAgentRef = useRef<AskAgentHandle>(null);
+  const [askAgentInputOpen, setAskAgentInputOpen] = useState(false);
+  const [askAgentListening, setAskAgentListening] = useState(false);
   const [voiceCoachId, setVoiceCoachId] = useState<string | null>(null);
-  const speechSupport = useSpeechRecognition();
 
   useEffect(() => {
-    if (!voiceOpen) return;
     let cancelled = false;
     (async () => {
       try {
@@ -448,7 +455,16 @@ export default function AthleteDashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [voiceOpen]);
+  }, []);
+
+  function startAskAgentVoice() {
+    setAskAgentInputOpen(false);
+    askAgentRef.current?.startVoice();
+  }
+
+  function openAskAgentInput() {
+    setAskAgentInputOpen(true);
+  }
 
   function handleVoiceNavigate(target: string) {
     if (target === "messages") {
@@ -523,7 +539,17 @@ export default function AthleteDashboardPage() {
           </div>
         </div>
       }
-      headerIcon={<CompactDatePicker value={date} onChange={setDate} label="Date" />}
+      headerIcon={
+        <>
+          <AskAgentButton
+            active={askAgentListening}
+            onVoice={startAskAgentVoice}
+            onInput={openAskAgentInput}
+            tourId="athlete-ask-agent"
+          />
+          <CompactDatePicker value={date} onChange={setDate} label="Date" />
+        </>
+      }
     >
       <div className="space-y-3">
         {error ? <Banner tone="bad">{error}</Banner> : null}
@@ -543,7 +569,7 @@ export default function AthleteDashboardPage() {
             ) : null}
 
             {/* Hero — readiness ring + guidance */}
-            <div className="hero-card p-5">
+            <div className="hero-card p-5" data-tour="athlete-hero">
               {loading ? (
                 <div className="flex flex-col items-center gap-3">
                   <div className="h-[150px] w-[150px] animate-pulse rounded-full bg-surface-inset" />
@@ -576,10 +602,12 @@ export default function AthleteDashboardPage() {
             </div>
 
             {/* Colour key — what green/amber/red mean */}
-            <BandLegend />
+            <div data-tour="athlete-legend">
+              <BandLegend />
+            </div>
 
             {/* Quick stats */}
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-3 gap-2" data-tour="athlete-stats">
               <StatTile
                 label="Sleep"
                 value={dash(card?.sleep.hours)}
@@ -592,6 +620,7 @@ export default function AthleteDashboardPage() {
             </div>
 
             {/* Training summary */}
+            <div data-tour="athlete-training-summary">
             <Card title="Training summary">
               <div className="space-y-2">
                 {SESSION_SLOTS.map((slot) => (
@@ -609,8 +638,10 @@ export default function AthleteDashboardPage() {
                 ))}
               </div>
             </Card>
+            </div>
 
             {/* Training load summary */}
+            <div data-tour="athlete-training-load">
             <Card title="Training load" action={<Icon.flame />}>
               {latestRpe ? (
                 <div>
@@ -641,6 +672,7 @@ export default function AthleteDashboardPage() {
                 {latestRpe ? "Edit in Log" : "Log session"}
               </button>
             </Card>
+            </div>
           </div>
         ) : null}
 
@@ -669,32 +701,40 @@ export default function AthleteDashboardPage() {
             </div>
 
             {progressTab === "goals" ? (
-              <AchievementsPanel
-                data={achievements}
-                loading={loading}
-                onCheckIn={() => setSection("log")}
-                onOpenHydration={() => setProgressTab("water")}
-                onOpenLog={() => setSection("log")}
-              />
+              <div data-tour="athlete-progress-goals">
+                <AchievementsPanel
+                  data={achievements}
+                  loading={loading}
+                  onCheckIn={() => setSection("log")}
+                  onOpenHydration={() => setProgressTab("water")}
+                  onOpenLog={() => setSection("log")}
+                />
+              </div>
             ) : null}
 
-            {progressTab === "water" ? <HydrationModule date={date} /> : null}
+            {progressTab === "water" ? (
+              <div data-tour="athlete-progress-water">
+                <HydrationModule date={date} />
+              </div>
+            ) : null}
 
             {progressTab === "trends" ? (
-              <ChartTabs
-                tabs={[
-                  { key: "readiness", label: "Readiness", node: <PerformanceTrendPanel base="/api/athlete" /> },
-                  { key: "hr", label: "Heart rate", node: <HeartRatePanel base="/api/athlete" /> },
-                  { key: "wellness", label: "Wellness", node: <WellnessTrendPanel base="/api/athlete" /> },
-                  { key: "performance", label: "Performance", node: <PerformancePanel base="/api/athlete" /> },
-                ]}
-              />
+              <div data-tour="athlete-progress-trends">
+                <ChartTabs
+                  tabs={[
+                    { key: "readiness", label: "Readiness", node: <PerformanceTrendPanel base="/api/athlete" /> },
+                    { key: "hr", label: "Heart rate", node: <HeartRatePanel base="/api/athlete" /> },
+                    { key: "wellness", label: "Wellness", node: <WellnessTrendPanel base="/api/athlete" /> },
+                    { key: "performance", label: "Performance", node: <PerformancePanel base="/api/athlete" /> },
+                  ]}
+                />
+              </div>
             ) : null}
           </div>
         ) : null}
 
         {section === "log" ? (
-          <div className="space-y-3 animate-rise">
+          <div className="space-y-3 animate-rise" data-tour="athlete-log-hub">
             {card ? (
               <SessionLogHub
                 card={card}
@@ -844,6 +884,7 @@ export default function AthleteDashboardPage() {
 
         {section === "coach" ? (
           <div className="space-y-3 animate-rise">
+            <div data-tour="athlete-coach-updates">
             <Card title="Coach updates">
               {announcements.length === 0 ? (
                 <p className="text-xs text-ink-faint">
@@ -864,7 +905,9 @@ export default function AthleteDashboardPage() {
                 </ul>
               )}
             </Card>
+            </div>
 
+            <div data-tour="athlete-coach-feedback">
             <Card title="Coach feedback">
               {coachComments.length === 0 ? (
                 <p className="text-xs text-ink-faint">
@@ -882,10 +925,13 @@ export default function AthleteDashboardPage() {
                 </ul>
               )}
             </Card>
+            </div>
 
+            <div data-tour="athlete-recent-activity">
             <Card title="Recent activity">
               <Timeline items={activity} />
             </Card>
+            </div>
           </div>
         ) : null}
       </div>
@@ -907,24 +953,18 @@ export default function AthleteDashboardPage() {
         submitHeartRate={submitHeartRate}
       />
 
-      {speechSupport.supported ? (
-        <div className="pointer-events-none fixed inset-x-0 bottom-20 z-30 flex justify-center">
-          <div className="flex w-full max-w-md justify-end px-4">
-            <button
-              onClick={() => setVoiceOpen(true)}
-              aria-label="Open voice assistant"
-              className="pointer-events-auto flex h-14 w-14 items-center justify-center rounded-full border border-accent bg-accent text-accent-ink shadow-hero"
-            >
-              <Icon.mic />
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      <VoiceAssistantSheet
-        open={voiceOpen}
-        onClose={() => setVoiceOpen(false)}
-        config={{
+      <AskAgentFab
+        active={askAgentListening}
+        onVoice={startAskAgentVoice}
+        onInput={openAskAgentInput}
+      />
+      <AskAgentSheet
+        ref={askAgentRef}
+        role="athlete"
+        inputOpen={askAgentInputOpen}
+        onCloseInput={() => setAskAgentInputOpen(false)}
+        onListeningChange={setAskAgentListening}
+        athleteConfig={{
           date,
           onNavigate: handleVoiceNavigate,
           getStatusSummary: getVoiceStatusSummary,

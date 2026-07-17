@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Pressable, StyleSheet, View } from "react-native";
 import { Text } from "./AppText";
 import { Ionicons } from "@expo/vector-icons";
@@ -62,6 +62,7 @@ export function DatePickerPill({
   accentInk = "#1a0c00",
   compact = false,
   iconOnly = false,
+  openSignal,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -72,10 +73,13 @@ export function DatePickerPill({
   compact?: boolean;
   /** Render only a calendar icon button (no date text) — for header action rows. */
   iconOnly?: boolean;
+  /** Increment this value to open the picker from an external command. */
+  openSignal?: number;
 }) {
   const selected = useMemo(() => parseDate(value), [value]);
   const [open, setOpen] = useState(false);
   const [viewMonth, setViewMonth] = useState(() => new Date(selected.getFullYear(), selected.getMonth(), 1));
+  const lastOpenSignal = useRef(openSignal);
   const today = useMemo(() => new Date(), []);
   const todayKey = dateKey(today);
   const selectedKey = dateKey(selected);
@@ -113,6 +117,13 @@ export function DatePickerPill({
     onChange(todayKey);
     setOpen(false);
   }
+
+  useEffect(() => {
+    if (openSignal === undefined) return;
+    if (lastOpenSignal.current === openSignal) return;
+    lastOpenSignal.current = openSignal;
+    openPicker();
+  }, [openSignal]);
 
   return (
     <>

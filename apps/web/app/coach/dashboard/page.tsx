@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card } from "../../../components/Card";
 import { Ring, bandFor } from "../../../components/Ring";
 import { Chip, StatTile, dash, wellnessTen, Icon } from "../../../components/ui";
 import { AppShell, type NavItem } from "../../../components/AppShell";
+import { AskAgentButton, AskAgentFab, AskAgentSheet, type AskAgentHandle } from "../../../components/AskAgentSheet";
 import { BottomSheet } from "../../../components/BottomSheet";
 import { TrendRow, type TrendPoint } from "../../../components/Trend";
 import { SquadTrendPanel, CoachNotesInbox } from "../../../components/charts/panels";
@@ -19,6 +20,7 @@ import {
 } from "../../../lib/api";
 import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../../lib/sessions";
 import { coachNav, coachNavigate } from "../../../lib/coachNav";
+import { useAutoStartTour } from "../../../lib/tour/TourProvider";
 
 type DailyCard = {
   athleteId: string;
@@ -73,6 +75,9 @@ export default function CoachDashboardPage() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<RosterFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const askAgentRef = useRef<AskAgentHandle>(null);
+  const [askAgentInputOpen, setAskAgentInputOpen] = useState(false);
+  const [askAgentListening, setAskAgentListening] = useState(false);
 
   const ranked = useMemo(
     () =>
@@ -134,6 +139,8 @@ export default function CoachDashboardPage() {
     };
   }, [date, router]);
 
+  useAutoStartTour("coach");
+
   async function logout() {
     await apiLogout();
     router.replace("/");
@@ -165,6 +172,11 @@ export default function CoachDashboardPage() {
 
   const nav = coachNav(user?.isAcademyOwner);
   const navigate = (key: string) => coachNavigate(router, key);
+  const startAskAgentVoice = () => {
+    setAskAgentInputOpen(false);
+    askAgentRef.current?.startVoice();
+  };
+  const openAskAgentInput = () => setAskAgentInputOpen(true);
 
   const subtitle =
     cards.length === 0
@@ -183,6 +195,11 @@ export default function CoachDashboardPage() {
       onSignOut={logout}
       headerActions={
         <div className="flex items-center gap-2">
+          <AskAgentButton
+            active={askAgentListening}
+            onVoice={startAskAgentVoice}
+            onInput={openAskAgentInput}
+          />
           <input
             value={date}
             onChange={(e) => setDate(e.target.value)}
@@ -198,7 +215,7 @@ export default function CoachDashboardPage() {
     >
       <div className="space-y-4">
         {/* KPI strip — what happened today */}
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2" data-tour="coach-kpi">
           <Kpi label="Athletes" value={cards.length} />
           <Kpi label="Present" value={stats.present} />
           <Kpi label="Sessions done" value={stats.completed} />
@@ -233,17 +250,23 @@ export default function CoachDashboardPage() {
           <>
             {/* What needs attention — triage first */}
             {attentionCards.length > 0 ? (
-              <AttentionStrip cards={attentionCards} onSelect={setSelectedId} />
+              <div data-tour="coach-attention">
+                <AttentionStrip cards={attentionCards} onSelect={setSelectedId} />
+              </div>
             ) : null}
 
             {/* Athlete messages needing a reply — surfaced, not buried */}
-            <CoachNotesInbox />
+            <div data-tour="coach-inbox">
+              <CoachNotesInbox />
+            </div>
 
             {/* What's the trend — squad analytics */}
-            <SquadTrendPanel />
+            <div data-tour="coach-trend">
+              <SquadTrendPanel />
+            </div>
 
             {/* The squad — compact, searchable roster; tap a row for detail */}
-            <div>
+            <div data-tour="coach-roster-list">
               <div className="mb-2 flex items-center justify-between">
                 <p className="label">Full roster</p>
                 <span className="nums text-[10px] text-ink-faint">
@@ -316,6 +339,27 @@ export default function CoachDashboardPage() {
       </div>
 
       <AthleteDetailSheet card={selected} date={date} onClose={() => setSelectedId(null)} />
+      <AskAgentFab
+        active={askAgentListening}
+        onVoice={startAskAgentVoice}
+        onInput={openAskAgentInput}
+        tourId="coach-ask-agent"
+      />
+      <AskAgentSheet
+        ref={askAgentRef}
+        role="coach"
+        inputOpen={askAgentInputOpen}
+        onCloseInput={() => setAskAgentInputOpen(false)}
+        onListeningChange={setAskAgentListening}
+        coachContext={{
+          date,
+          athleteCount: cards.length,
+          attentionCount: stats.attention,
+          presentCount: stats.present,
+          completedCount: stats.completed,
+          averageReadiness: stats.avgReadiness,
+        }}
+      />
     </AppShell>
   );
 }

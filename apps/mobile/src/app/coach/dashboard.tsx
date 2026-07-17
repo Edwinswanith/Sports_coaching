@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { Text } from "../../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { apiJson } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
@@ -10,6 +10,7 @@ import { SESSION_SLOTS, type SessionSlot } from "../../lib/sessions";
 import { Card, Muted } from "../../components/ui";
 import { ScreenHeader } from "../../components/ScreenHeader";
 import { DatePickerPill } from "../../components/DatePickerPill";
+import { useAutoStartMobileTour, useTourHighlight } from "../../lib/tour/MobileTourProvider";
 
 type DailyCard = {
   athleteId: string;
@@ -40,6 +41,21 @@ type NotesInbox = {
   notes: { noteId: string; athleteId: string; athleteName: string; date: string; body: string; needsReply: boolean }[];
 };
 type RosterFilter = "all" | "attention" | "injury" | "nocheck";
+type CoachAskReportRow = {
+  id: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  status: string;
+  detail: string;
+  tone?: "ok" | "warn" | "bad" | "neutral";
+  action?: "attention" | "injury" | "nocheck" | "roster" | "notes" | "analytics" | "messages" | "announcements";
+};
+type CoachAskReport = {
+  title: string;
+  subtitle: string;
+  summary: string;
+  rows: CoachAskReportRow[];
+};
 
 const ROSTER_FILTERS: { key: RosterFilter; label: string }[] = [
   { key: "all", label: "All" },
@@ -50,6 +66,21 @@ const ROSTER_FILTERS: { key: RosterFilter; label: string }[] = [
 
 function today() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function dateFromKey(key: string) {
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(year, (month || 1) - 1, day || 1);
+}
+
+function keyFromDate(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function addDays(key: string, days: number) {
+  const date = dateFromKey(key);
+  date.setDate(date.getDate() + days);
+  return keyFromDate(date);
 }
 
 function shortDate(value: string): string {
@@ -89,16 +120,26 @@ function attentionReason(card: DailyCard): string {
 }
 
 export default function CoachDashboard() {
+  useAutoStartMobileTour("coach");
+  const { highlightStyle: headerHighlight } = useTourHighlight("mobile-coach-header");
+  const { highlightStyle: kpiHighlight } = useTourHighlight("mobile-coach-kpis");
+  const { highlightStyle: attentionHighlight } = useTourHighlight("mobile-coach-attention");
+  const { highlightStyle: notesHighlight } = useTourHighlight("mobile-coach-notes");
+  const { highlightStyle: analyticsHighlight } = useTourHighlight("mobile-coach-analytics");
   const accent = ROLE_THEMES.coach.accent;
   const router = useRouter();
+  const params = useLocalSearchParams<{ ask?: string; t?: string }>();
   const [date, setDate] = useState(() => today());
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [squadSeries, setSquadSeries] = useState<SquadPoint[]>([]);
   const [notesInbox, setNotesInbox] = useState<NotesInbox | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [askReport, setAskReport] = useState<CoachAskReport | null>(null);
+  const [askInputOpen, setAskInputOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<RosterFilter>("all");
+  const [calendarOpenSignal, setCalendarOpenSignal] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -123,6 +164,10 @@ export default function CoachDashboard() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (params.ask === "calendar") setCalendarOpenSignal((value) => value + 1);
+  }, [params.ask, params.t]);
 
   const cards = useMemo(() => data?.cards ?? [], [data?.cards]);
   const ranked = useMemo(
@@ -171,6 +216,276 @@ export default function CoachDashboard() {
     } as never);
   }
 
+  function showAskReport(report: CoachAskReport) {
+    setAskReport(report);
+  }
+
+  function athleteRows(list: DailyCard[], emptyLabel: string): CoachAskReportRow[] {
+    if (!list.length) {
+      return [{
+        id: "empty",
+        icon: "checkmark-done-outline",
+        label: emptyLabel,
+        status: "0",
+        detail: "No matching athletes found for this request.",
+        tone: "ok",
+      }];
+    }
+    return list.map((card) => ({
+      id: `athlete-${card.athleteId}`,
+      icon: card.injury?.active ? "medkit-outline" : card.attendance?.status === "absent" ? "close-circle-outline" : "person-outline",
+      label: card.name || "Athlete",
+      status: card.readinessScore == null ? "-" : String(card.readinessScore),
+      detail: [
+        card.sport,
+        card.position,
+        card.attendance?.status ? `attendance ${card.attendance.status}` : null,
+        card.injury?.active ? attentionReason(card) : null,
+      ].filter(Boolean).join(" · ") || "No extra details.",
+      tone: card.injury?.active || card.attendance?.status === "absent" ? "bad" : attentionRank(card) < 2 ? "warn" : "ok",
+      action: "roster" as const,
+    }));
+  }
+
+  function buildCoachReport(kind: "summary" | "attention" | "injury" | "absent" | "nocheck" | "notes" | "roster" | "best"): CoachAskReport {
+    const latest = squadSeries.length ? squadSeries[squadSeries.length - 1] : null;
+    const attentionCount = attentionCards.length;
+    const injuryCount = filterCounts.injury;
+    const absentCards = cards.filter((card) => card.attendance?.status === "absent");
+    const nocheckCount = filterCounts.nocheck;
+    const noteCount = notesInbox?.openCount ?? 0;
+    const best = [...cards].sort((a, b) => {
+      const aSessions = SESSION_SLOTS.filter((slot) => a.sessions?.[slot]?.status === "completed").length;
+      const bSessions = SESSION_SLOTS.filter((slot) => b.sessions?.[slot]?.status === "completed").length;
+      const aPenalty = attentionRank(a) < 2 ? 30 : 0;
+      const bPenalty = attentionRank(b) < 2 ? 30 : 0;
+      const aScore = (a.readinessScore ?? 0) + aSessions * 8 - aPenalty;
+      const bScore = (b.readinessScore ?? 0) + bSessions * 8 - bPenalty;
+      return bScore - aScore;
+    })[0] ?? null;
+    const rows: CoachAskReportRow[] = [
+      {
+        id: "athletes",
+        icon: "people-outline",
+        label: "Athletes",
+        status: String(cards.length),
+        detail: `${present} present today.`,
+        tone: "neutral",
+        action: "roster",
+      },
+      {
+        id: "attention",
+        icon: "alert-circle-outline",
+        label: "Needs attention",
+        status: String(attentionCount),
+        detail: attentionCards.slice(0, 2).map((card) => `${card.name}: ${attentionReason(card)}`).join(" · ") || "No current attention flags.",
+        tone: attentionCount ? "bad" : "ok",
+        action: "attention",
+      },
+      {
+        id: "readiness",
+        icon: "pulse-outline",
+        label: "Avg readiness",
+        status: avg == null ? "-" : String(avg),
+        detail: latest?.avgReadiness == null ? "Current dashboard average." : `30d latest readiness ${Math.round(latest.avgReadiness)}.`,
+        tone: avg == null ? "neutral" : avg >= 75 ? "ok" : avg >= 60 ? "warn" : "bad",
+        action: "analytics",
+      },
+      {
+        id: "load",
+        icon: "flame-outline",
+        label: "Avg load",
+        status: latest?.avgLoad == null ? "-" : String(Math.round(latest.avgLoad)),
+        detail: `${latest?.redFlags ?? attentionCards.filter((card) => card.rpe?.riskFlag === "red").length} red load flag${(latest?.redFlags ?? 0) === 1 ? "" : "s"}.`,
+        tone: (latest?.redFlags ?? 0) > 0 ? "warn" : "ok",
+        action: "analytics",
+      },
+      {
+        id: "sessions",
+        icon: "checkmark-done-outline",
+        label: "Sessions done",
+        status: String(completed),
+        detail: `${completed} athlete${completed === 1 ? "" : "s"} have a completed session today.`,
+        tone: completed >= cards.length ? "ok" : "warn",
+        action: "analytics",
+      },
+      {
+        id: "notes",
+        icon: "document-text-outline",
+        label: "Athlete notes",
+        status: String(noteCount),
+        detail: notesInbox ? `${noteCount} note${noteCount === 1 ? "" : "s"} need reply.` : "Notes are not loaded yet.",
+        tone: noteCount ? "warn" : "ok",
+        action: "notes",
+      },
+    ];
+    const filtered =
+      kind === "attention" ? rows.filter((row) => row.id === "attention" || row.id === "load" || row.id === "readiness")
+      : kind === "best" ? [
+          {
+            id: "best-athlete",
+            icon: "trophy-outline" as keyof typeof Ionicons.glyphMap,
+            label: best?.name ?? "Best athlete",
+            status: best?.readinessScore == null ? "-" : String(best.readinessScore),
+            detail: best
+              ? `Top today from readiness, completed sessions, and risk flags. ${attentionRank(best) < 2 ? attentionReason(best) : "No major risk flag."}`
+              : "No athlete data is available yet.",
+            tone: best && attentionRank(best) >= 2 ? "ok" as const : "warn" as const,
+            action: "roster" as const,
+          },
+        ]
+      : kind === "injury" ? athleteRows(cards.filter((card) => card.injury?.active), "No injured athletes")
+      : kind === "absent" ? athleteRows(absentCards, "No absent athletes")
+      : kind === "nocheck" ? [{
+          id: "nocheck",
+          icon: "help-circle-outline" as keyof typeof Ionicons.glyphMap,
+          label: "No check-in",
+          status: String(nocheckCount),
+          detail: nocheckCount ? `${nocheckCount} athlete${nocheckCount === 1 ? "" : "s"} have not checked in.` : "Every athlete has a readiness value.",
+          tone: nocheckCount ? "warn" as const : "ok" as const,
+          action: "nocheck" as const,
+        }, ...rows.filter((row) => row.id === "athletes")]
+      : kind === "notes" ? rows.filter((row) => row.id === "notes" || row.id === "athletes")
+      : kind === "roster" ? athleteRows(ranked, "No athletes")
+      : rows;
+    return {
+      title:
+        kind === "attention" ? "Attention Report"
+        : kind === "best" ? "Best Athlete"
+        : kind === "injury" ? "Injury Report"
+        : kind === "absent" ? "Absent Athletes"
+        : kind === "nocheck" ? "Check-in Report"
+        : kind === "notes" ? "Athlete Notes"
+        : kind === "roster" ? "Roster Report"
+        : "Squad Report",
+      subtitle: date,
+      summary:
+        kind === "best"
+          ? (best ? `${best.name} is top today from readiness, completed sessions, and risk flags.` : "No athlete data is available yet.")
+          : kind === "injury"
+            ? `${injuryCount} injured athlete${injuryCount === 1 ? "" : "s"} today.`
+            : kind === "absent"
+              ? `${absentCards.length} absent athlete${absentCards.length === 1 ? "" : "s"} today.`
+              : `${cards.length} athletes · ${present} present · ${completed} sessions done · readiness ${avg == null ? "-" : avg}`,
+      rows: filtered,
+    };
+  }
+
+  function handleAskReportRow(row: CoachAskReportRow) {
+    setAskReport(null);
+    if (row.action === "messages") return router.push("/coach/messages" as never);
+    if (row.action === "announcements") return router.push("/coach/announcements" as never);
+    if (row.action === "attention") return setFilter("attention");
+    if (row.action === "injury") return setFilter("injury");
+    if (row.action === "nocheck") return setFilter("nocheck");
+    if (row.action === "roster") {
+      setQuery("");
+      return setFilter("all");
+    }
+    if (row.action === "notes" || row.action === "analytics") return;
+  }
+
+  async function handleAskAgent(command: string) {
+    const lower = command.toLowerCase().replace(/\bcouch\b/g, "coach").trim();
+    setAskReport(null);
+    if (!lower) {
+      showAskReport({
+        title: "Ask Agent",
+        subtitle: "Coach commands",
+        summary: "Try: squad report, show attention, open roster, open messages, or add athlete.",
+        rows: [],
+      });
+      return;
+    }
+    const mentionedAthlete = cards.find((card) => {
+      const name = card.name.toLowerCase();
+      return name && (lower.includes(name) || name.split(/\s+/).some((part) => part.length > 2 && lower.includes(part)));
+    });
+    if (mentionedAthlete && /\b(open|show|view|see|check|profile|details?)\b/.test(lower)) {
+      openAthlete(mentionedAthlete);
+      return;
+    }
+    if (/\b(notification|notifications|bell|alerts?)\b/.test(lower)) {
+      router.push("/notifications" as never);
+      return;
+    }
+    if (/\b(calendar|calender|date picker|pick date)\b/.test(lower)) {
+      setCalendarOpenSignal((value) => value + 1);
+      return;
+    }
+    if (/\byesterday\b/.test(lower)) {
+      setDate(addDays(today(), -1));
+      return;
+    }
+    if (/\btomorrow\b/.test(lower)) {
+      setDate(addDays(today(), 1));
+      return;
+    }
+    if (/\bnext day\b/.test(lower)) {
+      setDate((value) => addDays(value, 1));
+      return;
+    }
+    if (/\b(previous|prev|back) day\b/.test(lower)) {
+      setDate((value) => addDays(value, -1));
+      return;
+    }
+    if (/\b(message|messages|chat|inbox|dm|direct)\b/.test(lower)) {
+      router.push("/coach/messages" as never);
+      return;
+    }
+    if (/\b(announce|announcement|announcements|broadcast)\b/.test(lower)) {
+      router.push("/coach/announcements" as never);
+      return;
+    }
+    if (/\b(add|create|new|invite)\b.*\b(athlete|player|student)\b/.test(lower) || /\b(add athlete|new athlete)\b/.test(lower)) {
+      router.push("/coach/athletes/new" as never);
+      return;
+    }
+    if (/\b(attention|needs attention|risk|risks|flag|flags|red flag|low readiness|who needs|need attention)\b/.test(lower)) {
+      setFilter("attention");
+      showAskReport(buildCoachReport("attention"));
+      return;
+    }
+    if (/\b(absent|absented|absence|missing today|not present|who is absent|who are absent)\b/.test(lower)) {
+      showAskReport(buildCoachReport("absent"));
+      return;
+    }
+    if (/\b(injury|injuries|injured|hurt|pain)\b/.test(lower)) {
+      setFilter("injury");
+      showAskReport(buildCoachReport("injury"));
+      return;
+    }
+    if (/\b(no check|no check-in|nocheck|missing check|not checked|without check)\b/.test(lower)) {
+      setFilter("nocheck");
+      showAskReport(buildCoachReport("nocheck"));
+      return;
+    }
+    if (/\b(best|top|strongest|highest|leader|leading)\b.*\b(athlete|player|student|performer)\b/.test(lower) || /\bwho\s+is\s+(?:the\s+)?best\b/.test(lower)) {
+      showAskReport(buildCoachReport("best"));
+      return;
+    }
+    if (/\b(note|notes|reply|replies|feedback)\b/.test(lower)) {
+      showAskReport(buildCoachReport("notes"));
+      return;
+    }
+    if (/\b(analytics|trend|trends|report|reports|summary|readiness|attendance|present|load|sessions?)\b/.test(lower)) {
+      showAskReport(buildCoachReport("summary"));
+      return;
+    }
+    if (/\b(list|listout|list out|show|who|which)\b.*\b(roster|athletes|athlete|players|player|squad|team)\b/.test(lower) || /\b(roster|athletes|players|squad|team|all)\b/.test(lower)) {
+      setFilter("all");
+      setQuery("");
+      showAskReport(buildCoachReport("roster"));
+      return;
+    }
+    showAskReport({
+      title: "Ask Agent",
+      subtitle: "Coach commands",
+      summary: "Try: show attention, open roster, open messages, open announcements, add athlete, show notes, or squad report.",
+      rows: [],
+    });
+  }
+
   const filterCounts = useMemo(
     () => ({
       attention: cards.filter((card) => attentionRank(card) < 2).length,
@@ -194,8 +509,8 @@ export default function CoachDashboard() {
           dense
           inlineActions
           headerActions={
-            <View style={styles.headerActionRow}>
-              <DatePickerPill value={date} onChange={setDate} accent={accent} accentInk="#fff" compact />
+            <View style={[styles.headerActionRow, headerHighlight]}>
+              <DatePickerPill value={date} onChange={setDate} accent={accent} accentInk="#fff" compact openSignal={calendarOpenSignal} />
               <Pressable
                 onPress={() => router.push("/coach/athletes/new" as never)}
                 style={[styles.addButton, { backgroundColor: accent }]}
@@ -215,7 +530,7 @@ export default function CoachDashboard() {
           </Card>
         ) : (
           <>
-            <View style={styles.statGrid}>
+            <View style={[styles.statGrid, kpiHighlight]}>
               <Stat label="Athletes" value={String(data?.count ?? 0)} />
               <Stat label="Present" value={String(present)} />
               <Stat label="Sessions done" value={String(completed)} />
@@ -225,6 +540,7 @@ export default function CoachDashboard() {
             {cards.length > 0 ? (
               <>
                 {attentionCards.length > 0 ? (
+                  <View style={attentionHighlight}>
                   <Card style={styles.attentionCard}>
                     <View style={styles.sectionRow}>
                       <Text style={[styles.sectionLabel, { color: colors.bad }]}>Needs attention</Text>
@@ -240,14 +556,19 @@ export default function CoachDashboard() {
                       ))}
                     </View>
                   </Card>
+                  </View>
                 ) : null}
 
+                <View style={notesHighlight}>
                 <CoachNotesInbox inbox={notesInbox} onOpen={(athleteId) => {
                   const card = cards.find((item) => item.athleteId === athleteId);
                   if (card) openAthlete(card);
                 }} />
+                </View>
 
+                <View style={analyticsHighlight}>
                 <SquadTrendCard series={squadSeries} />
+                </View>
 
                 <View style={styles.rosterHeader}>
                   <Text style={styles.rosterTitle}>Full roster</Text>
@@ -315,6 +636,7 @@ export default function CoachDashboard() {
           </>
         )}
       </ScrollView>
+      {!askInputOpen ? <CoachAskReportSheet report={askReport} onClose={() => setAskReport(null)} onRowPress={handleAskReportRow} /> : null}
     </SafeAreaView>
   );
 }
@@ -350,6 +672,80 @@ function CoachNotesInbox({ inbox, onOpen }: { inbox: NotesInbox | null; onOpen: 
         </View>
       )}
     </Card>
+  );
+}
+
+function reportToneColor(tone: CoachAskReportRow["tone"]) {
+  if (tone === "ok") return colors.ok;
+  if (tone === "warn") return colors.warn;
+  if (tone === "bad") return colors.bad;
+  return colors.inkMuted;
+}
+
+function CoachAskReportSheet({
+  report,
+  onClose,
+  onRowPress,
+}: {
+  report: CoachAskReport | null;
+  onClose: () => void;
+  onRowPress: (row: CoachAskReportRow) => void;
+}) {
+  if (!report) return null;
+  return (
+    <View style={styles.askReportOverlay} pointerEvents="box-none">
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+      <View style={styles.askReportSheet}>
+        <View style={styles.askReportHandle} />
+        <View style={styles.askReportHeader}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.askReportTitle}>{report.title}</Text>
+            <Text style={styles.askReportSubtitle}>{report.subtitle}</Text>
+          </View>
+          <Pressable onPress={onClose} style={styles.askReportClose} accessibilityRole="button" accessibilityLabel="Close result">
+            <Ionicons name="close" size={18} color={colors.inkMuted} />
+          </Pressable>
+        </View>
+        <View style={styles.askReportSummary}>
+          <Ionicons name="sparkles-outline" size={15} color={ROLE_THEMES.coach.accent} />
+          <Text style={styles.askReportSummaryText}>{report.summary}</Text>
+        </View>
+        {report.rows.length ? (
+          <>
+            <View style={styles.askReportTableHead}>
+              <Text style={[styles.askReportHeadText, { flex: 1.2 }]}>Item</Text>
+              <Text style={[styles.askReportHeadText, styles.askReportStatusHead]}>Status</Text>
+            </View>
+            <ScrollView style={styles.askReportScroll} contentContainerStyle={styles.askReportRows} showsVerticalScrollIndicator>
+              {report.rows.map((row) => {
+                const toneColor = reportToneColor(row.tone);
+                return (
+                  <Pressable
+                    key={row.id}
+                    onPress={() => onRowPress(row)}
+                    style={({ pressed }) => [styles.askReportRow, row.action ? styles.askReportRowAction : null, pressed ? { opacity: 0.82 } : null]}
+                    accessibilityRole={row.action ? "button" : undefined}
+                    accessibilityLabel={row.action ? `Open ${row.label}` : undefined}
+                  >
+                    <View style={[styles.askReportIconBox, { backgroundColor: `${toneColor}16`, borderColor: `${toneColor}44` }]}>
+                      <Ionicons name={row.icon} size={16} color={toneColor} />
+                    </View>
+                    <View style={styles.askReportMainCell}>
+                      <Text style={styles.askReportLabel} numberOfLines={1}>{row.label}</Text>
+                      <Text style={styles.askReportDetail} numberOfLines={2}>{row.detail}</Text>
+                    </View>
+                    <View style={[styles.askReportStatusPill, { borderColor: `${toneColor}44`, backgroundColor: `${toneColor}12` }]}>
+                      <Text style={[styles.askReportStatusText, { color: toneColor }]} numberOfLines={1}>{row.status}</Text>
+                    </View>
+                    {row.action ? <Ionicons name="chevron-forward" size={15} color={colors.inkFaint} /> : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </>
+        ) : null}
+      </View>
+    </View>
   );
 }
 
@@ -478,6 +874,104 @@ const styles = StyleSheet.create({
   headerActionRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   addButton: { height: 38, borderRadius: radius.md, paddingHorizontal: 12, alignItems: "center", justifyContent: "center" },
   addButtonText: { color: "#fff", fontSize: 13, fontWeight: "900" },
+  askReportOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 1600,
+    elevation: 28,
+    justifyContent: "flex-end",
+  },
+  askReportSheet: {
+    marginHorizontal: 12,
+    marginBottom: 86,
+    maxHeight: 340,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceRaised,
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 12,
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.16,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 18,
+  },
+  askReportHandle: { alignSelf: "center", width: 38, height: 4, borderRadius: 999, backgroundColor: colors.lineStrong, marginBottom: 10 },
+  askReportHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  askReportTitle: { color: colors.ink, fontSize: 15, fontWeight: "900" },
+  askReportSubtitle: { marginTop: 1, color: colors.inkMuted, fontSize: 11, fontWeight: "700" },
+  askReportClose: {
+    height: 34,
+    width: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surface,
+  },
+  askReportSummary: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: `${ROLE_THEMES.coach.accent}22`,
+    backgroundColor: "#e9f8f2",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  askReportSummaryText: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 12, fontWeight: "800" },
+  askReportTableHead: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+    paddingBottom: 6,
+  },
+  askReportHeadText: { color: colors.inkFaint, fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1.4 },
+  askReportStatusHead: { width: 78, textAlign: "center" },
+  askReportScroll: { maxHeight: 190 },
+  askReportRows: { paddingTop: 4, gap: 6 },
+  askReportRow: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceInset,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  askReportRowAction: { borderWidth: 1, borderColor: "rgba(0,0,0,0.03)" },
+  askReportIconBox: {
+    height: 34,
+    width: 34,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  askReportMainCell: { flex: 1, minWidth: 0 },
+  askReportLabel: { color: colors.ink, fontSize: 12, fontWeight: "900" },
+  askReportDetail: { marginTop: 2, color: colors.inkMuted, fontSize: 11, lineHeight: 14 },
+  askReportStatusPill: {
+    width: 78,
+    minHeight: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 7,
+  },
+  askReportStatusText: { fontSize: 11, fontWeight: "900" },
   statGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 16 },
   stat: { flexGrow: 1, flexBasis: "47%", padding: 12 },
   statLabel: { fontSize: 10, color: colors.inkMuted, fontWeight: "800", letterSpacing: 1.2, textTransform: "uppercase" },
