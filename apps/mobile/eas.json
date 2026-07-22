@@ -10,9 +10,10 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://scp-server-futtj2vwgq-el.a.run.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://scp-server-895210689446.asia-south1.run.app",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "895210689446-ogejtfnpokvmh6kstejcj6oeag0cfl9o.apps.googleusercontent.com",
-        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "895210689446-56fadp5s6g8ublhig4l2qmrp0qfm44n2.apps.googleusercontent.com"
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "895210689446-56fadp5s6g8ublhig4l2qmrp0qfm44n2.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "895210689446-k1mose4899m83kg5o5ghho4rnqhalajc.apps.googleusercontent.com"
       }
     },
     "production": {
@@ -21,13 +22,18 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://scp-server-futtj2vwgq-el.a.run.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://scp-server-895210689446.asia-south1.run.app",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "895210689446-ogejtfnpokvmh6kstejcj6oeag0cfl9o.apps.googleusercontent.com",
-        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "895210689446-56fadp5s6g8ublhig4l2qmrp0qfm44n2.apps.googleusercontent.com"
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "895210689446-56fadp5s6g8ublhig4l2qmrp0qfm44n2.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "895210689446-k1mose4899m83kg5o5ghho4rnqhalajc.apps.googleusercontent.com"
       }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascAppId": "6789507544"
+      }
+    }
   }
 }

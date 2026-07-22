@@ -8,7 +8,7 @@ import { Platform } from "react-native";
 
 // Point at the deployed API. Override per-build with EXPO_PUBLIC_API_BASE_URL.
 export const API_BASE =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://scp-server-futtj2vwgq-el.a.run.app";
+  process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://scp-server-895210689446.asia-south1.run.app";
 
 const TOKEN_KEY = "scp.accessToken";
 const REFRESH_KEY = "scp.refreshToken";
@@ -146,6 +146,29 @@ export async function googleLogin(idToken: string, requestedRole: string): Promi
     const payload = (await res.json().catch(() => ({}))) as AuthPayload;
     if (!res.ok || !payload.user || !payload.accessToken) {
       return { ok: false, status: res.status, error: payload.error ?? "google_failed" };
+    }
+    await persist({ accessToken: payload.accessToken, refreshToken: payload.refreshToken }, payload.user);
+    return { ok: true, user: payload.user };
+  } catch {
+    return { ok: false, status: 0, error: "network_error" };
+  }
+}
+
+/** Exchange an Apple identity token for a session. First-time users use requestedRole. */
+export async function appleLogin(
+  identityToken: string,
+  requestedRole: string,
+  fullName?: string
+): Promise<LoginResult> {
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/auth/apple`, {
+      method: "POST",
+      headers: nativeHeaders(),
+      body: JSON.stringify({ identityToken, requestedRole, fullName, client: "native" }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as AuthPayload;
+    if (!res.ok || !payload.user || !payload.accessToken) {
+      return { ok: false, status: res.status, error: payload.error ?? "apple_failed" };
     }
     await persist({ accessToken: payload.accessToken, refreshToken: payload.refreshToken }, payload.user);
     return { ok: true, user: payload.user };

@@ -73,6 +73,9 @@ export const env = {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
+  // Native Sign in with Apple tokens use the iOS bundle identifier as audience.
+  // Override/extend with APPLE_CLIENT_ID when supporting more Apple clients.
+  appleClientIds: csv("APPLE_CLIENT_ID", "app.apex.coaching"),
   jwt: {
     accessSecret: requiredSecret("JWT_ACCESS_SECRET", "change_me_access"),
     refreshSecret: requiredSecret("JWT_REFRESH_SECRET", "change_me_refresh"),

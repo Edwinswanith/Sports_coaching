@@ -9,6 +9,7 @@ import { dashboardPathForRole, isKnownRole } from "../../lib/roles";
 import { useAuth } from "../../lib/auth";
 import { Banner, H1, Label, Muted, PrimaryButton, TextField } from "../../components/ui";
 import { GoogleSignInButton } from "../../components/GoogleSignInButton";
+import { AppleSignInButton } from "../../components/AppleSignInButton";
 
 export default function LoginScreen() {
   const params = useLocalSearchParams<{ role: string }>();
@@ -102,6 +103,7 @@ export default function LoginScreen() {
             />
 
             <GoogleSignInButton requestedRole={role} onError={setError} />
+            <AppleSignInButton requestedRole={role} onError={setError} />
 
             {role === "athlete" ? (
               <Pressable onPress={() => router.push("/register" as never)} style={styles.registerLink} hitSlop={8}>

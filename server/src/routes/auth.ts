@@ -1,7 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import { Types } from "mongoose";
-import { randomBytes } from "crypto";
+import { createPublicKey, randomBytes, type JsonWebKey as NodeJsonWebKey } from "crypto";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import { User, type UserDoc } from "../models/User";
 import { AthleteProfile } from "../models/AthleteProfile";
 import {
@@ -157,6 +158,67 @@ function checkLoginRateLimit(req: Request): boolean {
   return true;
 }
 
+type SocialSignupRole = "athlete" | "coach";
+
+function requestedSelfSignupRole(requestedRole: unknown): SocialSignupRole | null {
+  const normalized =
+    typeof requestedRole === "string" ? requestedRole.trim().toLowerCase() : undefined;
+  if (normalized === undefined || normalized === "athlete") return "athlete";
+  if (normalized === "coach") return "coach";
+  return null;
+}
+
+async function findOrCreateSocialUser(input: {
+  email: string;
+  name?: string;
+  requestedRole: unknown;
+}): Promise<{ user: UserDoc | null; error?: { status: number; code: string } }> {
+  const email = input.email.trim().toLowerCase();
+  let user = await User.findOne({ email });
+
+  if (user && !user.isActive) {
+    return { user: null, error: { status: 403, code: "account_disabled" } };
+  }
+
+  if (!user) {
+    const signupRole = requestedSelfSignupRole(input.requestedRole);
+    if (!signupRole) {
+      return { user: null, error: { status: 400, code: "self_signup_role_not_supported" } };
+    }
+
+    const displayName =
+      typeof input.name === "string" && input.name.trim()
+        ? input.name.trim()
+        : email.split("@")[0];
+    const randomHash = await bcrypt.hash(randomBytes(24).toString("hex"), 10);
+    try {
+      user = await User.create({
+        email,
+        passwordHash: randomHash,
+        role: signupRole,
+        name: displayName,
+        isActive: true,
+        mustChangePassword: false,
+      });
+      if (signupRole === "athlete") {
+        await AthleteProfile.create({ userId: user._id, sport: "Not set" });
+      }
+    } catch (err) {
+      if (user) await User.deleteOne({ _id: user._id }).catch(() => undefined);
+      if ((err as { code?: number }).code === 11000) {
+        user = await User.findOne({ email });
+      } else {
+        throw err;
+      }
+      if (!user) {
+        return { user: null, error: { status: 500, code: "signup_failed" } };
+      }
+    }
+  }
+
+  return { user };
+}
+
 router.post("/login", async (req: Request, res: Response) => {
   if (!checkLoginRateLimit(req)) {
     res.status(429).json({ error: "too_many_login_attempts" });
@@ -215,10 +277,6 @@ router.post("/google", async (req: Request, res: Response) => {
 
   const credential =
     typeof req.body?.credential === "string" ? req.body.credential : "";
-  const requestedRole =
-    typeof req.body?.requestedRole === "string"
-      ? req.body.requestedRole.trim().toLowerCase()
-      : undefined;
   if (!credential) {
     res.status(400).json({ error: "missing_credential" });
     return;
@@ -251,59 +309,105 @@ router.post("/google", async (req: Request, res: Response) => {
     return;
   }
 
-  const email = info.email.trim().toLowerCase();
-  let user = await User.findOne({ email });
-
-  // A disabled existing account is never silently reactivated.
-  if (user && !user.isActive) {
-    res.status(403).json({ error: "account_disabled" });
+  const { user, error } = await findOrCreateSocialUser({
+    email: info.email,
+    name: info.name,
+    requestedRole: req.body?.requestedRole,
+  });
+  if (error || !user) {
+    res.status(error?.status ?? 500).json({ error: error?.code ?? "signup_failed" });
     return;
   }
 
-  // Google sign-up: first-time Google identities are provisioned according to
-  // the selected login role. Existing users never change role here.
-  if (!user) {
-    const signupRole =
-      requestedRole === undefined || requestedRole === "athlete"
-        ? "athlete"
-        : requestedRole === "coach"
-        ? "coach"
-        : null;
-    if (!signupRole) {
-      res.status(400).json({ error: "self_signup_role_not_supported" });
-      return;
-    }
+  const tokens = await issueTokensForUser(user, res);
+  res.json(authResponsePayload(req, tokens, user));
+});
 
-    const displayName =
-      typeof info.name === "string" && info.name.trim()
-        ? info.name.trim()
-        : email.split("@")[0];
-    const randomHash = await bcrypt.hash(randomBytes(24).toString("hex"), 10);
-    try {
-      user = await User.create({
-        email,
-        passwordHash: randomHash,
-        role: signupRole,
-        name: displayName,
-        isActive: true,
-        mustChangePassword: false,
-      });
-      if (signupRole === "athlete") {
-        await AthleteProfile.create({ userId: user._id, sport: "Not set" });
-      }
-    } catch (err) {
-      if (user) await User.deleteOne({ _id: user._id }).catch(() => undefined);
-      // Race: the account was created between the lookup and insert — reuse it.
-      if ((err as { code?: number }).code === 11000) {
-        user = await User.findOne({ email });
-      } else {
-        throw err;
-      }
-      if (!user) {
-        res.status(500).json({ error: "signup_failed" });
-        return;
-      }
-    }
+type AppleJwk = NodeJsonWebKey & { kid?: string; alg?: string };
+type AppleJwks = { keys?: AppleJwk[] };
+type AppleTokenPayload = jwt.JwtPayload & {
+  email?: string;
+  email_verified?: string | boolean;
+};
+
+let appleJwksCache: { keys: AppleJwk[]; expiresAt: number } | null = null;
+
+async function applePublicKeys(): Promise<AppleJwk[]> {
+  const now = Date.now();
+  if (appleJwksCache && appleJwksCache.expiresAt > now) return appleJwksCache.keys;
+
+  const response = await fetch("https://appleid.apple.com/auth/keys");
+  if (!response.ok) throw new Error("apple_jwks_fetch_failed");
+  const body = (await response.json()) as AppleJwks;
+  const keys = Array.isArray(body.keys) ? body.keys : [];
+  appleJwksCache = { keys, expiresAt: now + 60 * 60 * 1000 };
+  return keys;
+}
+
+async function verifyAppleIdentityToken(identityToken: string): Promise<AppleTokenPayload> {
+  const decoded = jwt.decode(identityToken, { complete: true });
+  const kid = decoded && typeof decoded === "object" ? decoded.header.kid : undefined;
+  if (!kid) throw new Error("missing_apple_key_id");
+
+  const key = (await applePublicKeys()).find((candidate) => candidate.kid === kid);
+  if (!key) throw new Error("unknown_apple_key_id");
+
+  const publicKey = createPublicKey({ key, format: "jwk" });
+  const audience =
+    env.appleClientIds.length > 0
+      ? (env.appleClientIds as [string, ...string[]])
+      : "app.apex.coaching";
+  const payload = jwt.verify(identityToken, publicKey, {
+    algorithms: ["RS256"],
+    issuer: "https://appleid.apple.com",
+    audience,
+  });
+  return payload as AppleTokenPayload;
+}
+
+/**
+ * POST /api/auth/apple
+ * body: { identityToken, requestedRole, fullName? }
+ *
+ * Native Sign in with Apple returns a signed identity token. We verify it
+ * against Apple's JWKS, then sign in existing users or self-provision first-time
+ * athlete/coach accounts based on the selected role.
+ */
+router.post("/apple", async (req: Request, res: Response) => {
+  if (!checkLoginRateLimit(req)) {
+    res.status(429).json({ error: "too_many_login_attempts" });
+    return;
+  }
+
+  const identityToken =
+    typeof req.body?.identityToken === "string" ? req.body.identityToken : "";
+  if (!identityToken) {
+    res.status(400).json({ error: "missing_credential" });
+    return;
+  }
+
+  let info: AppleTokenPayload;
+  try {
+    info = await verifyAppleIdentityToken(identityToken);
+  } catch {
+    res.status(401).json({ error: "invalid_apple_token" });
+    return;
+  }
+
+  const emailVerified = info.email_verified === true || info.email_verified === "true";
+  if (!emailVerified || !info.email) {
+    res.status(401).json({ error: "invalid_apple_token" });
+    return;
+  }
+
+  const { user, error } = await findOrCreateSocialUser({
+    email: info.email,
+    name: typeof req.body?.fullName === "string" ? req.body.fullName : undefined,
+    requestedRole: req.body?.requestedRole,
+  });
+  if (error || !user) {
+    res.status(error?.status ?? 500).json({ error: error?.code ?? "signup_failed" });
+    return;
   }
 
   const tokens = await issueTokensForUser(user, res);

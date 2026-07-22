@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, View } from "react-native";
 import { Text } from "./AppText";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -13,12 +13,16 @@ import { colors, radius } from "../lib/theme";
 const WEB_CLIENT_ID =
   process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ??
   "895210689446-ogejtfnpokvmh6kstejcj6oeag0cfl9o.apps.googleusercontent.com";
+const IOS_CLIENT_ID =
+  process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ??
+  "895210689446-k1mose4899m83kg5o5ghho4rnqhalajc.apps.googleusercontent.com";
 
 let configured = false;
 function ensureConfigured() {
   if (!configured) {
     GoogleSignin.configure({
       webClientId: WEB_CLIENT_ID,
+      iosClientId: IOS_CLIENT_ID,
       scopes: ["profile", "email"],
     });
     configured = true;
@@ -33,6 +37,9 @@ function googleErrorMessage(error: unknown): string {
     return "Google Play Services is not available or needs an update.";
   }
   if (code === "10" || code === "DEVELOPER_ERROR") {
+    if (Platform.OS === "ios") {
+      return "Google Sign-In is not configured for this iOS build. Check the iOS OAuth client ID, bundle ID, and URL scheme.";
+    }
     return "Google Sign-In is not configured for this Android build. Check the app package name and signing SHA in Google Cloud/Firebase.";
   }
   if (code) return `Google sign-in failed on this device (${code}).`;
@@ -55,7 +62,9 @@ export function GoogleSignInButton({
     setLoading(true);
     try {
       ensureConfigured();
-      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      if (Platform.OS === "android") {
+        await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      }
       const resp = (await GoogleSignin.signIn()) as {
         type?: string;
         data?: { idToken?: string | null } | null;

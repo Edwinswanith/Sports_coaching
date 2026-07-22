@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import {
   login as apiLogin,
   googleLogin as apiGoogleLogin,
+  appleLogin as apiAppleLogin,
   registerAthlete as apiRegisterAthlete,
   loadSession,
   logout as apiLogout,
@@ -16,6 +17,11 @@ type AuthValue = {
   user: StoredUser | null;
   signIn: (email: string, password: string) => ReturnType<typeof apiLogin>;
   signInWithGoogle: (idToken: string, requestedRole: Role) => ReturnType<typeof apiGoogleLogin>;
+  signInWithApple: (
+    identityToken: string,
+    requestedRole: Role,
+    fullName?: string
+  ) => ReturnType<typeof apiAppleLogin>;
   signUp: (fields: Parameters<typeof apiRegisterAthlete>[0]) => ReturnType<typeof apiRegisterAthlete>;
   signOut: () => Promise<void>;
   setUser: (u: StoredUser) => void;
@@ -59,6 +65,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return result;
   }, []);
 
+  const signInWithApple = useCallback(async (identityToken: string, requestedRole: Role, fullName?: string) => {
+    const result = await apiAppleLogin(identityToken, requestedRole, fullName);
+    if (result.ok) {
+      setUserState(result.user);
+      setStatus("authed");
+    }
+    return result;
+  }, []);
+
   const signUp = useCallback(async (fields: Parameters<typeof apiRegisterAthlete>[0]) => {
     const result = await apiRegisterAthlete(fields);
     if (result.ok) {
@@ -77,8 +92,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const setUser = useCallback((u: StoredUser) => setUserState(u), []);
 
   const value = useMemo(
-    () => ({ status, user, signIn, signInWithGoogle, signUp, signOut, setUser }),
-    [status, user, signIn, signInWithGoogle, signUp, signOut, setUser]
+    () => ({ status, user, signIn, signInWithGoogle, signInWithApple, signUp, signOut, setUser }),
+    [status, user, signIn, signInWithGoogle, signInWithApple, signUp, signOut, setUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

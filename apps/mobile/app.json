@@ -9,7 +9,13 @@
     "scheme": "apex",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/images/icon.png",
+      "bundleIdentifier": "app.apex.coaching",
+      "buildNumber": "4",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "usesAppleSignIn": true
     },
     "android": {
       "adaptiveIcon": {
@@ -18,13 +24,19 @@
       },
       "package": "app.apex.coaching",
       "versionCode": 4,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE"
+      ]
     },
     "web": {
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./plugins/withModularHeaders",
       "expo-router",
       [
         "expo-splash-screen",
@@ -38,15 +50,18 @@
       ],
       "expo-secure-store",
       "expo-web-browser",
-      "@react-native-google-signin/google-signin",
-      "expo-audio",
-      "expo-video",
+      "expo-apple-authentication",
       [
-        "react-native-ble-plx",
+        "@react-native-google-signin/google-signin",
         {
-          "isBackgroundEnabled": false,
-          "modes": ["central"],
-          "bluetoothAlwaysPermission": "Allow Apex to connect to heart-rate and fitness sensors."
+          "iosUrlScheme": "com.googleusercontent.apps.895210689446-k1mose4899m83kg5o5ghho4rnqhalajc"
+        }
+      ],
+      [
+        "expo-video",
+        {
+          "supportsBackgroundPlayback": false,
+          "supportsPictureInPicture": false
         }
       ]
     ],

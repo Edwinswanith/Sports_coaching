@@ -3,6 +3,8 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import express from "express";
 import request from "supertest";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { generateKeyPairSync } from "crypto";
 import { User } from "../src/models/User";
 import { AthleteProfile } from "../src/models/AthleteProfile";
 import { CoachAthleteAssignment } from "../src/models/CoachAthleteAssignment";
@@ -347,6 +349,97 @@ describe("POST /api/auth/google self-signup roles", () => {
     });
     expect(await User.countDocuments({ email: "existing-role@test.io" })).toBe(1);
     expect(await AthleteProfile.countDocuments({ userId: user._id })).toBe(1);
+  });
+});
+
+describe("POST /api/auth/apple self-signup roles", () => {
+  let fetchSpy: jest.SpiedFunction<typeof fetch>;
+  let previousAppleClientIds: string[];
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const publicJwk = publicKey.export({ format: "jwk" }) as JsonWebKey;
+
+  beforeEach(() => {
+    previousAppleClientIds = [...env.appleClientIds];
+    env.appleClientIds = ["app.apex.coaching"];
+    fetchSpy = jest.spyOn(global, "fetch");
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        keys: [{ ...publicJwk, kid: "apple-test-key", alg: "RS256", use: "sig" }],
+      }),
+    } as Response);
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    env.appleClientIds = previousAppleClientIds;
+  });
+
+  function appleToken(email: string, audience = "app.apex.coaching") {
+    return jwt.sign(
+      {
+        iss: "https://appleid.apple.com",
+        aud: audience,
+        email,
+        email_verified: "true",
+        sub: `apple-${email}`,
+      },
+      privateKey,
+      { algorithm: "RS256", keyid: "apple-test-key", expiresIn: "5m" }
+    );
+  }
+
+  test("brand-new Apple athlete creates an independent athlete account", async () => {
+    const res = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({
+        identityToken: appleToken("apple.athlete@test.io"),
+        requestedRole: "athlete",
+        fullName: "Apple Athlete",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user).toMatchObject({
+      email: "apple.athlete@test.io",
+      name: "Apple Athlete",
+      role: "athlete",
+      academyId: null,
+      mustChangePassword: false,
+    });
+    const user = await User.findOne({ email: "apple.athlete@test.io" }).lean();
+    const profile = await AthleteProfile.findOne({ userId: user!._id }).lean();
+    expect(profile?.sport).toBe("Not set");
+    expect(await CoachAthleteAssignment.countDocuments({ athleteId: profile!._id })).toBe(0);
+  });
+
+  test("native Apple sign-in returns an explicit refresh token", async () => {
+    const res = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({
+        identityToken: appleToken("apple.coach@test.io"),
+        requestedRole: "coach",
+        client: "native",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user).toMatchObject({
+      email: "apple.coach@test.io",
+      role: "coach",
+    });
+    expect(typeof res.body.accessToken).toBe("string");
+    expect(typeof res.body.refreshToken).toBe("string");
+  });
+
+  test("Apple token with wrong audience is rejected", async () => {
+    const res = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({
+        identityToken: appleToken("wrong.aud@test.io", "other.bundle"),
+        requestedRole: "athlete",
+      });
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "invalid_apple_token" });
   });
 });
 
