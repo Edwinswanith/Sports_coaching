@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Text } from "../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -8,6 +8,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { apiFetch, changePassword, persistUser, type StoredUser } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLE_THEMES, colors, type RoleTheme } from "../lib/theme";
+import { DEFAULT_VOICE_LANGUAGE, VOICE_LANGUAGES, setVoiceLanguagePreference } from "../lib/voiceLanguage";
 import { Banner, Card, Label, Muted, PrimaryButton, TextField } from "../components/ui";
 import { Avatar, AvatarBadgePicker } from "../components/Avatar";
 
@@ -21,9 +22,14 @@ export default function Account() {
   const [confirm, setConfirm] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [voiceLanguage, setVoiceLanguage] = useState(user?.voiceLanguage ?? DEFAULT_VOICE_LANGUAGE);
 
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setVoiceLanguage(user?.voiceLanguage ?? DEFAULT_VOICE_LANGUAGE);
+  }, [user?.voiceLanguage]);
 
   async function applyAvatarResponse(res: Response) {
     const json = (await res.json().catch(() => ({}))) as {
@@ -95,6 +101,16 @@ export default function Account() {
       setAvatarError("Network error - please try again.");
     } finally {
       setAvatarBusy(false);
+    }
+  }
+
+  async function chooseVoiceLanguage(code: string) {
+    const nextCode = await setVoiceLanguagePreference(code);
+    setVoiceLanguage(nextCode);
+    if (user) {
+      const updated = { ...user, voiceLanguage: nextCode };
+      setUser(updated);
+      await persistUser(updated);
     }
   }
 
@@ -196,6 +212,35 @@ export default function Account() {
             {avatarError ? <Text style={styles.localErr}>{avatarError}</Text> : null}
           </Card>
 
+          <Text style={styles.section}>Voice language</Text>
+          <Card style={{ gap: 12 }}>
+            <Muted>Ask Agent listens and speaks using this language. Commands are translated before the agent runs them.</Muted>
+            <View style={styles.languageGrid}>
+              {VOICE_LANGUAGES.map((language) => {
+                const selected = voiceLanguage === language.code;
+                return (
+                  <Pressable
+                    key={language.code}
+                    onPress={() => chooseVoiceLanguage(language.code)}
+                    style={[
+                      styles.languageOption,
+                      selected ? { borderColor: theme.accent, backgroundColor: theme.accentSoft } : null,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                  >
+                    <Text style={[styles.languageLabel, selected ? { color: theme.accentStrong } : null]}>
+                      {language.label}
+                    </Text>
+                    <Text style={[styles.languageNative, selected ? { color: theme.accentStrong } : null]}>
+                      {language.nativeLabel}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </Card>
+
           <Text style={styles.section}>Change password</Text>
           <Card style={{ gap: 14 }}>
             <View>
@@ -264,6 +309,19 @@ const styles = StyleSheet.create({
   photoButtonText: { fontSize: 13, fontWeight: "700" },
   photoRemove: { paddingVertical: 4, paddingHorizontal: 4 },
   photoRemoveText: { fontSize: 12, fontWeight: "700", color: colors.bad },
+  languageGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  languageOption: {
+    minWidth: "31%",
+    flexGrow: 1,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 10,
+    backgroundColor: colors.surfaceInset,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  languageLabel: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  languageNative: { marginTop: 2, color: colors.inkMuted, fontSize: 12, fontWeight: "600" },
   signOut: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 24, paddingVertical: 12 },
   signOutText: { fontSize: 15, fontWeight: "700", color: colors.bad },
 });

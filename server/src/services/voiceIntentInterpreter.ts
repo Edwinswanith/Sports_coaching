@@ -57,6 +57,38 @@ export interface VoiceIntentInterpreter {
   interpret(input: VoiceInterpretInput): Promise<VoiceIntentResult>;
 }
 
+const NUMBER_WORDS: Record<string, number> = {
+  zero: 0,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+};
+
+function parseSpokenNumber(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const text = raw.toLowerCase().trim().replace(/-/g, " ");
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) return numeric;
+  const pointMatch = text.match(/^([a-z]+)\s+(?:point|dot)\s+([a-z]+|\d)$/);
+  if (pointMatch) {
+    const whole = NUMBER_WORDS[pointMatch[1]];
+    const decimal = NUMBER_WORDS[pointMatch[2]] ?? Number(pointMatch[2]);
+    if (whole !== undefined && Number.isFinite(decimal)) return whole + decimal / 10;
+  }
+  return NUMBER_WORDS[text];
+}
+
 const WRITE_INTENTS: VoiceIntentName[] = [
   "fill_wellness",
   "fill_attendance",
@@ -89,8 +121,8 @@ const RESPONSE_SCHEMA = {
           enum: ["today", "progress", "log", "coach", "messages", "water", "goals", "trends"],
           description: "navigate: which section/tab to open.",
         },
-        sleepHours: { type: "NUMBER", description: "fill_wellness: hours slept, 0-14." },
-        sleepQuality: { type: "NUMBER", description: "fill_wellness, fill_rpe: spoken 1-10 scale." },
+        sleepHours: { type: "NUMBER", description: "fill_wellness: hours slept, 0-14. Any daily sleep update — 'sleep', 'sleep score', 'sleep quality', or 'sleep duration' — maps here; there is no separate daily sleep-score field." },
+        sleepQuality: { type: "NUMBER", description: "fill_rpe only: this session's sleep quality, spoken 1-10 scale. Never populate for fill_wellness — daily sleep updates always use sleepHours instead." },
         mood: { type: "NUMBER", description: "fill_wellness, fill_rpe: spoken 1-10 scale." },
         stress: { type: "NUMBER", description: "fill_wellness: spoken 1-10 scale." },
         soreness: { type: "NUMBER", description: "fill_wellness, fill_rpe: spoken 1-10 scale." },
@@ -161,7 +193,11 @@ const SYSTEM_PROMPT =
   "internal 1-5 scale — do not convert). For fill_training, map natural workout descriptions like " +
   "'four by one hundred sprint repeats' to sets=4, reps='100m', workoutType='Sprints'. " +
   "fill_wellness is the athlete's own daily check-in (sleep, mood, stress, soreness, fatigue for the " +
-  "whole day) — use it for phrases like 'log my check-in' or 'I slept 7 hours'. fill_rpe is a " +
+  "whole day) — use it for phrases like 'log my check-in' or 'I slept 7 hours'. For update/change/set " +
+  "commands, 'sleep', 'sleep score', 'sleep quality', and 'sleep duration' all mean the same thing — " +
+  "sleepHours. There is no separate daily sleep-score field, so never populate sleepQuality for " +
+  "fill_wellness. If the user asks to update sleep without a number, return fill_wellness with " +
+  "missingFields ['sleepHours'] and ask how many hours. fill_rpe is a " +
   "per-session post-training report (slot, trainingCategory, effortRating/RPE, planned intensity, " +
   "sleepQuality, mood, soreness, fatigue, resting heart rate, body condition feedback) — use it when " +
   "the athlete describes how a specific AM/afternoon/PM session felt. fill_heart_rate is only for " +
@@ -232,12 +268,12 @@ export class GeminiVoiceIntentInterpreter implements VoiceIntentInterpreter {
     } catch {
       throw new Error("gemini_bad_json");
     }
-    return sanitizeVoiceIntentResult(parsed);
+    return sanitizeVoiceIntentResult(parsed, input.transcript);
   }
 }
 
 /** Trims/validates a raw model response into a safe, well-typed result. */
-function sanitizeVoiceIntentResult(raw: unknown): VoiceIntentResult {
+function sanitizeVoiceIntentResult(raw: unknown, transcript = ""): VoiceIntentResult {
   const r = (raw ?? {}) as Record<string, unknown>;
   const intent = VOICE_INTENTS.includes(r.intent as VoiceIntentName) ? (r.intent as VoiceIntentName) : "unsupported";
   const fields = r.fields && typeof r.fields === "object" ? (r.fields as Record<string, unknown>) : {};
@@ -249,11 +285,28 @@ function sanitizeVoiceIntentResult(raw: unknown): VoiceIntentResult {
   const missingFields = Array.isArray(r.missingFields) ? r.missingFields.filter((f): f is string => typeof f === "string") : [];
   const followUpQuestion = typeof r.followUpQuestion === "string" ? r.followUpQuestion : undefined;
   const spokenResponse = typeof r.spokenResponse === "string" ? r.spokenResponse : "Okay.";
+  const lower = transcript.toLowerCase();
+  // Sleep is one field — hours. Any daily sleep update, however phrased ("sleep",
+  // "sleep score", "sleep quality", "sleep duration"), always resolves to sleepHours;
+  // there is no separate sleep-score field to fill for fill_wellness.
+  const genericSleepUpdate = intent === "fill_wellness" &&
+    /\b(change|update|set|save|log|record)\b.*\bsleep\b/.test(lower);
+  if (genericSleepUpdate) {
+    if (typeof fields.sleepQuality === "number" && typeof fields.sleepHours !== "number") {
+      fields.sleepHours = fields.sleepQuality;
+    }
+    delete fields.sleepQuality;
+  }
+  const nextMissingFields = genericSleepUpdate && typeof fields.sleepHours !== "number"
+    ? Array.from(new Set([...missingFields.filter((field) => field !== "sleepQuality"), "sleepHours"]))
+    : missingFields;
   return {
     intent,
     fields,
-    missingFields,
-    followUpQuestion,
+    missingFields: nextMissingFields,
+    followUpQuestion: genericSleepUpdate && nextMissingFields.includes("sleepHours")
+      ? "How many hours of sleep would you like to log?"
+      : followUpQuestion,
     requiresConfirmation: requiresConfirmationFor(intent),
     spokenResponse,
   };
@@ -386,16 +439,19 @@ export class MockVoiceIntentInterpreter implements VoiceIntentInterpreter {
 
     if (/sleep|mood|stress|soreness|fatigue|check.?in/.test(t)) {
       const fields: Record<string, unknown> = {};
+      const numberToken = "(\\d+(?:\\.\\d+)?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen)\\s+(?:point|dot)\\s+(?:zero|one|two|three|four|five|six|seven|eight|nine|\\d))";
       const numNear = (label: RegExp) => {
-        const after = t.match(new RegExp(`(?:${label.source})[^0-9]{0,20}(\\d{1,2})`));
-        if (after) return Number(after[1]);
-        const before = t.match(new RegExp(`(\\d{1,2})[^a-z0-9]{0,12}(?:${label.source})`));
-        return before ? Number(before[1]) : undefined;
+        const after = t.match(new RegExp(`(?:${label.source}).{0,24}?${numberToken}`));
+        if (after) return parseSpokenNumber(after[1]);
+        const before = t.match(new RegExp(`${numberToken}.{0,16}?(?:${label.source})`));
+        return parseSpokenNumber(before?.[1]);
       };
-      const hours = t.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b/);
-      if (hours) fields.sleepHours = Number(hours[1]);
-      const quality = numNear(/sleep\s*quality|quality|sleep/);
-      if (quality !== undefined) fields.sleepQuality = quality;
+      const sleepDuration = t.match(new RegExp(`\\b(?:change|update|set|log|record|save)?\\s*(?:my\\s+|your\\s+)?sleep(?:\\s+(?:duration|hours?|score|quality))?\\s*(?:to|as|is|=|:)?\\s*${numberToken}(?:\\s*(?:hours?|hrs?))?\\b`)) ??
+        t.match(new RegExp(`${numberToken}\\s*(?:hours?|hrs?)\\b`));
+      const sleepHours = parseSpokenNumber(sleepDuration?.[1]);
+      // Sleep is one field — hours. "sleep", "sleep score", and "sleep quality" all
+      // resolve to sleepHours; there is no separate sleep-score field to fill here.
+      if (sleepHours !== undefined) fields.sleepHours = sleepHours;
       for (const [key, label] of [
         ["mood", /mood/],
         ["stress", /stress/],
@@ -405,10 +461,12 @@ export class MockVoiceIntentInterpreter implements VoiceIntentInterpreter {
         const value = numNear(label);
         if (value !== undefined) fields[key] = value;
       }
+      const genericSleepUpdate = /\b(?:change|update|set|log|record|save)\b.*\bsleep\b/.test(t) && fields.sleepHours === undefined;
       return {
         intent: "fill_wellness",
         fields,
-        missingFields: [],
+        missingFields: genericSleepUpdate ? ["sleepHours"] : [],
+        followUpQuestion: genericSleepUpdate ? "How many hours of sleep would you like to log?" : undefined,
         requiresConfirmation: true,
         spokenResponse: "Save this check-in?",
       };

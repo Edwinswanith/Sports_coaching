@@ -1,6 +1,7 @@
 import express from "express";
 import "express-async-errors";
 import cors from "cors";
+import { createServer } from "http";
 import { env } from "./config/env";
 import { connectMongo } from "./db/mongoose";
 import coachRouter from "./routes/coach";
@@ -10,6 +11,8 @@ import guardianRouter from "./routes/guardian";
 import notificationsRouter from "./routes/notifications";
 import avatarRouter from "./routes/avatar";
 import tourRouter from "./routes/tour";
+import voiceRouter from "./routes/voice";
+import { attachVoiceStreamProxy } from "./routes/voiceStream";
 import { errorHandler } from "./middleware/errorHandler";
 
 function isAllowedCorsOrigin(origin: string, allowedCorsOrigins: Set<string>): boolean {
@@ -63,6 +66,7 @@ async function main() {
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/me", avatarRouter);
   app.use("/api/tour", tourRouter);
+  app.use("/api/voice", voiceRouter);
 
   // 404 for unknown /api/* paths
   app.use("/api", (_req, res) => {
@@ -80,9 +84,12 @@ async function main() {
     console.error("[uncaughtException]", err);
   });
 
+  const server = createServer(app);
+  attachVoiceStreamProxy(server);
+
   await connectMongo();
 
-  app.listen(env.port, () => {
+  server.listen(env.port, () => {
     console.log(`[server] listening on http://localhost:${env.port}`);
   });
 }

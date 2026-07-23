@@ -10,6 +10,7 @@ import { useAuth } from "../auth";
 import type { Role } from "../roles";
 import { ROLE_THEMES, colors, radius } from "../theme";
 import { MOBILE_TOUR_STEPS, type MobileTourStep, type MobileTourStepContext } from "./steps";
+import { speakTourStep, stopTourNarration } from "./tourNarration";
 
 // Single switch for the guided tour's trigger behavior.
 //   false (default) — shows once per new user, then stays dismissed.
@@ -49,6 +50,8 @@ type TourState = {
   ready: boolean;
   note: string | null;
   noteLoading: boolean;
+  audioEnabled: boolean;
+  audioSpeaking: boolean;
 };
 
 export type TourHighlightStyle = ViewStyle;
@@ -72,6 +75,8 @@ const INITIAL_STATE: TourState = {
   ready: false,
   note: null,
   noteLoading: false,
+  audioEnabled: false,
+  audioSpeaking: false,
 };
 
 const TourContext = createContext<TourContextValue | null>(null);
@@ -188,6 +193,7 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
   const actionsRef = useRef(new Map<string, () => void>());
   const noteCacheRef = useRef(new Map<string, string>());
   const runIdRef = useRef(0);
+  const spokenStepRef = useRef<string | null>(null);
 
   useEffect(() => {
     pathnameRef.current = pathname;
@@ -209,14 +215,16 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const finish = useCallback(() => {
+    void stopTourNarration();
     setState((prev) => {
       if (prev.role && user?.id) {
         setStoredFlag(seenKey(user.id, prev.role)).catch(() => undefined);
       }
       return INITIAL_STATE;
     });
-  }, [user?.id]);
+  }, [user]);
 
+  const advanceToRef = useRef<(steps: MobileTourStep[], index: number, myRun: number) => void>(() => undefined);
   const advanceTo = useCallback(
     (steps: MobileTourStep[], index: number, myRun: number) => {
       if (index >= steps.length) {
@@ -226,11 +234,13 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
       const step = steps[index];
       const stepContext: MobileTourStepContext = { isAcademyOwner: user?.isAcademyOwner };
       if (step.skipIf && step.skipIf(stepContext)) {
-        advanceTo(steps, index + 1, myRun);
+        advanceToRef.current(steps, index + 1, myRun);
         return;
       }
 
-      setState((prev) => ({ ...prev, index, ready: false, note: null, noteLoading: false }));
+      void stopTourNarration();
+      spokenStepRef.current = null;
+      setState((prev) => ({ ...prev, index, ready: false, note: null, noteLoading: false, audioSpeaking: false }));
 
       const cameFromNav = Boolean(step.route) && pathnameRef.current !== step.route;
       if (cameFromNav && step.route) {
@@ -251,7 +261,7 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
           actionRan = true;
         }
         if (Date.now() > deadline) {
-          advanceTo(steps, index + 1, myRun);
+          advanceToRef.current(steps, index + 1, myRun);
           return;
         }
         setTimeout(poll, POLL_INTERVAL_MS);
@@ -260,6 +270,9 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
     },
     [finish, user?.isAcademyOwner]
   );
+  useEffect(() => {
+    advanceToRef.current = advanceTo;
+  }, [advanceTo]);
 
   const startTour = useCallback(
     (role: Role) => {
@@ -283,8 +296,37 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
 
   const skip = useCallback(() => {
     runIdRef.current++;
+    void stopTourNarration();
     finish();
   }, [finish]);
+
+  const speakCurrentStep = useCallback(
+    async (enableAudio: boolean, force = false) => {
+      const step = state.steps[state.index];
+      const message = [step?.title, state.note ?? step?.fallbackNote].filter(Boolean).join(". ");
+      if (!force && step?.id && spokenStepRef.current === step.id) return;
+      if (!message.trim()) return;
+      if (step?.id) spokenStepRef.current = step.id;
+      setState((prev) => ({ ...prev, audioEnabled: enableAudio || prev.audioEnabled, audioSpeaking: true }));
+      await speakTourStep(message).finally(() => {
+        setState((prev) => ({ ...prev, audioSpeaking: false }));
+      });
+    },
+    [state.index, state.note, state.steps]
+  );
+
+  const playAudio = useCallback(() => {
+    void speakCurrentStep(true);
+  }, [speakCurrentStep]);
+
+  const pauseAudio = useCallback(() => {
+    void stopTourNarration();
+    setState((prev) => ({ ...prev, audioEnabled: false, audioSpeaking: false }));
+  }, []);
+
+  const replayAudio = useCallback(() => {
+    void speakCurrentStep(true, true);
+  }, [speakCurrentStep]);
 
   // Fetch the AI-agent narration once the current step's target has confirmed
   // it's mounted; shows the fallback note instantly and swaps in the live
@@ -327,6 +369,15 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [state.active, state.ready, state.index, state.steps]);
+
+  useEffect(() => {
+    if (!state.active || !state.ready || !state.audioEnabled || state.noteLoading) return;
+    void speakCurrentStep(true);
+  }, [speakCurrentStep, state.active, state.audioEnabled, state.index, state.noteLoading, state.ready]);
+
+  useEffect(() => () => {
+    void stopTourNarration();
+  }, []);
 
   const currentStep = state.steps[state.index] ?? null;
   const isLast = state.index >= state.steps.length - 1;
@@ -371,6 +422,28 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
 
             <View style={styles.noteBox}>
               <Text style={styles.note} numberOfLines={4}>{state.note ?? currentStep?.fallbackNote ?? ""}</Text>
+            </View>
+
+            <View style={styles.audioRow}>
+              <Pressable
+                onPress={state.audioSpeaking ? pauseAudio : playAudio}
+                style={[styles.audioPrimary, { borderColor: theme.accent, backgroundColor: theme.accentSoft }]}
+                accessibilityRole="button"
+                accessibilityLabel={state.audioSpeaking ? "Pause tour audio" : "Play tour audio"}
+              >
+                <Ionicons name={state.audioSpeaking ? "pause" : "volume-high-outline"} size={15} color={theme.accentStrong} />
+                <Text style={[styles.audioPrimaryText, { color: theme.accentStrong }]}>
+                  {state.audioSpeaking ? "Pause" : state.audioEnabled ? "Audio on" : "Play audio"}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={replayAudio}
+                style={styles.audioIcon}
+                accessibilityRole="button"
+                accessibilityLabel="Replay tour audio"
+              >
+                <Ionicons name="refresh" size={15} color={colors.inkMuted} />
+              </Pressable>
             </View>
 
             <View style={styles.progressTrack}>
@@ -456,6 +529,27 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   note: { color: colors.inkMuted, fontSize: 12, lineHeight: 17, fontWeight: "500" },
+  audioRow: { marginTop: 8, flexDirection: "row", alignItems: "center", gap: 8 },
+  audioPrimary: {
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  audioPrimaryText: { fontSize: 12, fontWeight: "800" },
+  audioIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surfaceRaised,
+  },
   progressTrack: {
     marginTop: 10,
     height: 4,

@@ -216,13 +216,14 @@ function optionalStringField(v: unknown, max: number): string | undefined | fals
 
 function serializeSelfProfile(
   profile: Record<string, any>,
-  user: { _id: Types.ObjectId; name?: string; email?: string } | null
+  user: { _id: Types.ObjectId; name?: string; email?: string; createdAt?: Date } | null
 ) {
   return {
     athleteId: profile._id.toString(),
     userId: (profile.userId as Types.ObjectId).toString(),
     name: user?.name ?? "",
     email: user?.email ?? "",
+    createdAt: user?.createdAt instanceof Date ? user.createdAt.toISOString() : null,
     sport: profile.sport,
     position: profile.position ?? null,
     dob: profile.dob instanceof Date ? profile.dob.toISOString().slice(0, 10) : null,
@@ -270,7 +271,7 @@ router.get("/me", async (req: Request, res: Response) => {
     res.status(404).json({ error: "athlete_profile_not_found" });
     return;
   }
-  const user = await User.findById(req.actor.userId).select("name email").lean();
+  const user = await User.findById(req.actor.userId).select("name email createdAt").lean();
   res.json({ athlete: serializeSelfProfile(profile, user) });
 });
 
@@ -1339,7 +1340,10 @@ async function assertAssignedCoach(
     endedAt: null,
   });
   if (!active) {
-    res.status(403).json({ error: "coach_not_assigned" });
+    res.status(403).json({
+      error: "coach_not_assigned",
+      message: "First link with coach then you can enable to send message.",
+    });
     return null;
   }
   return coachId;

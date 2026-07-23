@@ -8,6 +8,7 @@ import {
   type StoredUser,
 } from "./api";
 import type { Role } from "./roles";
+import { loadVoiceLanguagePreference, setCachedVoiceLanguage } from "./voiceLanguage";
 
 type Status = "loading" | "authed" | "anon";
 
@@ -40,6 +41,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (user?.voiceLanguage) {
+      setCachedVoiceLanguage(user.voiceLanguage);
+      void loadVoiceLanguagePreference(user.voiceLanguage);
+    } else {
+      void loadVoiceLanguagePreference();
+    }
+  }, [user?.voiceLanguage]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     const result = await apiLogin(email, password);

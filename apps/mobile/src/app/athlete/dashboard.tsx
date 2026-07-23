@@ -8,7 +8,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from "expo-notifications";
 import { BarChart } from "react-native-chart-kit";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { startVoiceSession } from "../../lib/voiceSession";
+import { speakAgentReply } from "../../lib/agentSpeech";
+import { startVoiceConversation, type VoiceConversationHandle } from "../../lib/voiceSession";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { useAnimatedStyle, useSharedValue, withTiming, type SharedValue } from "react-native-reanimated";
 import Svg, { Circle, Line, Path, Rect, Text as SvgText } from "react-native-svg";
@@ -19,7 +20,7 @@ import { type MessageParty, type MessageView } from "../../components/MessageCen
 import { ChatMediaBubble } from "../../components/ChatMediaBubble";
 import { ProfileMenu } from "../../components/ProfileMenu";
 import { Ring } from "../../components/Ring";
-import { apiFetch, apiJson, API_BASE, getAccessToken } from "../../lib/api";
+import { apiFetch, apiJson, API_BASE, getAccessToken, loadSession } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../lib/sessions";
 import { TRAINING_CATEGORIES } from "../../lib/trainingCategories";
@@ -165,6 +166,17 @@ type VoiceInterpretResult = {
   followUpQuestion?: string;
   spokenResponse?: string;
 };
+type AskPendingGeminiIntent = {
+  intent: VoiceIntentName;
+  collected: Record<string, unknown>;
+  missingFields: string[];
+};
+type AskSessionWizardField = "trainingCategory" | "rpe" | "plannedIntensityPercent" | "muscleSoreness" | "fatigue" | "moodMotivation";
+type AskSessionWizard = {
+  slot: SessionSlot;
+  patch: TrainingCommandPatch;
+  remaining: AskSessionWizardField[];
+};
 type AskLogEntry = {
   id: string;
   role: "user" | "agent";
@@ -179,13 +191,36 @@ type AskInfoRow = {
   status: string;
   detail: string;
   tone?: "ok" | "warn" | "bad" | "neutral";
-  action?: { type: "section"; section: Section; slot?: SessionSlot; progressTab?: ProgressTab } | { type: "coachThread"; coachId?: string };
+  action?: { type: "section"; section: Section; slot?: SessionSlot; progressTab?: ProgressTab } | { type: "coachThread"; coachId?: string } | { type: "notifications" };
 };
 type AskInfoResult = {
+  kind?: "data" | "report" | "suggestion";
   title: string;
   subtitle: string;
   summary: string;
+  body?: string;
+  sections?: { heading: string; text: string }[];
   rows: AskInfoRow[];
+};
+type AthleteSelfProfile = {
+  name: string;
+  email: string;
+  createdAt: string | null;
+  sport?: string | null;
+  position?: string | null;
+  dob?: string | null;
+  heightCm?: number | null;
+  weightKg?: number | null;
+  timezone?: string | null;
+  hydrationGoalMl?: number | null;
+};
+type NotificationView = {
+  id: string;
+  title: string;
+  body: string;
+  priority: "low" | "medium" | "high";
+  read: boolean;
+  createdAt: string;
 };
 
 type WellnessForm = {
@@ -316,6 +351,16 @@ function wellnessStoredFromTen(value: number): number {
   return 1 + ((v - 1) * 4) / 9;
 }
 
+function sleepQualityFromDurationHours(hours: number): number {
+  if (hours >= 7.5 && hours <= 9) return wellnessStoredFromTen(9);
+  if (hours >= 7 && hours < 7.5) return wellnessStoredFromTen(8);
+  if (hours >= 6.5 && hours < 7) return wellnessStoredFromTen(7);
+  if (hours >= 6 && hours < 6.5) return wellnessStoredFromTen(6);
+  if (hours >= 5.5 && hours < 6) return wellnessStoredFromTen(5);
+  if (hours > 9 && hours <= 10) return wellnessStoredFromTen(7);
+  return wellnessStoredFromTen(4);
+}
+
 function initialsOf(name: string | null | undefined): string {
   const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "AT";
@@ -343,9 +388,10 @@ function addDays(key: string, days: number) {
 
 function parseAskDateCommand(text: string, currentDate: string): string | null {
   const lower = text.toLowerCase().trim();
+  if (isCoachMessageIntent(lower) || /\b(send|tell|message|note|text)\b/.test(lower)) return null;
   if (!/\b(open|show|go to|move|switch|change|set|previous|prev|next|yesterday|tomorrow|today|calendar|calender|date|day)\b/.test(lower)) return null;
-  if (/\byesterday\b/.test(lower)) return addDays(today(), -1);
-  if (/\btomorrow\b/.test(lower)) return addDays(today(), 1);
+  if (/\byesterday\b/.test(lower) && /^(?:open|show|go to|move|switch|change|set)?\s*(?:to\s+)?yesterday\b|\byesterday(?:'s)?\s+(?:log|day|date|screen|page)\b/.test(lower)) return addDays(today(), -1);
+  if (/\btomorrow\b/.test(lower) && /^(?:open|show|go to|move|switch|change|set)?\s*(?:to\s+)?tomorrow\b|\btomorrow(?:'s)?\s+(?:log|day|date|screen|page)\b/.test(lower)) return addDays(today(), 1);
   if (/^(today|open today|show today|go to today|move to today|switch to today|change to today)\b/.test(lower)) return today();
   if (/\b(previous|prev|back)\s+day\b|\bday\s+before\b/.test(lower)) return addDays(currentDate, -1);
   if (/\b(next)\s+day\b|\bday\s+after\b/.test(lower)) return addDays(currentDate, 1);
@@ -422,6 +468,12 @@ function resolveWellnessField(spoken: unknown, stored: string): number | undefin
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+function resolveSessionWellnessField(spoken: unknown, displayed: number | string | undefined): number | undefined {
+  if (typeof spoken === "number") return wellnessTenToFive(spoken);
+  const n = Number(displayed);
+  return Number.isFinite(n) ? wellnessStoredFromTen(n) : undefined;
+}
+
 // Maps the server's `{error: "invalid_x"}` codes (see server/src/routes/athlete.ts)
 // to a message an athlete can actually act on, instead of a blanket "save failed".
 const API_ERROR_MESSAGES: Record<string, string> = {
@@ -453,10 +505,14 @@ const API_ERROR_MESSAGES: Record<string, string> = {
   invalid_restingHeartRate: "Resting heart rate must be between 20 and 220 bpm.",
   body_required: "Note can't be empty.",
   athlete_profile_not_found: "Your athlete profile could not be found.",
+  coach_not_assigned: "First link with coach then you can enable to send message.",
 };
 
+const LINK_COACH_BEFORE_MESSAGE = "First link with coach then you can enable to send message.";
+
 async function readApiError(res: Response): Promise<string> {
-  const body = (await res.json().catch(() => null)) as { error?: string } | null;
+  const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
+  if (body?.message) return body.message;
   const code = body?.error;
   if (!code) return "Save failed. Check your connection and try again.";
   return API_ERROR_MESSAGES[code] ?? `Save failed (${code}).`;
@@ -513,17 +569,39 @@ type TrainingCommandPatch = {
 type TrainingCommand = { slot: SessionSlot | null; patch: TrainingCommandPatch };
 
 function parseCommandSlot(text: string): SessionSlot | null {
-  const lower = text.toLowerCase();
+  const lower = text.toLowerCase().replace(/\ba\.?\s*m\.?/g, "am").replace(/\bp\.?\s*m\.?/g, "pm");
   if (/\b(am|morning|strength)\b/.test(lower)) return "AM";
-  if (/\b(aft|afternoon|conditioning)\b/.test(lower)) return "AFT";
+  if (/\b(aft|afternoon|after\s*noon|conditioning)\b/.test(lower) || /\bafter\b(?=.*\b(session|section|training)\b)/.test(lower)) return "AFT";
   if (/\b(pm|evening|night|skill)\b/.test(lower)) return "PM";
   return null;
 }
 
+function isOpenEndedSessionUpdateCommand(text: string) {
+  const lower = text.toLowerCase();
+  return /\b(update|save|fill|complete)\b/.test(lower) && /\b(section|session|training|workout)\b/.test(lower);
+}
+
 function parseOpenSessionLogCommand(text: string): SessionSlot | null {
-  if (!/^(open|show|go to|edit)\b/i.test(text)) return null;
-  if (!/\b(log|logs|session|training)\b/i.test(text)) return null;
-  return parseCommandSlot(text);
+  const lower = text.toLowerCase().trim().replace(/\b(?:kisan|kishan|section)\b/g, "session");
+  const slot = parseCommandSlot(lower);
+  if (!slot) return null;
+
+  const hasOpenIntent = /\b(open|show|go to|navigate|move|switch|change|edit|update)\b/.test(lower);
+  const hasSessionTarget = /\b(logs?|sessions?|training)\b/.test(lower);
+  if (hasOpenIntent && hasSessionTarget) return slot;
+
+  // Speech recognition sometimes returns only "PM section" or "PM Kisan"
+  // when the athlete said "PM session". Treat those short slot-target
+  // phrases as navigation, but don't steal write commands like
+  // "PM session note ..." or "PM training completed".
+  if (/^(?:the\s+)?(?:am|morning|aft|afternoon|pm|evening|night)\s+session\s*$/i.test(lower)) {
+    return slot;
+  }
+  return null;
+}
+
+function isAskAcknowledgement(text: string) {
+  return /^(?:ok|okay|yes|yeah|yep|done|fine|good|thanks|thank you)\.?$/i.test(text.trim());
 }
 
 function isSetRestDayCommand(text: string) {
@@ -551,6 +629,87 @@ function valueInRange(value: number | null, min: number, max: number): number | 
   return value;
 }
 
+const NUMBER_WORDS: Record<string, number> = {
+  zero: 0,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+};
+
+function parseSpokenNumber(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const text = raw.toLowerCase().trim().replace(/-/g, " ");
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) return numeric;
+  const pointMatch = text.match(/^([a-z]+)\s+(?:point|dot)\s+([a-z]+|\d)$/);
+  if (pointMatch) {
+    const whole = NUMBER_WORDS[pointMatch[1]];
+    const decimal = NUMBER_WORDS[pointMatch[2]] ?? Number(pointMatch[2]);
+    if (whole !== undefined && Number.isFinite(decimal)) return whole + decimal / 10;
+  }
+  return NUMBER_WORDS[text] ?? null;
+}
+
+type SleepUpdateCommand =
+  | { kind: "duration"; hours: number }
+  | { kind: "missing_duration" }
+  | { kind: "invalid_duration"; value: number };
+
+function sleepDurationValue(text: string): number | null {
+  const lower = text.toLowerCase();
+  const numberToken = "(\\d+(?:\\.\\d+)?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen)\\s+(?:point|dot)\\s+(?:zero|one|two|three|four|five|six|seven|eight|nine|\\d))";
+  const patterns = [
+    new RegExp(`\\b(?:my\\s+|your\\s+)?sleep(?:\\s+(?:duration|hours?|score|quality))?\\s*(?:to|as|is|=|:)?\\s*${numberToken}(?:\\s*(?:hours?|hrs?))?\\b`, "i"),
+    new RegExp(`${numberToken}\\s*(?:hours?|hrs?)\\s+(?:of\\s+)?sleep\\b`, "i"),
+    new RegExp(`\\bslept\\s*(?:for\\s*)?${numberToken}(?:\\s*(?:hours?|hrs?))?\\b`, "i"),
+  ];
+  for (const pattern of patterns) {
+    const match = lower.match(pattern);
+    const value = parseSpokenNumber(match?.[1]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+// Sleep is tracked as one field: duration in hours. Any sleep-related update —
+// however it's phrased ("sleep", "sleep score", "sleep quality", "sleep duration")
+// — always resolves to that same duration value; there is no separate score input.
+function parseSleepUpdateCommand(text: string): SleepUpdateCommand | null {
+  const lower = text.toLowerCase();
+  if (!/\bsleep\b/.test(lower)) return null;
+  const isUpdate = /\b(change|update|set|save|log|record)\b/.test(lower);
+  if (!isUpdate && !/\bslept\b/.test(lower)) return null;
+  const value = sleepDurationValue(lower);
+  if (value === null) return { kind: "missing_duration" };
+  if (!Number.isFinite(value) || value < 0 || value > 14) return { kind: "invalid_duration", value };
+  return { kind: "duration", hours: value };
+}
+
+function isExplicitDataViewQuery(text: string) {
+  return /\b(show|view|display|inspect|list|see|open)\b.*\b(data|metric|metrics|score|scores|record|records|details|stats)\b/i.test(text) ||
+    /\b(show|view|display|inspect|list|see|open)\b.*\b(readiness|recovery|sleep|load|water|hydration|fatigue|soreness|mood|stress|heart\s*rate|heartbeat|pulse|streak)\b/i.test(text);
+}
+
+function requestedHistoryDays(text: string, fallback = 7): number {
+  const lower = text.toLowerCase();
+  const explicit = lower.match(/\b(?:last|past|previous|recent)\s+(\d{1,2})\s+days?\b/);
+  if (explicit) return Math.max(1, Math.min(30, Number(explicit[1])));
+  if (/\b30\s*days?\b|\bmonth(?:ly)?\b/.test(lower)) return 30;
+  if (/\bweek(?:ly)?\b|\b7\s*days?\b/.test(lower)) return 7;
+  return fallback;
+}
+
 function parseTrainingCommand(text: string): TrainingCommand | null {
   const lower = text.toLowerCase();
   const slot = parseCommandSlot(lower);
@@ -572,7 +731,7 @@ function parseTrainingCommand(text: string): TrainingCommand | null {
   if (duration !== undefined) patch.actualDurationMin = duration;
   const restingHeartRate = valueInRange(valueNear(lower, /\bresting\s+(?:heart\s+)?rate\b|\bresting\s+hr\b|\bhr\b/), 20, 220);
   if (restingHeartRate !== undefined) patch.restingHeartRate = restingHeartRate;
-  const sleepQuality = valueInRange(valueNear(lower, /\bsleep\s+quality\b|\bsleep\b/), 1, 10);
+  const sleepQuality = valueInRange(valueNear(lower, /\bsleep\s+quality\b|\bsleep\s+score\b/), 1, 10);
   if (sleepQuality !== undefined) patch.sleepQuality = sleepQuality;
 
   if (/\b(done|complete|completed|finish|finished)\b/.test(lower)) patch.status = "completed";
@@ -606,15 +765,18 @@ type WellnessCommandFields = Partial<{
  * per-session RPE report. Only fires when there's no session context (no
  * AM/afternoon/PM slot, no rpe/rpm/intensity/effort keyword), so "AM sleep
  * quality 8" still routes to the session report as before, while a bare
- * "sleep 8 hours" or "log my check-in" routes here instead.
+ * "sleep 8 hours", "update mood to 7", or "log my check-in" routes here
+ * instead — any of the five daily fields (sleep/mood/stress/soreness/fatigue)
+ * is enough to claim the command, so a standalone "update mood" never falls
+ * through to the per-session parser and gets misfiled against a training slot.
  */
 function parseWellnessCommand(text: string): WellnessCommandFields | null {
   const lower = text.toLowerCase();
   const hasSessionContext =
     parseCommandSlot(lower) !== null || /\brpe\b|\brpm\b|\bintensity\b|\beffort\b|\bresting\s+(?:heart\s+)?rate\b/.test(lower);
   const isCheckIn = /\bcheck.?in\b/.test(lower);
-  const mentionsSleep = /\bsleep\b/.test(lower);
-  if (hasSessionContext || (!isCheckIn && !mentionsSleep)) return null;
+  const mentionsWellnessField = /\b(sleep|mood|stress|soreness|sore|fatigue|tired)\b/.test(lower);
+  if (hasSessionContext || (!isCheckIn && !mentionsWellnessField)) return null;
 
   const fields: WellnessCommandFields = {};
   // Bidirectional like the quality/mood/etc extraction below (valueNear) —
@@ -630,13 +792,7 @@ function parseWellnessCommand(text: string): WellnessCommandFields | null {
   if (hoursBefore || hoursAfter) {
     if (Number.isFinite(hoursValue) && hoursValue >= 0 && hoursValue <= 14) fields.sleepHours = hoursValue;
   }
-  // Bare "sleep" is a deliberate fallback (matches parseTrainingCommand's own
-  // sleep-quality pattern) — without it, phrasings like "sleep score as 8"
-  // (no literal word "quality") matched nothing here, fell through to
-  // parseTrainingCommand instead, and got misrouted into that session's
-  // RPE-Monitoring record rather than the daily Wellness check-in — a write
-  // that "succeeded" but never showed up on the Sleep tile.
-  const quality = valueInRange(valueNear(lower, /\bsleep\s+quality\b|\bquality\b|\bsleep\b/), 1, 10);
+  const quality = valueInRange(valueNear(lower, /\bsleep\s+quality\b|\bsleep\s+score\b|\bquality\b/), 1, 10);
   if (quality !== undefined) fields.sleepQuality = quality;
   const mood = valueInRange(valueNear(lower, /\bmood\b/), 1, 10);
   if (mood !== undefined) fields.mood = mood;
@@ -648,6 +804,27 @@ function parseWellnessCommand(text: string): WellnessCommandFields | null {
   if (fatigue !== undefined) fields.fatigue = fatigue;
 
   return Object.keys(fields).length || isCheckIn ? fields : null;
+}
+
+const WELLNESS_FIELD_LABEL: Record<keyof WellnessCommandFields, string> = {
+  sleepHours: "Sleep",
+  sleepQuality: "Sleep",
+  mood: "Mood",
+  stress: "Stress",
+  soreness: "Soreness",
+  fatigue: "Fatigue",
+};
+
+/**
+ * A targeted single-field update ("update mood to 7") gets its own
+ * confirmation ("Mood is updated.") instead of the generic "Check-in saved.",
+ * which is reserved for genuine multi-field/"check-in" commands.
+ */
+function wellnessUpdateMessage(fields: WellnessCommandFields, isExplicitCheckIn: boolean): string {
+  const keys = Object.keys(fields) as (keyof WellnessCommandFields)[];
+  const labels = Array.from(new Set(keys.map((key) => WELLNESS_FIELD_LABEL[key])));
+  if (!isExplicitCheckIn && labels.length === 1) return `${labels[0]} is updated.`;
+  return "Check-in saved.";
 }
 
 /** Wake/bed resting heart rate — distinct from parseTrainingCommand's per-session restingHeartRate. */
@@ -696,17 +873,77 @@ function parsePressCommand(text: string): { id: string; label: string } | null {
 function isDailyInfoQuery(text: string) {
   const lower = text.toLowerCase();
   return (
-    /\b(show|what|which|how|how many|any|list|tell|summary|status|pending|left|remaining|today|daily|activities|activity)\b/.test(lower) &&
-    /\b(today|daily|activities|activity|pending|left|remaining|done|completed|readiness|recovery|coach|feedback|training|log)\b/.test(lower)
+    /\b(show|what|which|how|how many|any|list|tell|find|summary|status|pending|left|remaining|today|daily|activities|activity|tasks?|todos?|to-dos?|updates?)\b/.test(lower) &&
+    /\b(today|daily|activities|activity|tasks?|todos?|to-dos?|updates?|pending|left|remaining|done|completed|readiness|recovery|coach|feedback|training|log)\b/.test(lower)
   );
+}
+
+function isMetricInfoQuery(text: string) {
+  const lower = text.toLowerCase();
+  return /\b(readiness|recovery|sleep|load|water|hydrat|streak|fatigue|soreness|sore|mood|stress|heart\s*rate|heart\s*beat|heartbeat|pulse|bpm|rpm|rpe|score|scores|metric|metrics|stats|data|details)\b/.test(lower);
 }
 
 function isReportInfoQuery(text: string) {
   const lower = text.toLowerCase();
   return (
-    /\b(report|last week|weekly|week|improve|improvement|area|areas|down|low|weak|weaker|drop|dropped|struggle|struggling|better)\b/.test(lower) &&
-    /\b(report|week|improve|improvement|area|areas|down|low|weak|drop|struggle|readiness|recovery|sleep|water|load|training|rpm|performance)\b/.test(lower)
+    /\b(report|last week|weekly|week|improve|improvement|area|areas|down|low|weak|weaker|drop|dropped|struggle|struggling|better|progress|suggest|suggestion|advice|recommend|recommendation|next)\b/.test(lower) &&
+    /\b(report|week|improve|improvement|area|areas|down|low|weak|drop|struggle|readiness|recovery|sleep|water|load|training|rpm|performance|progress|suggest|suggestion|advice|recommend|recommendation|next)\b/.test(lower)
   );
+}
+
+function isProgressAdviceQuery(text: string) {
+  const lower = text.toLowerCase();
+  return (
+    /\b(progress|how am i doing|suggest|suggestion|advice|recommend|recommendation|what should i do|next step|next steps|improve|improvement|better)\b/.test(lower) ||
+    /\bhow\b.*\bprogress\b/.test(lower) ||
+    /\bwhat\b.*\bthings?\b.*\bsuggest\b/.test(lower) ||
+    /\bthings?\b.*\bsuggest\b/.test(lower)
+  );
+}
+
+function isBareImproveQuery(text: string) {
+  const lower = text.toLowerCase().trim();
+  return /^(?:need\s+to\s+improve|improvement|improve|better)$/.test(lower);
+}
+
+function isPersonalInfoQuery(text: string) {
+  const lower = text.toLowerCase();
+  return /\b(my name|who am i|what is my name|email|profile|personal|account|using this app|days.*app|joined|member since|how many days)\b/.test(lower);
+}
+
+function isNotificationInfoQuery(text: string) {
+  return /\b(notification|notifications|alert|alerts|reminder|reminders|unread)\b/i.test(text);
+}
+
+function daysSince(isoDate: string | null | undefined): number | null {
+  if (!isoDate) return null;
+  const started = new Date(isoDate).getTime();
+  if (Number.isNaN(started)) return null;
+  return Math.max(1, Math.floor((Date.now() - started) / 86400000) + 1);
+}
+
+function indiaHour(date = new Date()): number {
+  try {
+    const hour = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Kolkata",
+      hour: "2-digit",
+      hour12: false,
+    }).formatToParts(date).find((part) => part.type === "hour")?.value;
+    const parsed = Number(hour);
+    if (Number.isFinite(parsed)) return parsed === 24 ? 0 : parsed;
+  } catch {
+    // Fall through to a fixed IST offset when Intl timezone data is unavailable.
+  }
+  return new Date(date.getTime() + 5.5 * 60 * 60 * 1000).getUTCHours();
+}
+
+function indiaGreeting(date = new Date()) {
+  const hour = indiaHour(date);
+  if (hour < 5) return "Good night,";
+  if (hour < 12) return "Good morning,";
+  if (hour < 17) return "Good afternoon,";
+  if (hour < 21) return "Good evening,";
+  return "Good night,";
 }
 
 function askInfoToneColor(tone: AskInfoRow["tone"]) {
@@ -727,6 +964,28 @@ function rounded(value: number | null, digits = 0) {
   return value.toFixed(digits);
 }
 
+function metricText(value: number | null | undefined, digits = 2): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "--";
+  const roundedValue = Number(value.toFixed(digits));
+  return Number.isInteger(roundedValue) ? String(roundedValue) : roundedValue.toFixed(digits);
+}
+
+function sessionRpeUpdateMessage(slot: SessionSlot, patch: TrainingCommandPatch): string {
+  const changed: string[] = [];
+  if (patch.rpe !== undefined || patch.effortRating !== undefined) changed.push("RPM");
+  if (patch.plannedIntensityPercent !== undefined) changed.push("planned intensity");
+  if (patch.muscleSoreness !== undefined) changed.push("soreness");
+  if (patch.fatigue !== undefined) changed.push("fatigue");
+  if (patch.sleepQuality !== undefined) changed.push("sleep quality");
+  if (patch.moodMotivation !== undefined) changed.push("mood");
+  if (patch.restingHeartRate !== undefined) changed.push("resting heart rate");
+  if (patch.bodyConditionFeedback !== undefined) changed.push("body condition");
+  const unique = Array.from(new Set(changed));
+  if (unique.length === 1) return `${SLOT_LABEL[slot]} ${unique[0]} updated.`;
+  if (unique.length > 1) return `${SLOT_LABEL[slot]} session check-in updated.`;
+  return `${SLOT_LABEL[slot]} RPM updated.`;
+}
+
 function buildDailyInfoResult({
   query,
   card,
@@ -742,7 +1001,7 @@ function buildDailyInfoResult({
 }): AskInfoResult | null {
   if (!card || !isDailyInfoQuery(query)) return null;
   const lower = query.toLowerCase();
-  const pendingOnly = /\b(pending|left|remaining|not done|incomplete|open)\b/.test(lower);
+  const pendingOnly = /\b(pending|left|remaining|not done|incomplete|open|need(?:s)?\s+(?:to\s+)?update|will\s+i\s+update|should\s+i\s+update|to\s+update)\b/.test(lower);
   const rows: AskInfoRow[] = [];
   const hasCheckIn = card.readinessScore !== null || card.sleep.quality !== null;
   const recDone = card.recovery.score !== null || Boolean(card.recovery.status);
@@ -833,42 +1092,83 @@ function buildDailyInfoResult({
   const visibleRows = pendingOnly ? rows.filter((row) => row.status === "Pending" || row.status === "Active") : [...rows, ...activityRows];
   const pendingCount = rows.filter((row) => row.status === "Pending" || row.status === "Active").length;
   return {
-    title: pendingOnly ? "Pending Today" : "Today Summary",
+    title: pendingOnly ? "Activities To Update Today" : "Today Summary",
     subtitle: card.date,
     summary: pendingOnly
       ? pendingCount
         ? `${pendingCount} item${pendingCount === 1 ? "" : "s"} need attention.`
-        : "No pending daily activities found."
+        : "No activities need updating today."
       : `${rows.filter((row) => row.status === "Done").length} done · ${pendingCount} pending/flagged.`,
     rows: visibleRows.length ? visibleRows : [{
       id: "empty",
       icon: "checkmark-done-outline",
       label: "All clear",
       status: "Done",
-      detail: "No pending items for today.",
+      detail: "No activities need updating today.",
       tone: "ok",
     }],
   };
 }
 
+function cleanCoachMessageBody(text: string): string | null {
+  const body = text
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/^(?:now\s+)?(?:i\s+)?(?:want|need|would\s+like)\s+to\s+(?:send|tell|message|note|text)\s+(?:the\s+|a\s+|this\s+)?(?:message|note|text)?\s*(?:to\s+)?(?:my\s+)?(?:coach|couch|house)\s*/i, "")
+    .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:send|tell|message|note|text)\s+(?:the\s+|a\s+|this\s+)?(?:message|note|text)?\s*(?:to\s+)?(?:my\s+)?(?:coach|couch|house)\s*/i, "")
+    .replace(/^(?:please\s+)?(?:send|tell|message|note|text)\s+(?:the\s+|a\s+|this\s+)?(?:message|note|text)?\s*(?:to\s+)?(?:my\s+)?(?:coach|couch|house)\s*/i, "")
+    .replace(/^(?:stating|setting|saying)\s+that\s+/i, "")
+    .replace(/^(?:stating|setting|saying|that)\s+/i, "")
+    .replace(/^(?:for|as|:|-)\s*/i, "")
+    .replace(/^available\b/i, "I won't be available")
+    .replace(/\band unable to\b/i, "and I am unable to attend")
+    .replace(/\bunable to today class\b/i, "I am unable to attend today's class")
+    .replace(/\battend today class\b/i, "attend today's class")
+    .replace(/\bi will tomorrow\b/i, "I will join tomorrow")
+    .trim();
+  if (!body) return null;
+  if (/^(?:can|could|would|will|please|you|send|sent|sending|tell|message|note|text|to|my|coach|couch|house|that|stating|setting|saying)\b[\s\w]*$/i.test(body)) {
+    return null;
+  }
+  return body;
+}
+
+function isCoachMessageIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  return /\b(coach|couch|house)\b/.test(lower) && /\b(send|sending|sent|tell|message|note|text)\b/.test(lower);
+}
+
 function extractCoachMessage(text: string): string | null {
   const cleaned = text.trim();
   const lower = cleaned.toLowerCase();
-  if (!/\b(coach|couch)\b/.test(lower) || !/\b(send|sending|sent|tell|message|note)\b/.test(lower)) return null;
+  if (!/\b(coach|couch|house)\b/.test(lower) || !/\b(send|sending|sent|tell|message|note)\b/.test(lower)) return null;
   const patterns = [
-    /^(.+?)\s+(?:send|sending|sent)\s+(?:a\s+)?(?:message|note)\s+to\s+(?:my\s+)?(?:coach|couch)$/i,
-    /^(?:send|sending|sent)\s+(.+?)\s+(?:message|note)\s+to\s+(?:my\s+)?(?:coach|couch)$/i,
-    /^(?:send|sending|sent)\s+(?:a\s+)?(?:message|note)\s+to\s+(?:my\s+)?(?:coach|couch)\s*(?:for|that|saying|:|-)?\s*(.+)$/i,
-    /^(?:send|sending|sent)\s+(?:my\s+)?(?:coach|couch)\s+(?:a\s+)?(?:message|note)\s*(?:for|that|saying|:|-)?\s*(.+)$/i,
-    /^(?:tell|message|note)\s+(?:my\s+)?(?:coach|couch)\s*(?:that|saying|:|-)?\s*(.+)$/i,
+    /^(?:now\s+)?(?:i\s+)?(?:want|need|would\s+like)\s+to\s+(?:send|tell|message|note|text)\s+(?:the\s+|a\s+|this\s+)?(?:message|note|text)?\s*(?:to\s+)?(?:my\s+)?(?:coach|couch|house)\s*(?:stating|setting|saying|that|:|-)?\s*(.*)$/i,
+    /^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:send|tell|message|note|text)\s+(?:the\s+|a\s+|this\s+)?(?:message|note|text)?\s*(?:to\s+)?(?:my\s+)?(?:coach|couch|house)\s*(?:stating|setting|saying|that|:|-)?\s*(.*)$/i,
+    /^(?:please\s+)?(?:send|tell|message|note|text)\s+(?:the\s+|a\s+|this\s+)?(?:message|note|text)?\s*(?:to\s+)?(?:my\s+)?(?:coach|couch|house)\s*(?:stating|setting|saying|that|:|-)?\s*(.*)$/i,
+    /^(.+?)\s+(?:send|sending|sent)\s+(?:this\s+)?(?:message|note)\s+to\s+(?:my\s+)?(?:coach|couch|house)$/i,
+    /^(.+?)\s+(?:message|note)\s+to\s+(?:my\s+)?(?:coach|couch|house)$/i,
+    /^(.+?)\s+(?:send|sending|sent)\s+(?:a\s+)?(?:message|note)\s+to\s+(?:my\s+)?(?:coach|couch|house)$/i,
+    /^(?:send|sending|sent)\s+(.+?)\s+(?:message|note)\s+to\s+(?:my\s+)?(?:coach|couch|house)$/i,
+    /^(?:send|sending|sent)\s+(?:a\s+)?(?:message|note)\s+to\s+(?:my\s+)?(?:coach|couch|house)\s*(?:for|that|saying|:|-)?\s*(.+)$/i,
+    /^(?:send|sending|sent)\s+(?:my\s+)?(?:coach|couch|house)\s+(?:a\s+)?(?:message|note)\s*(?:for|that|saying|:|-)?\s*(.+)$/i,
+    /^(?:tell|message|note)\s+(?:my\s+)?(?:coach|couch|house)\s*(?:that|saying|:|-)?\s*(.+)$/i,
   ];
   for (const pattern of patterns) {
     const match = cleaned.match(pattern);
-    const body = match?.[1]?.trim();
+    const body = match?.[1] ? cleanCoachMessageBody(match[1]) : null;
     if (body) return body;
   }
-  const body = cleaned.replace(/\s+(?:message|note)?\s*to\s+(?:my\s+)?(?:coach|couch)$/i, "").trim();
-  return body || null;
+  const body = cleanCoachMessageBody(cleaned.replace(/\s+(?:message|note)?\s*to\s+(?:my\s+)?(?:coach|couch|house)$/i, ""));
+  return body;
+}
+
+function extractLeaveCoachMessage(text: string): string | null {
+  const lower = text.toLowerCase();
+  const hasLeaveContext = /\b(leave|absent|absence|not attend|did not attend|can't attend|cannot attend|wont attend|won't attend|miss class|missed class|not available)\b/.test(lower);
+  const hasClassContext = /\b(class|training|session|practice|coaching|today|tomorrow)\b/.test(lower);
+  if (!hasLeaveContext || !hasClassContext) return null;
+  return cleanCoachMessageBody(text);
 }
 
 export default function AthleteDashboard() {
@@ -881,7 +1181,7 @@ export default function AthleteDashboard() {
   const { highlightStyle: coachHighlight } = useTourHighlight("mobile-athlete-coach");
   const { highlightStyle: agentHighlight } = useTourHighlight("mobile-athlete-agent");
   const router = useRouter();
-  const params = useLocalSearchParams<{ section?: string; coachId?: string }>();
+  const params = useLocalSearchParams<{ section?: string; coachId?: string; slot?: string }>();
   const requestedCoachId = typeof params.coachId === "string" ? params.coachId : null;
   const [section, setSection] = useState<Section>(() => sectionFromParam(params.section));
   const [progressTab, setProgressTab] = useState<ProgressTab>(() => progressTabFromParam(params.section));
@@ -983,6 +1283,15 @@ export default function AthleteDashboard() {
     }
   }, [params.section]);
 
+  useEffect(() => {
+    const slot = typeof params.slot === "string" ? params.slot.toUpperCase() : "";
+    if (slot === "AM" || slot === "AFT" || slot === "PM") {
+      setLogFocusSlot(slot);
+      setCurrentLogSlot(slot);
+      setSection("log");
+    }
+  }, [params.slot]);
+
   async function postJson(path: string, body: unknown, success: string): Promise<{ ok: boolean; message: string }> {
     setError(null);
     setInfo(null);
@@ -1055,7 +1364,10 @@ export default function AthleteDashboard() {
   const [quickCheckInOpen, setQuickCheckInOpen] = useState(false);
   const [askInputOpen, setAskInputOpen] = useState(false);
   const [askDraft, setAskDraft] = useState("");
+  const [askConversationActive, setAskConversationActive] = useState(false);
+  const [askConversationMode, setAskConversationMode] = useState<"voice" | "execute" | null>(null);
   const [askListening, setAskListening] = useState(false);
+  const [askSpeaking, setAskSpeaking] = useState(false);
   const [askBusy, setAskBusy] = useState(false);
   const [askInfoResult, setAskInfoResult] = useState<AskInfoResult | null>(null);
   const [calendarOpenSignal, setCalendarOpenSignal] = useState(0);
@@ -1068,6 +1380,7 @@ export default function AthleteDashboard() {
   // — set the instant the button is pressed, before any async permission
   // check or recognition.start() even runs.
   const askVoiceActiveRef = useRef(false);
+  const askConversationRef = useRef<VoiceConversationHandle | null>(null);
   // Same idea for typed submission: TextInput's onSubmitEditing can trigger
   // a blur as a side effect, firing onBlur (also wired to submit) with the
   // still-stale draft before React re-renders the cleared value — without a
@@ -1078,14 +1391,21 @@ export default function AthleteDashboard() {
   const askGlow = useSharedValue(0);
   const [askLog, setAskLog] = useState<AskLogEntry[]>([]);
   const askLogSeqRef = useRef(0);
+  const askLastReplyRef = useRef<string | null>(null);
+  const askPendingConfirmationRef = useRef<{ command: string; prompt: string } | null>(null);
+  const askPendingGeminiRef = useRef<AskPendingGeminiIntent | null>(null);
+  const askPendingCoachMessageRef = useRef(false);
+  const askSessionWizardRef = useRef<AskSessionWizard | null>(null);
+  const askFallbackShownRef = useRef(false);
 
   // Conversation log shown above the Ask Agent button — every voice or typed
   // command, and what the agent actually did with it (or why it failed), so
   // the athlete isn't left guessing whether a command silently no-op'd.
   function logAskTurn(role: "user" | "agent", text: string, ok?: boolean) {
+    if (role === "agent") askLastReplyRef.current = text;
     askLogSeqRef.current += 1;
     const id = `ask-${askLogSeqRef.current}`;
-    setAskLog((prev) => [...prev.slice(-19), { id, role, text, ok }]);
+    setAskLog((prev) => [...prev.slice(-99), { id, role, text, ok }]);
   }
   function sayInfo(message: string) {
     setError(null);
@@ -1138,7 +1458,7 @@ export default function AthleteDashboard() {
   const [askLogVisible, setAskLogVisible] = useState(false);
   const askLogHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    const active = askListening || askBusy || askInputOpen;
+    const active = askConversationActive || askListening || askSpeaking || askBusy || askInputOpen;
     if (active && askLog.length > 0) setAskLogVisible(true);
     if (askLogHideTimerRef.current) clearTimeout(askLogHideTimerRef.current);
     if (!active && askLog.length > 0) {
@@ -1147,9 +1467,10 @@ export default function AthleteDashboard() {
     return () => {
       if (askLogHideTimerRef.current) clearTimeout(askLogHideTimerRef.current);
     };
-  }, [askListening, askBusy, askInputOpen, askLog.length]);
+  }, [askConversationActive, askListening, askSpeaking, askBusy, askInputOpen, askLog.length]);
 
   function handleAskNavigate(target: string) {
+    setAskInfoResult(null);
     if (target === "notification" || target === "notifications") return router.push("/notifications" as never);
     if (target === "calendar" || target === "calender") {
       setCalendarOpenSignal((value) => value + 1);
@@ -1172,10 +1493,25 @@ export default function AthleteDashboard() {
     if (target === "today" || target === "log" || target === "coach") return setSection(target);
   }
 
+  function openAskSessionSlot(slot: SessionSlot) {
+    setAskInfoResult(null);
+    setLogFocusSlot(slot);
+    setCurrentLogSlot(slot);
+    setSection("log");
+    requestAnimationFrame(() => {
+      setLogFocusSlot(slot);
+      setCurrentLogSlot(slot);
+    });
+  }
+
   function handleAskInfoRowPress(row: AskInfoRow) {
     const action = row.action;
     if (!action) return;
     setAskInfoResult(null);
+    if (action.type === "notifications") {
+      router.push("/notifications" as never);
+      return;
+    }
     if (action.type === "coachThread") {
       if (action.coachId) {
         router.push({ pathname: "/athlete/dashboard", params: { section: "chat", coachId: action.coachId } } as never);
@@ -1193,16 +1529,24 @@ export default function AthleteDashboard() {
   }
 
   async function sendCoachMessageFromAsk(body: string) {
+    const messageBody = cleanCoachMessageBody(body);
+    if (!messageBody) {
+      askPendingCoachMessageRef.current = true;
+      setSection("messages");
+      if (!askConversationActive && !askListening && !askSpeaking) setAskInputOpen(true);
+      sayInfo("What message would you like to send?");
+      return;
+    }
     const coachRes = await apiJson<{ coaches: AssignedCoach[] }>("/api/athlete/coaches");
     const coachId = requestedCoachId ?? coachRes.coaches?.[0]?.coachId;
     if (!coachId) {
       setSection("messages");
-      sayError("No assigned coach found.");
+      sayInfo(LINK_COACH_BEFORE_MESSAGE);
       return;
     }
     const res = await apiFetch(`/api/athlete/messages/${coachId}`, {
       method: "POST",
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: messageBody }),
     });
     if (!res.ok) {
       sayError(await readApiError(res));
@@ -1217,9 +1561,7 @@ export default function AthleteDashboard() {
     const slot = command.slot ?? (section === "log" ? currentLogSlot : logFocusSlot) ?? "AM";
     const form = makeSessionForms(card)[slot];
     const patch = command.patch;
-    setLogFocusSlot(slot);
-    setCurrentLogSlot(slot);
-    setSection("log");
+    openAskSessionSlot(slot);
 
     const trainingPayload: Record<string, unknown> = { date };
     if (patch.status !== undefined) {
@@ -1236,6 +1578,7 @@ export default function AthleteDashboard() {
     if (hasTrainingPayload) {
       const ok = await runAsk(`/api/athlete/training/${slot}`, trainingPayload, `${SLOT_LABEL[slot]} session updated.`);
       if (!ok) return;
+      openAskSessionSlot(slot);
     }
 
     const hasRpePayload =
@@ -1262,11 +1605,206 @@ export default function AthleteDashboard() {
       ...(patch.restingHeartRate !== undefined ? { restingHeartRate: patch.restingHeartRate } : {}),
       ...(patch.bodyConditionFeedback !== undefined ? { bodyConditionFeedback: patch.bodyConditionFeedback } : {}),
     };
-    await runAsk("/api/athlete/rpe-monitoring", rpePayload, `${SLOT_LABEL[slot]} RPM updated.`);
+    const ok = await runAsk("/api/athlete/rpe-monitoring", rpePayload, sessionRpeUpdateMessage(slot, patch));
+    if (ok) openAskSessionSlot(slot);
+  }
+
+  function askSessionWizardQuestion(field: AskSessionWizardField) {
+    if (field === "trainingCategory") return "What training category did you do?";
+    if (field === "rpe") return "What was your session RPM from 1 to 10?";
+    if (field === "plannedIntensityPercent") return "What was the planned intensity percent?";
+    if (field === "muscleSoreness") return "What was your soreness from 1 to 10?";
+    if (field === "fatigue") return "What was your fatigue from 1 to 10?";
+    return "What was your mood from 1 to 10?";
+  }
+
+  function askSessionWizardValue(field: AskSessionWizardField, text: string): number | null {
+    const lower = text.toLowerCase();
+    const direct =
+      field === "rpe" ? valueNear(lower, /\brpe\b|\brpm\b|\beffort\b/) :
+      field === "plannedIntensityPercent" ? valueNear(lower, /\bplanned\s+intensity\b|\bintensity\b|\bpercent\b|\bpercentage\b/) :
+      field === "muscleSoreness" ? valueNear(lower, /\bsoreness\b|\bsore\b/) :
+      field === "fatigue" ? valueNear(lower, /\bfatigue\b|\btired\b/) :
+      valueNear(lower, /\bmood\b/);
+    const fallback = direct ?? Number(text.match(/\b(\d{1,3}(?:\.\d+)?)\b/)?.[1] ?? NaN);
+    if (!Number.isFinite(fallback)) return null;
+    if (field === "plannedIntensityPercent") return Math.max(0, Math.min(100, fallback));
+    return Math.max(1, Math.min(10, fallback));
+  }
+
+  async function finishAskSessionWizard(wizard: AskSessionWizard) {
+    askSessionWizardRef.current = null;
+    await saveTrainingCommandFromAsk({ slot: wizard.slot, patch: wizard.patch });
+  }
+
+  async function handleAskSessionWizardAnswer(transcript: string): Promise<boolean> {
+    const wizard = askSessionWizardRef.current;
+    if (!wizard) return false;
+    if (isLikelyNewAskCommand(transcript)) {
+      askSessionWizardRef.current = null;
+      return false;
+    }
+    const [field, ...rest] = wizard.remaining;
+    if (!field) {
+      await finishAskSessionWizard(wizard);
+      return true;
+    }
+    const value = askSessionWizardValue(field, transcript);
+    if (field === "trainingCategory") {
+      if (/^\s*\d/.test(transcript)) {
+        sayInfo(askSessionWizardQuestion(field));
+        return true;
+      }
+      const patch: TrainingCommandPatch = { ...wizard.patch, workoutType: normalizeTrainingCategory(transcript) };
+      const nextWizard = { ...wizard, patch, remaining: rest };
+      askSessionWizardRef.current = nextWizard;
+      if (rest.length) {
+        sayInfo(askSessionWizardQuestion(rest[0]));
+        return true;
+      }
+      await finishAskSessionWizard(nextWizard);
+      return true;
+    }
+    if (value === null) {
+      sayInfo(askSessionWizardQuestion(field));
+      return true;
+    }
+    const patch: TrainingCommandPatch = { ...wizard.patch };
+    if (field === "rpe") {
+      patch.rpe = value;
+      patch.effortRating = value;
+    } else if (field === "plannedIntensityPercent") patch.plannedIntensityPercent = value;
+    else if (field === "muscleSoreness") patch.muscleSoreness = value;
+    else if (field === "fatigue") patch.fatigue = value;
+    else patch.moodMotivation = value;
+
+    const nextWizard = { ...wizard, patch, remaining: rest };
+    askSessionWizardRef.current = nextWizard;
+    if (rest.length) {
+      sayInfo(askSessionWizardQuestion(rest[0]));
+      return true;
+    }
+    await finishAskSessionWizard(nextWizard);
+    return true;
+  }
+
+  function startAskSessionWizard(slot: SessionSlot, initial: TrainingCommandPatch = {}) {
+    openAskSessionSlot(slot);
+    const required: AskSessionWizardField[] = ["trainingCategory", "rpe", "plannedIntensityPercent", "muscleSoreness", "fatigue", "moodMotivation"];
+    const remaining = required.filter((field) => {
+      if (field === "trainingCategory") return initial.workoutType === undefined;
+      if (field === "rpe") return initial.rpe === undefined && initial.effortRating === undefined;
+      if (field === "plannedIntensityPercent") return initial.plannedIntensityPercent === undefined;
+      if (field === "muscleSoreness") return initial.muscleSoreness === undefined;
+      if (field === "fatigue") return initial.fatigue === undefined;
+      return initial.moodMotivation === undefined;
+    });
+    if (!remaining.length) {
+      void saveTrainingCommandFromAsk({ slot, patch: initial });
+      return;
+    }
+    askPendingGeminiRef.current = null;
+    askPendingIntentRef.current = null;
+    setAskInputOpen(false);
+    askSessionWizardRef.current = { slot, patch: initial, remaining };
+    sayInfo(askSessionWizardQuestion(remaining[0]));
   }
 
   function shouldNavigateFromAsk(text: string) {
-    return /^(open|show|go to)\s+(today|status|readiness|progress|log|training|recovery|coach|messages|chat|water|goals|achievements|trends|notification|notifications|calendar|calender)\b/i.test(text);
+    return /^(open|show|go to|navigate to|move to|switch to)\s+(today|status|readiness|progress|log|training|recovery|coach|messages|chat|water|goals|achievements|trends|notification|notifications|calendar|calender)\b/i.test(text) ||
+      Boolean(parseOpenSessionLogCommand(text));
+  }
+
+  function isAskWriteCommand(text: string) {
+    return isSetRestDayCommand(text) ||
+      isClearRestDayCommand(text) ||
+      Boolean(parseWellnessCommand(text)) ||
+      Boolean(parseHeartRateCommand(text)) ||
+      Boolean(parseTrainingCommand(text)) ||
+      Boolean(parsePressCommand(text)) ||
+      Boolean(extractCoachMessage(text)) ||
+      Boolean(parseNoteCommand(text)) ||
+      isWaterWriteCommand(text);
+  }
+
+  async function resolvePendingAskFollowUp(transcript: string): Promise<boolean> {
+    const pending = askPendingGeminiRef.current;
+    if (!pending || isLikelyNewAskCommand(transcript)) return false;
+
+    const lower = transcript.toLowerCase();
+    const numeric = transcript.match(/\b(\d+(?:\.\d+)?)\b/);
+    const value = numeric ? Number(numeric[1]) : null;
+    const slotFromText = parseCommandSlot(transcript);
+    const collected = { ...pending.collected };
+    if (slotFromText) collected.slot = slotFromText;
+
+    if (pending.intent === "fill_rpe") {
+      const slot = SESSION_SLOTS.includes(collected.slot as SessionSlot) ? (collected.slot as SessionSlot) : currentLogSlot;
+      const form = card ? makeSessionForms(card)[slot] : null;
+      const categoryFromText = TRAINING_CATEGORIES.find((item) => lower.includes(item.toLowerCase()));
+      if (categoryFromText) collected.trainingCategory = categoryFromText;
+      if (value !== null && value >= 0 && value <= 10) {
+        collected.effortRating = value;
+        collected.rpe = value;
+      }
+
+      const rpe =
+        typeof collected.effortRating === "number"
+          ? collected.effortRating
+          : typeof collected.rpe === "number"
+            ? collected.rpe
+            : null;
+      if (rpe === null) {
+        askPendingGeminiRef.current = { ...pending, collected };
+        sayError("Tell me the RPE as a number from 1 to 10.");
+        return true;
+      }
+
+      askPendingGeminiRef.current = null;
+      askPendingIntentRef.current = null;
+      openAskSessionSlot(slot);
+      await runAsk(
+        "/api/athlete/rpe-monitoring",
+        {
+          date,
+          sessionType: slot,
+          trainingCategory: normalizeTrainingCategory(
+            typeof collected.trainingCategory === "string" ? collected.trainingCategory : (form?.trainingCategory ?? form?.workoutType)
+          ),
+          plannedIntensityPercent:
+            typeof collected.plannedIntensityPercent === "number" ? collected.plannedIntensityPercent : form?.plannedIntensityPercent,
+          rpe,
+          sleepQuality: resolveSessionWellnessField(collected.sleepQuality, form?.sleepQuality),
+          muscleSoreness: resolveSessionWellnessField(collected.soreness, form?.soreness),
+          fatigue: resolveSessionWellnessField(collected.fatigue, form?.fatigue),
+          moodMotivation: resolveSessionWellnessField(collected.mood, form?.moodMotivation),
+          ...(typeof collected.restingHeartRate === "number" ? { restingHeartRate: collected.restingHeartRate } : {}),
+          ...(typeof collected.bodyConditionFeedback === "string" ? { bodyConditionFeedback: collected.bodyConditionFeedback } : {}),
+        },
+        sessionRpeUpdateMessage(slot, {
+          rpe,
+          plannedIntensityPercent: typeof collected.plannedIntensityPercent === "number" ? collected.plannedIntensityPercent : undefined,
+          sleepQuality: typeof collected.sleepQuality === "number" ? collected.sleepQuality : undefined,
+          muscleSoreness: typeof collected.soreness === "number" ? collected.soreness : undefined,
+          fatigue: typeof collected.fatigue === "number" ? collected.fatigue : undefined,
+          moodMotivation: typeof collected.mood === "number" ? collected.mood : undefined,
+          restingHeartRate: typeof collected.restingHeartRate === "number" ? collected.restingHeartRate : undefined,
+          bodyConditionFeedback: typeof collected.bodyConditionFeedback === "string" ? collected.bodyConditionFeedback : undefined,
+        })
+      );
+      openAskSessionSlot(slot);
+      return true;
+    }
+
+    if (pending.intent === "fill_training" && value !== null) {
+      const slot = SESSION_SLOTS.includes(collected.slot as SessionSlot) ? (collected.slot as SessionSlot) : currentLogSlot;
+      askPendingGeminiRef.current = null;
+      askPendingIntentRef.current = null;
+      await saveTrainingCommandFromAsk({ slot, patch: { effortRating: Math.max(1, Math.min(10, value)) } });
+      return true;
+    }
+
+    return false;
   }
 
   async function buildHydrationInfoResult(): Promise<AskInfoResult> {
@@ -1319,6 +1857,142 @@ export default function AthleteDashboard() {
     };
   }
 
+  async function buildMetricInfoResult(query: string): Promise<AskInfoResult | null> {
+    const lower = query.toLowerCase();
+    if (!isMetricInfoQuery(query) || isWaterWriteCommand(query)) return null;
+    if (parseSleepUpdateCommand(query)) return null;
+    const wantsAll = /\b(all|details|detail|data|stats|metric|metrics|scores|summary|overview|everything)\b/.test(lower);
+    if (!wantsAll && /\b(water|drink|hydrat|consume|consumed)\b/.test(lower)) return buildHydrationInfoResult();
+    if (!card) return null;
+
+    const water = wantsAll ? await apiJson<WaterDay>(`/api/athlete/water?date=${date}`).catch(() => null) : null;
+    const bestStreak = achievements?.summary.bestStreak;
+    const matchingStreak = achievements?.goals.find((goal) =>
+      (/\bwater|hydrat\b/.test(lower) && goal.key === "hydration") ||
+      (/\btraining|session|load|rpm|rpe\b/.test(lower) && goal.key === "training") ||
+      (/\bcheck.?in|readiness|sleep|fatigue|soreness|mood|stress\b/.test(lower) && goal.key === "check_in")
+    );
+    const fatigue = latestRpe?.fatigue ?? null;
+    const soreness = latestRpe?.muscleSoreness ?? card.soreness ?? null;
+    const rows: AskInfoRow[] = [];
+
+    const addReadiness = () => rows.push({
+      id: "metric-readiness",
+      icon: "pulse-outline",
+      label: "Readiness",
+      status: metricText(card.readinessScore, 0),
+      detail: card.readinessScore === null ? "No readiness score yet. Log today's check-in first." : readinessGuidance(card.readinessScore).line,
+      tone: card.readinessScore === null ? "neutral" : card.readinessScore >= 75 ? "ok" : card.readinessScore >= 60 ? "warn" : "bad",
+      action: { type: "section", section: "today" },
+    });
+    const addSleep = () => rows.push({
+      id: "metric-sleep",
+      icon: "moon-outline",
+      label: "Sleep",
+      status: card.sleep.quality === null ? "--" : `${metricText(card.sleep.quality)}/10`,
+      detail: card.sleep.hours === null ? "Sleep hours are not logged." : `${metricText(card.sleep.hours)} hours logged today.`,
+      tone: card.sleep.quality === null ? "neutral" : card.sleep.quality >= 7 ? "ok" : card.sleep.quality >= 5 ? "warn" : "bad",
+      action: { type: "section", section: "today" },
+    });
+    const addRecovery = () => rows.push({
+      id: "metric-recovery",
+      icon: "heart-outline",
+      label: "Recovery",
+      status: metricText(card.recovery.score),
+      detail: card.recovery.status ? `Recovery status is ${card.recovery.status}.` : "No recovery status logged today.",
+      tone: card.recovery.score === null ? "neutral" : card.recovery.score >= 70 ? "ok" : card.recovery.score >= 50 ? "warn" : "bad",
+      action: { type: "section", section: "log" },
+    });
+    const addLoad = () => rows.push({
+      id: "metric-load",
+      icon: "flame-outline",
+      label: "Training load",
+      status: latestRpe ? metricText(latestRpe.calculatedTrainingLoad) : "--",
+      detail: latestRpe ? `${latestRpe.trainingCategory} · RPM ${metricText(latestRpe.rpe)} · ${latestRpe.riskFlag} flag.` : "No RPM/load entry logged today.",
+      tone: latestRpe ? latestRpe.riskFlag === "green" ? "ok" : latestRpe.riskFlag === "amber" ? "warn" : "bad" : "neutral",
+      action: { type: "section", section: "log", slot: latestRpe?.sessionType },
+    });
+    const addFatigue = () => rows.push({
+      id: "metric-fatigue",
+      icon: "battery-dead-outline",
+      label: "Fatigue",
+      status: fatigue === null ? "--" : `${metricText(fatigue)}/10`,
+      detail: fatigue === null ? "No fatigue score logged in today's RPM entries." : "Higher fatigue means you may need more recovery.",
+      tone: fatigue === null ? "neutral" : fatigue <= 4 ? "ok" : fatigue <= 7 ? "warn" : "bad",
+      action: { type: "section", section: "log", slot: latestRpe?.sessionType },
+    });
+    const addSoreness = () => rows.push({
+      id: "metric-soreness",
+      icon: "body-outline",
+      label: "Soreness",
+      status: soreness === null ? "--" : `${metricText(soreness)}/10`,
+      detail: soreness === null ? "No soreness score logged today." : "Use this with fatigue and readiness to judge recovery needs.",
+      tone: soreness === null ? "neutral" : soreness <= 4 ? "ok" : soreness <= 7 ? "warn" : "bad",
+      action: { type: "section", section: "today" },
+    });
+    const addHeartRate = () => {
+      const wake = card.heartRate.wakeHr;
+      const bed = card.heartRate.bedHr;
+      const status = wake !== null ? `${metricText(wake, 0)} bpm` : bed !== null ? `${metricText(bed, 0)} bpm` : "--";
+      const detail = wake !== null || bed !== null
+        ? `Wake ${wake === null ? "--" : `${metricText(wake, 0)} bpm`} · Bed ${bed === null ? "--" : `${metricText(bed, 0)} bpm`}.`
+        : "No heart-rate value logged today.";
+      rows.push({
+        id: "metric-heart-rate",
+        icon: "heart-circle-outline",
+        label: "Heart rate",
+        status,
+        detail,
+        tone: wake !== null || bed !== null ? "neutral" : "warn",
+        action: { type: "section", section: "today" },
+      });
+    };
+    const addWater = () => {
+      if (!water) return;
+      const pct = water.goalMl ? Math.min(100, Math.round((water.totalMl / water.goalMl) * 100)) : 0;
+      rows.push({
+        id: "metric-water",
+        icon: "water-outline",
+        label: "Water",
+        status: `${pct}%`,
+        detail: `${litres(water.totalMl)} L logged, ${litres(Math.max(0, water.goalMl - water.totalMl))} L remaining.`,
+        tone: pct >= 100 ? "ok" : pct >= 60 ? "warn" : "bad",
+        action: { type: "section", section: "progress", progressTab: "water" },
+      });
+    };
+    const addStreak = () => rows.push({
+      id: "metric-streak",
+      icon: "trophy-outline",
+      label: "Streak",
+      status: matchingStreak ? `${matchingStreak.currentStreak} day${matchingStreak.currentStreak === 1 ? "" : "s"}` : bestStreak ? `${bestStreak.days} day${bestStreak.days === 1 ? "" : "s"}` : "--",
+      detail: matchingStreak ? `${matchingStreak.title}: longest ${matchingStreak.longestStreak} day${matchingStreak.longestStreak === 1 ? "" : "s"}.` : bestStreak ? `Best streak: ${bestStreak.title}.` : "No streak data available yet.",
+      tone: matchingStreak || bestStreak ? "ok" : "neutral",
+      action: { type: "section", section: "progress", progressTab: "goals" },
+    });
+
+    if (wantsAll) {
+      addReadiness(); addSleep(); addRecovery(); addLoad(); addWater(); addStreak(); addFatigue(); addSoreness(); addHeartRate();
+    } else if (/\bheart\s*rate|heart\s*beat|heartbeat|pulse|bpm\b/.test(lower)) addHeartRate();
+    else if (/\breadiness\b/.test(lower)) addReadiness();
+    else if (/\bsleep\b/.test(lower)) addSleep();
+    else if (/\brecovery\b/.test(lower)) addRecovery();
+    else if (/\bload|rpm|rpe\b/.test(lower)) addLoad();
+    else if (/\bfatigue|tired\b/.test(lower)) addFatigue();
+    else if (/\bsoreness|sore\b/.test(lower)) addSoreness();
+    else if (/\bstreak\b/.test(lower)) addStreak();
+    else return null;
+
+    const primary = rows[0];
+    return {
+      title: wantsAll ? "Your Data Today" : primary.label,
+      subtitle: card.date,
+      summary: wantsAll
+        ? rows.map((row) => `${row.label} ${row.status}`).join(" · ")
+        : `${primary.label}: ${primary.status}. ${primary.detail}`,
+      rows,
+    };
+  }
+
   async function buildCoachMessageInfoResult(): Promise<AskInfoResult> {
     const threadRes = await apiJson<{ threads: MessageThreadSummary[] }>("/api/athlete/messages/threads").catch(() => ({ threads: [] }));
     const threadRows: AskInfoRow[] = (threadRes.threads ?? []).slice(0, 5).map((thread) => ({
@@ -1358,23 +2032,135 @@ export default function AthleteDashboard() {
     };
   }
 
+  async function buildPersonalInfoResult(query: string): Promise<AskInfoResult | null> {
+    if (!isPersonalInfoQuery(query)) return null;
+    const [sessionUser, profileRes] = await Promise.all([
+      loadSession().catch(() => null),
+      apiJson<{ athlete: AthleteSelfProfile }>("/api/athlete/me").catch(() => null),
+    ]);
+    const athlete = profileRes?.athlete;
+    const name = athlete?.name || sessionUser?.name || card?.name || "your profile name";
+    const email = athlete?.email || sessionUser?.email || "";
+    const appDays = daysSince(athlete?.createdAt);
+    const profileParts = [
+      athlete?.sport ? `sport ${athlete.sport}` : null,
+      athlete?.position ? `position ${athlete.position}` : null,
+      athlete?.hydrationGoalMl ? `water goal ${athlete.hydrationGoalMl} ml` : null,
+      athlete?.timezone ? `timezone ${athlete.timezone}` : null,
+    ].filter(Boolean);
+    const lower = query.toLowerCase();
+
+    let summary = `Your name is ${name}.`;
+    if (/\b(email|mail)\b/.test(lower)) {
+      summary = email ? `Your email is ${email}.` : "I could not find an email on this session.";
+    } else if (/\b(how many days|using this app|days.*app|joined|member since|account age)\b/.test(lower)) {
+      summary = appDays ? `You have been using this app for ${appDays} day${appDays === 1 ? "" : "s"}.` : "I could not confirm when this account was created.";
+    } else if (/\b(profile|personal|account|who am i)\b/.test(lower)) {
+      summary = profileParts.length ? `${name}: ${profileParts.join(", ")}.` : `Your profile name is ${name}.`;
+    }
+
+    return {
+      title: "Your Profile",
+      subtitle: "Ask Agent profile lookup",
+      summary,
+      rows: [
+        {
+          id: "profile-name",
+          icon: "person-outline",
+          label: "Name",
+          status: name,
+          detail: email ? email : "Signed-in athlete profile.",
+          tone: "neutral",
+        },
+        {
+          id: "profile-app-days",
+          icon: "calendar-outline",
+          label: "Using app",
+          status: appDays ? `${appDays} day${appDays === 1 ? "" : "s"}` : "--",
+          detail: athlete?.createdAt ? `Account started ${athlete.createdAt.slice(0, 10)}.` : "Account start date is not available.",
+          tone: appDays ? "ok" : "neutral",
+        },
+        {
+          id: "profile-sport",
+          icon: "fitness-outline",
+          label: "Sport",
+          status: athlete?.sport || card?.sport || "--",
+          detail: athlete?.position ? `Position: ${athlete.position}.` : "No position saved.",
+          tone: "neutral",
+        },
+      ],
+    };
+  }
+
+  async function buildNotificationInfoResult(query: string): Promise<AskInfoResult | null> {
+    if (!isNotificationInfoQuery(query)) return null;
+    const result = await apiJson<{ notifications: NotificationView[]; unreadCount: number; hasUrgentUnread: boolean }>("/api/notifications?limit=5")
+      .catch(() => null);
+    if (!result) {
+      return {
+        title: "Notifications",
+        subtitle: "Latest alerts",
+        summary: "I could not load notifications right now.",
+        rows: [{
+          id: "notifications-error",
+          icon: "notifications-outline",
+          label: "Notifications",
+          status: "Unavailable",
+          detail: "Try opening notifications from the header.",
+          tone: "neutral",
+          action: { type: "notifications" },
+        }],
+      };
+    }
+    const unreadText = `${result.unreadCount} unread notification${result.unreadCount === 1 ? "" : "s"}`;
+    const latest = result.notifications?.[0];
+    const rows: AskInfoRow[] = (result.notifications ?? []).map((item) => ({
+      id: `notification-${item.id}`,
+      icon: item.read ? "notifications-outline" : "notifications",
+      label: item.title || "Notification",
+      status: item.read ? "Read" : item.priority === "high" ? "Urgent" : "Unread",
+      detail: item.body || relativeDate(item.createdAt),
+      tone: item.read ? "neutral" : item.priority === "high" ? "bad" : "warn",
+      action: { type: "notifications" },
+    }));
+    return {
+      title: "Notifications",
+      subtitle: result.hasUrgentUnread ? "Urgent unread alert" : "Latest alerts",
+      summary: latest ? `You have ${unreadText}. Latest: ${latest.title}.` : `You have ${unreadText}.`,
+      rows: rows.length ? rows : [{
+        id: "notifications-empty",
+        icon: "notifications-outline",
+        label: "Notifications",
+        status: "None",
+        detail: "No notifications found.",
+        tone: "ok",
+        action: { type: "notifications" },
+      }],
+    };
+  }
+
   async function buildReportInfoResult(query: string): Promise<AskInfoResult> {
     const lower = query.toLowerCase();
-    const mode: "weekly" | "improve" | "down" = /\b(improve|improvement|better)\b/.test(lower)
+    const days = requestedHistoryDays(query, 7);
+    const mode: "weekly" | "improve" | "down" = /\b(suggest|suggestion|advice|recommend|recommendation|improve|improvement|better|next\s+steps?)\b/.test(lower)
       ? "improve"
       : /\b(down|low|weak|weaker|drop|dropped|struggle|struggling)\b/.test(lower)
         ? "down"
         : "weekly";
-    const dates = Array.from({ length: 7 }, (_, index) => addDays(date, index - 6));
+    const dates = Array.from({ length: days }, (_, index) => addDays(date, index - (days - 1)));
     const dailyCards = await Promise.all(
       dates.map((day) => apiJson<DailyResponse>(`/api/athlete/daily?date=${day}`).then((res) => res.card).catch(() => null))
     );
     const cards = dailyCards.filter((item): item is DailyCard => Boolean(item));
-    const water = await apiJson<WaterSeries>("/api/athlete/analytics/water?days=7").catch(() => null);
+    const water = await apiJson<WaterSeries>(`/api/athlete/analytics/water?days=${days}`).catch(() => null);
     const allRpeEntries = cards.flatMap((item) => SESSION_SLOTS.map((slot) => item.rpeEntries?.[slot]).filter((entry): entry is RpeEntry => Boolean(entry)));
     const readinessAvg = avg(cards.map((item) => item.readinessScore));
     const recoveryAvg = avg(cards.map((item) => item.recovery.score));
     const sleepAvg = avg(cards.map((item) => item.sleep.hours));
+    const sleepScoreAvg = avg(cards.map((item) => {
+      const parsed = Number(wellnessFiveToTen(item.sleep.quality));
+      return Number.isFinite(parsed) ? parsed : null;
+    }));
     const loadAvg = avg(allRpeEntries.map((entry) => entry.calculatedTrainingLoad));
     const rpmAvg = avg(allRpeEntries.map((entry) => entry.rpe));
     const waterPct = water?.series?.length
@@ -1388,6 +2174,92 @@ export default function AthleteDashboard() {
     const lowReadinessDays = cards.filter((item) => (item.readinessScore ?? 100) < 60).length;
     const highRiskLoads = allRpeEntries.filter((entry) => entry.riskFlag === "red" || entry.riskFlag === "amber").length;
     const injuryDays = cards.filter((item) => item.injury.active).length;
+    const missingDataDays = cards.filter((item) => item.readinessScore === null && item.sleep.hours === null && !Object.values(item.rpeEntries ?? {}).some(Boolean)).length;
+    const sleepDays = cards.filter((item) => typeof item.sleep.hours === "number");
+    const sleepConsistency = sleepDays.length >= 2
+      ? avg(sleepDays.map((item) => Math.abs((item.sleep.hours ?? 0) - (sleepAvg ?? 0))))
+      : null;
+    const bestSleep = sleepDays.reduce<DailyCard | null>((best, item) => best === null || (item.sleep.hours ?? 0) > (best.sleep.hours ?? 0) ? item : best, null);
+    const worstSleep = sleepDays.reduce<DailyCard | null>((worst, item) => worst === null || (item.sleep.hours ?? 0) < (worst.sleep.hours ?? 0) ? item : worst, null);
+    const firstReadiness = cards.find((item) => typeof item.readinessScore === "number")?.readinessScore ?? null;
+    const lastReadiness = [...cards].reverse().find((item) => typeof item.readinessScore === "number")?.readinessScore ?? null;
+    const readinessDirection = firstReadiness !== null && lastReadiness !== null
+      ? lastReadiness > firstReadiness + 3 ? "up"
+        : lastReadiness < firstReadiness - 3 ? "down"
+          : "steady"
+      : "unknown";
+    const rangeLabel = `${dates[0]} to ${dates[dates.length - 1]}`;
+    const focus = highRiskLoads
+      ? "training load control"
+      : sleepAvg !== null && sleepAvg < 7
+        ? "sleep consistency"
+        : waterPct !== null && waterPct < 90
+          ? "hydration consistency"
+          : lowReadinessDays
+            ? "recovery before hard sessions"
+            : null;
+    const overviewText = [
+      readinessAvg === null
+        ? `Readiness history is incomplete over the last ${days} days, so treat this as a partial picture.`
+        : `Readiness ${readinessDirection === "down" ? "fell" : readinessDirection === "up" ? "improved" : "held steady"} over the last ${days} days and is currently averaging ${rounded(readinessAvg)}/100${lowReadinessDays ? `, with ${lowReadinessDays} day${lowReadinessDays === 1 ? "" : "s"} below the recovery zone` : ""}.`,
+      missingDataDays ? `${missingDataDays} of ${days} day${days === 1 ? "" : "s"} had no check-in, so some of this is inferred.` : null,
+    ].filter(Boolean).join(" ");
+    const focusText = highRiskLoads
+      ? `Training load is the main concern: ${highRiskLoads} session${highRiskLoads === 1 ? "" : "s"} carried an amber or red RPE flag this week (average load ${rounded(loadAvg)}, average RPE ${rounded(rpmAvg, 1)}). Stacking hard sessions without recovery in between is what's most likely to push readiness lower.`
+      : lowReadinessDays
+        ? `Recovery is the main concern: ${lowReadinessDays} day${lowReadinessDays === 1 ? "" : "s"} this week sat below the target recovery zone, which limits how much load the body can safely absorb right now.`
+        : sleepAvg !== null && sleepAvg < 7
+          ? `Sleep is the main limiter: averaging ${rounded(sleepAvg, 1)}h at a ${rounded(sleepScoreAvg, 1)}/10 quality score, short of the 7-8h recovery target${worstSleep ? ` — the lowest night was ${worstSleep.date} at ${metricText(worstSleep.sleep.hours)}h` : ""}.`
+          : waterPct !== null && waterPct < 90
+            ? `Hydration consistency is the main limiter: averaging ${rounded(waterPct)}% of the daily goal across the week rather than a steady habit.`
+            : `No improvement priority was generated because the recorded data did not cross the report thresholds for load risk, low readiness, short sleep, or hydration consistency.`;
+
+    function actionPlan(kind: "weekly" | "improve" | "down"): string {
+      const lines: string[] = [];
+      if (highRiskLoads) {
+        lines.push("Treat the next hard session as controlled work — cut planned intensity by 10-15%.");
+        lines.push("Avoid stacking two high-load days back to back; add a recovery day between them.");
+        lines.push("Flag the amber/red sessions to your coach before the next training block.");
+      } else if (lowReadinessDays) {
+        lines.push("Prioritise recovery habits (sleep, stretching, hydration) before adding load.");
+        lines.push("Hold off increasing training intensity until readiness stabilises for 2-3 days.");
+      } else if (sleepAvg !== null && sleepAvg < 7) {
+        lines.push("Fix a consistent bedtime and target 7-8 hours for the next 3 nights.");
+        lines.push("Avoid late or high-intensity sessions on short-sleep days.");
+      } else if (waterPct !== null && waterPct < 90) {
+        lines.push("Spread water intake across morning, afternoon, and evening instead of catching up late.");
+        lines.push("Log every drink so the trend is accurate for the next report.");
+      } else {
+        lines.push("No action plan was generated from this data window.");
+        lines.push("Keep logging check-ins, RPM, recovery, and hydration so the next analysis has enough signal.");
+      }
+      lines.push(
+        kind === "down"
+          ? "Use the next two check-ins to confirm whether the trend is improving before changing anything else."
+          : "Keep logging every check-in and session so the next report stays reliable."
+      );
+      return lines.map((line) => `• ${line}`).join("\n");
+    }
+
+    function sectionsToBody(sections: { heading: string; text: string }[]): string {
+      return sections.map((section) => `${section.heading}\n${section.text}`).join("\n\n");
+    }
+
+    const weeklySections = [
+      { heading: "Overview", text: overviewText },
+      { heading: "What's driving it", text: focusText },
+      { heading: "Focus for the next 3 days", text: actionPlan("weekly") },
+    ];
+    const improveSections = [
+      { heading: "Overview", text: overviewText },
+      { heading: "Why this is the priority", text: focusText },
+      { heading: "Action plan for the next 3 days", text: actionPlan("improve") },
+    ];
+    const downSections = [
+      { heading: "What's trending down", text: overviewText },
+      { heading: "Why", text: focusText },
+      { heading: "What to do now", text: actionPlan("down") },
+    ];
 
     const rows: AskInfoRow[] = [];
     if (mode === "weekly") {
@@ -1397,8 +2269,19 @@ export default function AthleteDashboard() {
           icon: "pulse-outline",
           label: "Readiness average",
           status: rounded(readinessAvg),
-          detail: `${lowReadinessDays} low-readiness day${lowReadinessDays === 1 ? "" : "s"} in the last 7 days.`,
+          detail: `${lowReadinessDays} low-readiness day${lowReadinessDays === 1 ? "" : "s"}; trend ${readinessDirection}.`,
           tone: readinessAvg === null ? "neutral" : readinessAvg >= 75 ? "ok" : readinessAvg >= 60 ? "warn" : "bad",
+          action: { type: "section", section: "today" },
+        },
+        {
+          id: "weekly-sleep",
+          icon: "moon-outline",
+          label: "Sleep pattern",
+          status: sleepAvg === null ? "--" : `${rounded(sleepAvg, 1)} h · ${rounded(sleepScoreAvg, 1)}/10`,
+          detail: sleepConsistency === null
+            ? "Sleep history is incomplete."
+            : `Best ${bestSleep?.date ?? "--"} (${metricText(bestSleep?.sleep.hours)} h), lowest ${worstSleep?.date ?? "--"} (${metricText(worstSleep?.sleep.hours)} h).`,
+          tone: sleepAvg === null ? "neutral" : sleepAvg >= 7 ? "ok" : sleepAvg >= 6 ? "warn" : "bad",
           action: { type: "section", section: "today" },
         },
         {
@@ -1424,15 +2307,35 @@ export default function AthleteDashboard() {
           icon: "water-outline",
           label: "Hydration goal",
           status: `${rounded(waterPct)}%`,
-          detail: water ? `${water.series.filter((point) => (point.totalMl ?? 0) >= water.goalMl).length} of 7 days reached the water goal.` : "Water history unavailable.",
+          detail: water ? `${water.series.filter((point) => (point.totalMl ?? 0) >= water.goalMl).length} of ${days} days reached the water goal.` : "Water history unavailable.",
           tone: waterPct === null ? "neutral" : waterPct >= 90 ? "ok" : waterPct >= 60 ? "warn" : "bad",
           action: { type: "section", section: "progress", progressTab: "water" },
+        },
+        {
+          id: "weekly-next-step",
+          icon: "checkmark-circle-outline",
+          label: "Next-step plan",
+          status: highRiskLoads || lowReadinessDays ? "Adjust" : "Maintain",
+          detail: highRiskLoads
+            ? "Reduce intensity after flagged RPM days and add recovery before the next hard session."
+            : sleepAvg !== null && sleepAvg < 7
+              ? "Move bedtime earlier until sleep average is at least 7 hours."
+              : "No threshold-based next step was generated from this report window.",
+          tone: highRiskLoads || lowReadinessDays ? "warn" : "ok",
+          action: { type: "section", section: "log" },
         }
       );
       return {
-        title: "Last Week Report",
-        subtitle: `${dates[0]} to ${dates[6]}`,
-        summary: `${cards.length} days reviewed · readiness ${rounded(readinessAvg)} · ${sessionsDone}/${sessionsPlanned} sessions logged.`,
+        kind: "report",
+        title: days === 7 ? "Last Week Report" : `${days}-Day Report`,
+        subtitle: rangeLabel,
+        summary: readinessDirection === "down"
+          ? "Readiness is trending down — protect recovery before increasing load."
+          : readinessDirection === "up"
+            ? "Readiness is improving — keep the routine controlled and consistent."
+            : "Recent history is mostly steady — the next step is consistency.",
+        sections: weeklySections,
+        body: sectionsToBody(weeklySections),
         rows,
       };
     }
@@ -1451,8 +2354,12 @@ export default function AthleteDashboard() {
         id: "improve-sleep",
         icon: "moon-outline",
         label: "Sleep",
-        status: sleepAvg === null ? "--" : `${rounded(sleepAvg, 1)} h`,
-        detail: sleepAvg === null ? "Sleep is not logged consistently." : "Target consistent sleep before high-load days.",
+        status: sleepAvg === null ? "--" : `${rounded(sleepAvg, 1)} h · ${rounded(sleepScoreAvg, 1)}/10`,
+        detail: sleepAvg === null
+          ? "Sleep is not logged consistently."
+          : sleepAvg < 7
+            ? "Set a fixed sleep window and target at least 7 hours before high-load days."
+            : `Sleep is usable; keep variation within about 1 hour. Current average variation ${sleepConsistency === null ? "--" : `${rounded(sleepConsistency, 1)} h`}.`,
         tone: sleepAvg === null || sleepAvg < 7 ? "warn" : "ok",
         action: { type: "section", section: "log" },
       },
@@ -1474,6 +2381,19 @@ export default function AthleteDashboard() {
         tone: highRiskLoads ? "bad" : "ok",
         action: { type: "section", section: "log" },
       },
+      {
+        id: "improve-next-step",
+        icon: "walk-outline",
+        label: "Next-step plan",
+        status: readinessDirection === "down" ? "Recover first" : "Build steady",
+        detail: highRiskLoads
+          ? "Next hard session should be reduced by 10-15% unless recovery improves."
+          : sleepAvg !== null && sleepAvg < 7
+            ? "For the next 3 nights, prioritise sleep before adding extra load."
+            : "Keep training load steady and log every session so trends stay reliable.",
+        tone: highRiskLoads || readinessDirection === "down" ? "warn" : "ok",
+        action: { type: "section", section: "log" },
+      },
     ];
     const sorted = [...opportunities].sort((a, b) => {
       const rank = { bad: 0, warn: 1, neutral: 2, ok: 3 };
@@ -1482,19 +2402,25 @@ export default function AthleteDashboard() {
 
     if (mode === "improve") {
       return {
+        kind: "suggestion",
         title: "Areas To Improve",
-        subtitle: `Last 7 days · ${dates[0]} to ${dates[6]}`,
-        summary: "Prioritised from recent readiness, sleep, recovery, hydration, and training-load signals.",
-        rows: sorted,
+        subtitle: `Last ${days} days · ${rangeLabel}`,
+        summary: focus ? `Main focus: ${focus}.` : "No improvement priority found from recorded data.",
+        sections: improveSections,
+        body: sectionsToBody(improveSections),
+        rows: [],
       };
     }
 
     return {
+      kind: "report",
       title: "Areas Trending Down",
-      subtitle: `Last 7 days · ${dates[0]} to ${dates[6]}`,
+      subtitle: `Last ${days} days · ${rangeLabel}`,
       summary: injuryDays
         ? `${injuryDays} injury-flagged day${injuryDays === 1 ? "" : "s"} plus ${highRiskLoads} load flag${highRiskLoads === 1 ? "" : "s"} need review.`
         : `${lowReadinessDays} low-readiness day${lowReadinessDays === 1 ? "" : "s"} and ${highRiskLoads} load flag${highRiskLoads === 1 ? "" : "s"} found.`,
+      sections: downSections,
+      body: sectionsToBody(downSections),
       rows: sorted.filter((row) => row.tone !== "ok").length ? sorted.filter((row) => row.tone !== "ok") : sorted.slice(0, 2),
     };
   }
@@ -1502,8 +2428,18 @@ export default function AthleteDashboard() {
   async function buildAskInfoResult(query: string): Promise<AskInfoResult | null> {
     const lower = query.toLowerCase();
     if (/^(send|sent|sending|message|note)\b/.test(lower) || /^tell\s+(?:my\s+)?(?:coach|couch)\b/.test(lower)) return null;
+    if (parseSleepUpdateCommand(query)) return null;
+    if (isBareImproveQuery(query)) return null;
     const questionStyle = /\b(tell me|what|which|how|how many|any|do i|have i|status|summary|pending|left|remaining)\b/.test(lower);
+    if (isProgressAdviceQuery(query)) return buildReportInfoResult(`${query} improvement`);
     if (isReportInfoQuery(query)) return buildReportInfoResult(query);
+    if (isDailyInfoQuery(query)) return buildDailyInfoResult({ query, card, latestRpe, coachComments, activity });
+    const personalInfo = await buildPersonalInfoResult(query);
+    if (personalInfo) return personalInfo;
+    const notificationInfo = await buildNotificationInfoResult(query);
+    if (notificationInfo) return notificationInfo;
+    const metricInfo = isExplicitDataViewQuery(query) || questionStyle ? await buildMetricInfoResult(query) : null;
+    if (metricInfo) return metricInfo;
     if (!questionStyle && !isDailyInfoQuery(query)) return null;
     if (/\b(water|drink|hydrat|consume|consumed)\b/.test(lower) && !isWaterWriteCommand(query)) {
       return buildHydrationInfoResult();
@@ -1516,25 +2452,61 @@ export default function AthleteDashboard() {
 
   async function executeAskCommand(message: string) {
     const transcript = message.trim();
-    if (!transcript || askBusy) return;
+    if (!transcript) return;
+    setAskInfoResult(null);
+    if (askBusy) return;
+    askLastReplyRef.current = null;
     setAskBusy(true);
     setError(null);
     setInfo(null);
     logAskTurn("user", transcript);
     try {
+      if (isAskAcknowledgement(transcript)) {
+        sayInfo("Okay.");
+        return;
+      }
+
+      if (askPendingGeminiRef.current && isLikelyNewAskCommand(transcript)) {
+        askPendingGeminiRef.current = null;
+      }
+
+      if (askPendingCoachMessageRef.current && !isLikelyNewAskCommand(transcript)) {
+        const body = cleanCoachMessageBody(transcript);
+        if (!body) {
+          if (!askConversationActive && !askListening && !askSpeaking) setAskInputOpen(true);
+          setSection("messages");
+          sayInfo("What message would you like to send?");
+          return;
+        }
+        askPendingCoachMessageRef.current = false;
+        askPendingIntentRef.current = null;
+        askPendingGeminiRef.current = null;
+        await sendCoachMessageFromAsk(body);
+        return;
+      }
+
       if (askPendingIntentRef.current === "add_water") {
         const amountMl = parseWaterAmountMl(transcript);
         if (!amountMl || amountMl < 1 || amountMl > 4000) {
-          setAskInputOpen(true);
+          if (!askConversationActive && !askListening && !askSpeaking) setAskInputOpen(true);
           setProgressTab("water");
           setSection("progress");
-          sayError("Tell me the water amount, like: 250 ml.");
+          sayInfo("Tell me the water amount, like: 250 ml.");
           return;
         }
         askPendingIntentRef.current = null;
+        askPendingGeminiRef.current = null;
         setProgressTab("water");
         setSection("progress");
         await runAsk("/api/athlete/water", { date, amountMl }, `Logged ${amountMl} ml of water.`);
+        return;
+      }
+
+      if (await handleAskSessionWizardAnswer(transcript)) {
+        return;
+      }
+
+      if (await resolvePendingAskFollowUp(transcript)) {
         return;
       }
 
@@ -1554,6 +2526,14 @@ export default function AthleteDashboard() {
         return;
       }
 
+      const leaveCoachMessage = extractLeaveCoachMessage(transcript);
+      if (leaveCoachMessage) {
+        askPendingIntentRef.current = null;
+        askPendingCoachMessageRef.current = false;
+        await sendCoachMessageFromAsk(leaveCoachMessage);
+        return;
+      }
+
       const askDate = parseAskDateCommand(transcript, date);
       if (askDate) {
         askPendingIntentRef.current = null;
@@ -1563,17 +2543,21 @@ export default function AthleteDashboard() {
         return;
       }
 
+      const updateSessionSlot = parseCommandSlot(transcript);
+      if (updateSessionSlot && isOpenEndedSessionUpdateCommand(transcript) && !parseTrainingCommand(transcript)) {
+        startAskSessionWizard(updateSessionSlot);
+        return;
+      }
+
       const openSessionSlot = parseOpenSessionLogCommand(transcript);
       if (openSessionSlot) {
         askPendingIntentRef.current = null;
-        setLogFocusSlot(openSessionSlot);
-        setCurrentLogSlot(openSessionSlot);
-        setSection("log");
+        openAskSessionSlot(openSessionSlot);
         sayInfo(`Opening ${SLOT_LABEL[openSessionSlot]} log.`);
         return;
       }
 
-      const localNav = transcript.toLowerCase().match(/^(open|show|go to)\s+(today|status|readiness|progress|log|training|recovery|coach|messages|chat|water|goals|achievements|trends|notification|notifications|calendar|calender)\b/);
+      const localNav = transcript.toLowerCase().match(/^(open|show|go to|navigate to|move to|switch to)\s+(today|status|readiness|progress|log|training|recovery|coach|messages|chat|water|goals|achievements|trends|notification|notifications|calendar|calender)\b/);
       if (localNav?.[2]) {
         askPendingIntentRef.current = null;
         handleAskNavigate(localNav[2] === "status" || localNav[2] === "readiness" ? "today" : localNav[2]);
@@ -1581,7 +2565,58 @@ export default function AthleteDashboard() {
         return;
       }
 
-      if (!shouldNavigateFromAsk(transcript)) {
+      const sleepUpdate = parseSleepUpdateCommand(transcript);
+      if (sleepUpdate) {
+        askPendingIntentRef.current = null;
+        askPendingGeminiRef.current = null;
+        setAskInfoResult(null);
+        if (sleepUpdate.kind === "missing_duration") {
+          sayInfo("How many hours of sleep would you like to log?");
+          return;
+        }
+        if (sleepUpdate.kind === "invalid_duration") {
+          sayInfo("Sleep must be between 0 and 14 hours.");
+          return;
+        }
+        setSection("today");
+        await runAsk(
+          "/api/athlete/wellness",
+          {
+            date,
+            sleepHours: sleepUpdate.hours,
+            sleepQuality: sleepQualityFromDurationHours(sleepUpdate.hours),
+            mood: resolveWellnessField(undefined, wellness.mood),
+            stress: resolveWellnessField(undefined, wellness.stress),
+            soreness: resolveWellnessField(undefined, wellness.soreness),
+            fatigue: resolveWellnessField(undefined, wellness.fatigue),
+          },
+          "Sleep is updated."
+        );
+        return;
+      }
+
+      if (isBareImproveQuery(transcript)) {
+        sayInfo("What area or date range would you like me to analyse?");
+        return;
+      }
+
+      const contextualSessionMetricCommand = parseTrainingCommand(transcript);
+      if (
+        contextualSessionMetricCommand &&
+        !contextualSessionMetricCommand.slot &&
+        section === "log" &&
+        !/\bcheck.?in\b/i.test(transcript) &&
+        (
+          contextualSessionMetricCommand.patch.muscleSoreness !== undefined ||
+          contextualSessionMetricCommand.patch.fatigue !== undefined
+        )
+      ) {
+        askPendingIntentRef.current = null;
+        await saveTrainingCommandFromAsk({ ...contextualSessionMetricCommand, slot: currentLogSlot });
+        return;
+      }
+
+      if (!shouldNavigateFromAsk(transcript) && !isAskWriteCommand(transcript)) {
         const askInfo = await buildAskInfoResult(transcript);
         if (askInfo) {
           askPendingIntentRef.current = null;
@@ -1607,7 +2642,7 @@ export default function AthleteDashboard() {
             soreness: resolveWellnessField(wellnessCommand.soreness, wellness.soreness),
             fatigue: resolveWellnessField(wellnessCommand.fatigue, wellness.fatigue),
           },
-          "Check-in saved."
+          wellnessUpdateMessage(wellnessCommand, /\bcheck.?in\b/i.test(transcript))
         );
         return;
       }
@@ -1624,10 +2659,43 @@ export default function AthleteDashboard() {
         return;
       }
 
+      const coachMessage = extractCoachMessage(transcript);
+      if (coachMessage) {
+        askPendingIntentRef.current = null;
+        askPendingCoachMessageRef.current = false;
+        await sendCoachMessageFromAsk(coachMessage);
+        return;
+      }
+      if (isCoachMessageIntent(transcript)) {
+        askPendingCoachMessageRef.current = true;
+        askPendingIntentRef.current = null;
+        askPendingGeminiRef.current = null;
+        setSection("messages");
+        if (!askConversationActive && !askListening && !askSpeaking) setAskInputOpen(true);
+        sayInfo("What message would you like to send?");
+        return;
+      }
+
+      const noteBody = parseNoteCommand(transcript);
+      if (noteBody) {
+        askPendingIntentRef.current = null;
+        await runAsk("/api/athlete/notes", { date, body: noteBody }, "Note saved.");
+        return;
+      }
+
       const trainingCommand = parseTrainingCommand(transcript);
       if (trainingCommand) {
         askPendingIntentRef.current = null;
-        await saveTrainingCommandFromAsk(trainingCommand);
+        const openEndedSessionUpdate =
+          Boolean(trainingCommand.slot) &&
+          /\b(update|save|fill|complete)\b/i.test(transcript) &&
+          /\b(section|session|training|workout)\b/i.test(transcript) &&
+          Object.keys(trainingCommand.patch).length === 0;
+        if (openEndedSessionUpdate && trainingCommand.slot) {
+          startAskSessionWizard(trainingCommand.slot, trainingCommand.patch);
+        } else {
+          await saveTrainingCommandFromAsk(trainingCommand);
+        }
         return;
       }
 
@@ -1642,23 +2710,11 @@ export default function AthleteDashboard() {
           const result = await submitWellness();
           logAskTurn("agent", result.message, result.ok);
         } else {
-          setSection("log");
+          const slot = pressCommand.id === "press:save-am" ? "AM" : pressCommand.id === "press:save-aft" ? "AFT" : pressCommand.id === "press:save-pm" ? "PM" : null;
+          if (slot) openAskSessionSlot(slot);
+          else setSection("log");
           await pressAskButton(pressCommand.id, pressCommand.label);
         }
-        return;
-      }
-
-      const coachMessage = extractCoachMessage(transcript);
-      if (coachMessage) {
-        askPendingIntentRef.current = null;
-        await sendCoachMessageFromAsk(coachMessage);
-        return;
-      }
-
-      const noteBody = parseNoteCommand(transcript);
-      if (noteBody) {
-        askPendingIntentRef.current = null;
-        await runAsk("/api/athlete/notes", { date, body: noteBody }, "Note saved.");
         return;
       }
 
@@ -1666,10 +2722,10 @@ export default function AthleteDashboard() {
         const amountMl = parseWaterAmountMl(transcript);
         if (!amountMl || amountMl < 1 || amountMl > 4000) {
           askPendingIntentRef.current = "add_water";
-          setAskInputOpen(true);
+          if (!askConversationActive && !askListening && !askSpeaking) setAskInputOpen(true);
           setProgressTab("water");
           setSection("progress");
-          sayError("Tell me the water amount, like: add 250 ml water.");
+          sayInfo("Tell me the water amount, like: add 250 ml water.");
           return;
         }
         askPendingIntentRef.current = null;
@@ -1681,27 +2737,29 @@ export default function AthleteDashboard() {
 
       const res = await apiFetch("/api/athlete/voice/interpret", {
         method: "POST",
-        body: JSON.stringify({ transcript }),
+        body: JSON.stringify({ transcript, pendingIntent: askPendingGeminiRef.current ?? undefined }),
       });
       if (!res.ok) throw new Error("interpret_failed");
       const result = (await res.json()) as VoiceInterpretResult;
-      const fields = result.fields ?? {};
+      const fields = { ...(askPendingGeminiRef.current?.collected ?? {}), ...(result.fields ?? {}) };
 
       if (result.intent === "navigate") {
         askPendingIntentRef.current = null;
+        askPendingGeminiRef.current = null;
         handleAskNavigate(typeof fields.target === "string" ? fields.target : "today");
         sayInfo(result.spokenResponse ?? "Opening.");
         return;
       }
       if (result.intent === "query_status") {
         askPendingIntentRef.current = null;
+        askPendingGeminiRef.current = null;
         const infoResult = await buildAskInfoResult(transcript);
         if (infoResult) {
           setAskInfoResult(infoResult);
           logAskTurn("agent", infoResult.summary, true);
           return;
         }
-        const topic = typeof fields.topic === "string" ? fields.topic : "readiness";
+        const topic = typeof fields.topic === "string" ? fields.topic.toLowerCase() : "";
         if (topic === "hydration" || topic === "water") {
           setProgressTab("water");
           setSection("progress");
@@ -1710,23 +2768,35 @@ export default function AthleteDashboard() {
           setSection("log");
           sayInfo("Opening today’s training log.");
         } else {
-          sayInfo(readiness === null ? "No readiness score yet. Log today’s check-in first." : `Your readiness is ${Math.round(readiness)}.`);
+          const progressResult = await buildReportInfoResult(`${transcript} improvement`);
+          setAskInfoResult(progressResult);
+          logAskTurn("agent", progressResult.summary, true);
         }
         return;
       }
       if (result.intent === "unsupported") {
         askPendingIntentRef.current = null;
-        sayError(result.spokenResponse ?? "I can't do that yet.");
+        askPendingGeminiRef.current = null;
+        const infoResult = await buildAskInfoResult(transcript);
+        if (infoResult) {
+          setAskInfoResult(infoResult);
+          logAskTurn("agent", infoResult.summary, true);
+          return;
+        }
+        sayInfo("I couldn't match that request. Ask for a specific metric or task.");
         return;
       }
       if (result.missingFields?.length) {
+        askPendingGeminiRef.current = { intent: result.intent, collected: fields, missingFields: result.missingFields };
         if (result.intent === "add_water") {
           askPendingIntentRef.current = "add_water";
           setProgressTab("water");
           setSection("progress");
         }
-        setAskInputOpen(true);
-        sayError(result.followUpQuestion ?? "I need one more detail.");
+        if (!askConversationActive && !askListening && !askSpeaking) {
+          setAskInputOpen(true);
+        }
+        sayInfo(result.followUpQuestion ?? "I need one more detail.");
         return;
       }
 
@@ -1734,12 +2804,15 @@ export default function AthleteDashboard() {
         const amountMl = Math.round(Number(fields.amountMl ?? 0));
         if (!amountMl) throw new Error("missing_amount");
         askPendingIntentRef.current = null;
+        askPendingGeminiRef.current = null;
         setProgressTab("water");
         setSection("progress");
         await runAsk("/api/athlete/water", { date, amountMl }, `Logged ${amountMl} ml of water.`);
         return;
       }
       if (result.intent === "fill_wellness") {
+        askPendingGeminiRef.current = null;
+        setSection("today");
         await runAsk(
           "/api/athlete/wellness",
           {
@@ -1758,11 +2831,14 @@ export default function AthleteDashboard() {
       if (result.intent === "fill_attendance") {
         const status = typeof fields.status === "string" ? fields.status : "";
         if (!["present", "absent", "late", "excused", "rest"].includes(status)) throw new Error("bad_attendance");
+        askPendingGeminiRef.current = null;
         await runAsk("/api/athlete/attendance", { date, status }, `Attendance marked ${status}.`);
         return;
       }
       if (result.intent === "fill_training") {
+        askPendingGeminiRef.current = null;
         const slot = SESSION_SLOTS.includes(fields.slot as SessionSlot) ? (fields.slot as SessionSlot) : "AM";
+        openAskSessionSlot(slot);
         await runAsk(
           `/api/athlete/training/${slot}`,
           {
@@ -1778,14 +2854,14 @@ export default function AthleteDashboard() {
           },
           `${SLOT_LABEL[slot]} session saved.`
         );
+        openAskSessionSlot(slot);
         return;
       }
       if (result.intent === "fill_rpe") {
+        askPendingGeminiRef.current = null;
         const slot = SESSION_SLOTS.includes(fields.slot as SessionSlot) ? (fields.slot as SessionSlot) : currentLogSlot;
         const form = card ? makeSessionForms(card)[slot] : null;
-        setLogFocusSlot(slot);
-        setCurrentLogSlot(slot);
-        setSection("log");
+        openAskSessionSlot(slot);
         await runAsk(
           "/api/athlete/rpe-monitoring",
           {
@@ -1796,18 +2872,30 @@ export default function AthleteDashboard() {
             ),
             plannedIntensityPercent: typeof fields.plannedIntensityPercent === "number" ? fields.plannedIntensityPercent : form?.plannedIntensityPercent,
             rpe: typeof fields.effortRating === "number" ? fields.effortRating : form?.rpe,
-            sleepQuality: resolveWellnessField(fields.sleepQuality, String(form?.sleepQuality ?? "")),
-            muscleSoreness: resolveWellnessField(fields.soreness, String(form?.soreness ?? "")),
-            fatigue: resolveWellnessField(fields.fatigue, String(form?.fatigue ?? "")),
-            moodMotivation: resolveWellnessField(fields.mood, String(form?.moodMotivation ?? "")),
+            sleepQuality: resolveSessionWellnessField(fields.sleepQuality, form?.sleepQuality),
+            muscleSoreness: resolveSessionWellnessField(fields.soreness, form?.soreness),
+            fatigue: resolveSessionWellnessField(fields.fatigue, form?.fatigue),
+            moodMotivation: resolveSessionWellnessField(fields.mood, form?.moodMotivation),
             ...(typeof fields.restingHeartRate === "number" ? { restingHeartRate: fields.restingHeartRate } : {}),
             ...(typeof fields.bodyConditionFeedback === "string" ? { bodyConditionFeedback: fields.bodyConditionFeedback } : {}),
           },
-          `${SLOT_LABEL[slot]} RPM updated.`
+          sessionRpeUpdateMessage(slot, {
+            rpe: typeof fields.effortRating === "number" ? fields.effortRating : undefined,
+            plannedIntensityPercent: typeof fields.plannedIntensityPercent === "number" ? fields.plannedIntensityPercent : undefined,
+            sleepQuality: typeof fields.sleepQuality === "number" ? fields.sleepQuality : undefined,
+            muscleSoreness: typeof fields.soreness === "number" ? fields.soreness : undefined,
+            fatigue: typeof fields.fatigue === "number" ? fields.fatigue : undefined,
+            moodMotivation: typeof fields.mood === "number" ? fields.mood : undefined,
+            restingHeartRate: typeof fields.restingHeartRate === "number" ? fields.restingHeartRate : undefined,
+            bodyConditionFeedback: typeof fields.bodyConditionFeedback === "string" ? fields.bodyConditionFeedback : undefined,
+          })
         );
+        openAskSessionSlot(slot);
         return;
       }
       if (result.intent === "fill_heart_rate") {
+        askPendingGeminiRef.current = null;
+        setSection("today");
         const payload: Record<string, unknown> = { date };
         if (typeof fields.wakeHr === "number") payload.wakeHr = fields.wakeHr;
         if (typeof fields.bedHr === "number") payload.bedHr = fields.bedHr;
@@ -1815,23 +2903,29 @@ export default function AthleteDashboard() {
         return;
       }
       if (result.intent === "fill_recovery") {
+        askPendingGeminiRef.current = null;
         const modalities = Array.isArray(fields.modalities) ? fields.modalities : [];
+        setSection("log");
         await runAsk("/api/athlete/recovery", { date, modalities }, "Recovery saved.");
         return;
       }
       if (result.intent === "add_note") {
+        askPendingGeminiRef.current = null;
         const body = typeof fields.body === "string" && fields.body.trim() ? fields.body.trim() : transcript;
         await runAsk("/api/athlete/notes", { date, body }, "Note saved.");
         return;
       }
       if (result.intent === "send_coach_message") {
-        const body = extractCoachMessage(transcript) ?? (typeof fields.body === "string" ? extractCoachMessage(fields.body) ?? fields.body : null);
+        askPendingGeminiRef.current = null;
+        const body = extractCoachMessage(transcript) ?? (typeof fields.body === "string" ? extractCoachMessage(fields.body) ?? cleanCoachMessageBody(fields.body) : null);
         if (!body) {
-          setAskInputOpen(true);
+          askPendingCoachMessageRef.current = true;
+          if (!askConversationActive && !askListening && !askSpeaking) setAskInputOpen(true);
           setSection("messages");
-          sayError("What message would you like to send?");
+          sayInfo("What message would you like to send?");
           return;
         }
+        askPendingCoachMessageRef.current = false;
         await sendCoachMessageFromAsk(body);
         return;
       }
@@ -1842,30 +2936,87 @@ export default function AthleteDashboard() {
     }
   }
 
-  function startAskVoice() {
+  function isLikelyNewAskCommand(command: string) {
+    const transcript = command.trim();
+    const lower = transcript.toLowerCase().replace(/^(?:and\s+)?(?:also\s+)?(?:please\s+)?(?:can|could|would)\s+you\s+/, "");
+    return shouldNavigateFromAsk(lower) ||
+      isPersonalInfoQuery(transcript) ||
+      isNotificationInfoQuery(transcript) ||
+      isReportInfoQuery(transcript) ||
+      isDailyInfoQuery(transcript) ||
+      isWaterWriteCommand(transcript) ||
+      Boolean(parseOpenSessionLogCommand(transcript)) ||
+      /\b(open|show|go to|change|update|set|log|add|tell|ask|message|note|what|which|how|status|summary)\b/i.test(transcript);
+  }
+
+  async function executeAskConversationCommand(message: string) {
+    const transcript = message.trim();
+    if (!transcript) return;
+    setAskInfoResult(null);
+    askLastReplyRef.current = null;
+    askPendingConfirmationRef.current = null;
+    await executeAskCommand(transcript);
+  }
+
+  function stopAskConversation() {
+    askConversationRef.current?.stop();
+    askConversationRef.current = null;
+    askVoiceActiveRef.current = false;
+    setAskConversationActive(false);
+    setAskConversationMode(null);
+    setAskListening(false);
+    setAskSpeaking(false);
+    askPendingConfirmationRef.current = null;
+    askSessionWizardRef.current = null;
+    askPendingCoachMessageRef.current = false;
+    askFallbackShownRef.current = false;
+  }
+
+  function startAskVoice(mode: "voice" | "execute") {
+    askFallbackShownRef.current = false;
     setAskInputOpen(false);
-    startVoiceSession({
+    setAskConversationMode(mode);
+    askConversationRef.current = startVoiceConversation({
+      onActiveChange: (value) => {
+        setAskConversationActive(value);
+        if (!value) {
+          askConversationRef.current = null;
+          askVoiceActiveRef.current = false;
+          setAskConversationMode(null);
+        }
+      },
       onListeningChange: (value) => {
         setAskListening(value);
-        if (!value) askVoiceActiveRef.current = false;
       },
+      onSpeakingChange: setAskSpeaking,
       onVolume: (level) => {
         askGlow.value = withTiming(level, { duration: 80 });
       },
-      onResult: (text) => void executeAskCommand(text),
+      onResult: async (text) => {
+        await executeAskConversationCommand(text);
+        if (mode === "execute" && !askPendingConfirmationRef.current) {
+          setTimeout(stopAskConversation, 50);
+          return undefined;
+        }
+        return askLastReplyRef.current ?? undefined;
+      },
       onError: () => {
-        askVoiceActiveRef.current = false;
         sayError("I could not hear that command.");
       },
+      onTimeout: () => undefined,
       onNeedsFallback: () => {
+        if (askFallbackShownRef.current) return;
+        askFallbackShownRef.current = true;
         askVoiceActiveRef.current = false;
         setAskInputOpen(true);
-        sayInfo(
+        const message =
           Platform.OS === "web"
             ? "Voice commands aren't available here. Type the command instead."
-            : "Microphone permission is needed for voice commands. Type the command instead."
-        );
+            : "Microphone permission is needed for voice commands. Type the command instead.";
+        sayInfo(message);
+        void speakAgentReply(message);
       },
+      speakReplies: mode === "voice",
     });
   }
 
@@ -1878,8 +3029,9 @@ export default function AthleteDashboard() {
     if (askHoldTimerRef.current) clearTimeout(askHoldTimerRef.current);
     askHoldTimerRef.current = setTimeout(() => {
       askLongPressRef.current = true;
+      stopAskConversation();
       openAskInput();
-    }, 2000);
+    }, 3000);
   }
 
   function endAskHold() {
@@ -1891,25 +3043,40 @@ export default function AthleteDashboard() {
     askLongPressRef.current = true;
     if (askHoldTimerRef.current) clearTimeout(askHoldTimerRef.current);
     askHoldTimerRef.current = null;
+    stopAskConversation();
     openAskInput();
   }
 
   function pressAskAgent() {
-    // askVoiceActiveRef (not just askListening/askBusy state, which only
-    // updates on the NEXT render) is what actually closes the race: a rapid
-    // double-tap can land both touches before React re-renders with
-    // askListening=true, and startAskVoice() is itself async (awaits a
-    // permission check on native) with a real gap before recognition.start()
-    // — either window previously let a second startAskVoice() through,
-    // starting a second overlapping session that produced duplicate
-    // submissions in the conversation log.
-    if (askVoiceActiveRef.current || askBusy) return;
+    if (askConversationActive || askConversationRef.current?.isActive()) {
+      stopAskConversation();
+      return;
+    }
+    if (askBusy) return;
     if (askLongPressRef.current) {
       askLongPressRef.current = false;
       return;
     }
     askVoiceActiveRef.current = true;
-    startAskVoice();
+    startAskVoice("voice");
+  }
+
+  function pressAskExecute() {
+    if (askBusy) return;
+    stopAskConversation();
+    askVoiceActiveRef.current = true;
+    setTimeout(() => startAskVoice("execute"), 80);
+  }
+
+  // Dismisses the visual surfaces (input row, result sheet, conversation log)
+  // only — it must NOT stop an in-progress voice conversation. Closing the
+  // result sheet (or tapping outside it) is how the athlete clears a report
+  // card while continuing to talk to the agent; ending the mic session is a
+  // separate, explicit action (the FAB toggle in pressAskAgent).
+  function closeAskAgentSurfaces() {
+    setAskInputOpen(false);
+    setAskInfoResult(null);
+    setAskLogVisible(false);
   }
 
   function submitAskInput() {
@@ -1918,10 +3085,15 @@ export default function AthleteDashboard() {
     askSubmitLockRef.current = true;
     setAskDraft("");
     setAskInputOpen(false);
-    void executeAskCommand(text).finally(() => {
+    void executeAskConversationCommand(text).then(() => speakAgentReply(askLastReplyRef.current ?? "")).finally(() => {
       askSubmitLockRef.current = false;
     });
   }
+
+  const askExecuteActive = askConversationMode === "execute";
+  const askStatusText = askExecuteActive
+    ? askBusy ? "Executing" : null
+    : askSpeaking ? "Speaking" : askBusy ? "Working" : askListening ? "Listening" : askConversationActive ? "Tap to stop" : null;
 
   return (
     <View style={{ flex: 1 }}>
@@ -1945,14 +3117,7 @@ export default function AthleteDashboard() {
                 onDateChange={setDate}
                 onNotifications={openNotifications}
                 calendarOpenSignal={calendarOpenSignal}
-                askListening={askListening}
-                askBusy={askBusy}
-                askGlow={askGlow}
-              onAskPress={pressAskAgent}
-              onAskPressIn={beginAskHold}
-              onAskPressOut={endAskHold}
-              onAskLongPress={triggerAskTextInput}
-            />
+              />
             </View>
             )
       }
@@ -2054,20 +3219,31 @@ export default function AthleteDashboard() {
           setQuickCheckInOpen(false);
         }}
       />
+      <AskAgentDismissLayer
+        visible={askConversationActive || askInputOpen || Boolean(askInfoResult) || askLogVisible}
+        onPress={closeAskAgentSurfaces}
+      />
       {!isMessages ? (
         <AskAgentConversationLog visible={askLogVisible} entries={askLog} onClose={() => setAskLogVisible(false)} />
       ) : null}
       {!isMessages && !askInputOpen ? (
-        <AskAgentFloatingButton
-          listening={askListening}
-          busy={askBusy}
-          glow={askGlow}
-          onPress={pressAskAgent}
-          onPressIn={beginAskHold}
-          onPressOut={endAskHold}
-          onLongPress={triggerAskTextInput}
-          highlightStyle={agentHighlight}
-        />
+        <>
+          <AskAgentStatusPill text={askStatusText} />
+          <AskAgentFloatingButton
+            listening={askListening}
+            active={askConversationActive}
+            execute={askExecuteActive}
+            speaking={askSpeaking}
+            busy={askBusy}
+            glow={askGlow}
+            onPress={pressAskAgent}
+            onExecutePress={pressAskExecute}
+            onPressIn={beginAskHold}
+            onPressOut={endAskHold}
+            onLongPress={triggerAskTextInput}
+            highlightStyle={agentHighlight}
+          />
+        </>
       ) : null}
       <AskAgentInputOverlay
         open={askInputOpen}
@@ -2075,9 +3251,9 @@ export default function AthleteDashboard() {
         busy={askBusy}
         onChange={setAskDraft}
         onSubmit={submitAskInput}
-        onClose={() => setAskInputOpen(false)}
+        onClose={closeAskAgentSurfaces}
       />
-      <AskAgentInfoSheet result={askInfoResult} onClose={() => setAskInfoResult(null)} onRowPress={handleAskInfoRowPress} />
+      <AskAgentInfoSheet result={askInfoResult} onClose={closeAskAgentSurfaces} onRowPress={handleAskInfoRowPress} />
     </View>
   );
 }
@@ -2089,13 +3265,6 @@ function AthleteHomeHeader({
   onDateChange,
   onNotifications,
   calendarOpenSignal,
-  askListening,
-  askBusy,
-  askGlow,
-  onAskPress,
-  onAskPressIn,
-  onAskPressOut,
-  onAskLongPress,
 }: {
   card: DailyCard | null;
   date: string;
@@ -2103,28 +3272,26 @@ function AthleteHomeHeader({
   onDateChange: (value: string) => void;
   onNotifications: () => void;
   calendarOpenSignal: number;
-  askListening: boolean;
-  askBusy: boolean;
-  askGlow: SharedValue<number>;
-  onAskPress: () => void;
-  onAskPressIn: () => void;
-  onAskPressOut: () => void;
-  onAskLongPress: () => void;
 }) {
   const initials = initialsOf(card?.name);
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(timer);
+  }, []);
 
   return (
     <View style={styles.todayHeader}>
       <View style={styles.todayHeaderTop}>
-        <ProfileMenu theme={theme} size={50} textSize={19} style={styles.todayAvatar} />
+          <ProfileMenu theme={theme} size={50} textSize={19} style={styles.todayAvatar} />
         <View style={styles.todayGreeting}>
           <Text style={[styles.todayRole, { color: theme.accentStrong }]}>Athlete</Text>
-          <Text style={styles.todayGreetingLine}>Good morning,</Text>
+          <Text style={styles.todayGreetingLine}>{indiaGreeting(now)}</Text>
           <Text style={styles.todayGreetingName}>{initials} 👋</Text>
         </View>
         <View style={styles.todayHeaderActions}>
           <HeaderIconButton icon="notifications-outline" onPress={onNotifications} badge={unread} />
-          <AskAgentHeaderButton listening={askListening} busy={askBusy} glow={askGlow} onPress={onAskPress} onPressIn={onAskPressIn} onPressOut={onAskPressOut} onLongPress={onAskLongPress} />
           <DatePickerPill value={date} onChange={onDateChange} iconOnly openSignal={calendarOpenSignal} />
         </View>
       </View>
@@ -2159,51 +3326,12 @@ const askAgentWebPressProps =
       } as any)
     : {};
 
-function AskAgentHeaderButton({
-  listening,
-  busy,
-  glow,
-  onPress,
-  onPressIn,
-  onPressOut,
-  onLongPress,
-}: {
-  listening: boolean;
-  busy: boolean;
-  /** Real mic input level (0..1, see lib/voiceSession) driving the glow while listening. */
-  glow: SharedValue<number>;
-  onPress: () => void;
-  onPressIn: () => void;
-  onPressOut: () => void;
-  onLongPress: () => void;
-}) {
-  const glowStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: 1 + glow.value * 0.6 }],
-    opacity: glow.value * 0.55,
-  }));
-  return (
-    <View style={styles.askHeaderButtonWrap}>
-      {listening ? <Animated.View pointerEvents="none" style={[styles.askHeaderButtonGlow, glowStyle]} /> : null}
-      <Pressable
-        onPress={onPress}
-        onPressIn={onPressIn}
-        onPressOut={onPressOut}
-        onLongPress={onLongPress}
-        delayLongPress={2000}
-        disabled={busy || listening}
-        hitSlop={8}
-        {...askAgentWebPressProps}
-        style={({ pressed }) => [styles.askHeaderButton, listening ? styles.askHeaderButtonActive : null, pressed ? { opacity: 0.84 } : null]}
-        accessibilityRole="button"
-        accessibilityLabel="Ask agent"
-      >
-        {listening ? <AskWave color={theme.accentStrong} /> : <Ionicons name="sparkles-outline" size={19} color={colors.inkMuted} />}
-      </Pressable>
-    </View>
-  );
+/** Small running transcript above the Ask Agent FAB — what was said, and what the agent did or why it failed. */
+function AskAgentDismissLayer({ visible, onPress }: { visible: boolean; onPress: () => void }) {
+  if (!visible) return null;
+  return <Pressable accessibilityRole="button" accessibilityLabel="Dismiss Ask agent" style={styles.askDismissLayer} onPress={onPress} />;
 }
 
-/** Small running transcript above the Ask Agent FAB — what was said, and what the agent did or why it failed. */
 function AskAgentConversationLog({
   visible,
   entries,
@@ -2214,7 +3342,6 @@ function AskAgentConversationLog({
   onClose: () => void;
 }) {
   if (!visible || entries.length === 0) return null;
-  const recent = entries.slice(-6);
   return (
     <View style={styles.askLogWrap} pointerEvents="box-none">
       <View style={styles.askLogCard}>
@@ -2224,8 +3351,8 @@ function AskAgentConversationLog({
             <Ionicons name="close" size={14} color={colors.inkFaint} />
           </Pressable>
         </View>
-        <ScrollView style={styles.askLogScroll} contentContainerStyle={{ gap: 6 }}>
-          {recent.map((entry) => (
+        <ScrollView style={styles.askLogScroll} contentContainerStyle={{ gap: 6 }} showsVerticalScrollIndicator>
+          {entries.map((entry) => (
             <View
               key={entry.id}
               style={[
@@ -2240,7 +3367,6 @@ function AskAgentConversationLog({
                   entry.role === "user" ? styles.askLogTextUser : null,
                   entry.role === "agent" && entry.ok === false ? styles.askLogTextError : null,
                 ]}
-                numberOfLines={3}
               >
                 {entry.text}
               </Text>
@@ -2253,20 +3379,28 @@ function AskAgentConversationLog({
 }
 
 function AskAgentFloatingButton({
+  active,
+  execute,
   listening,
+  speaking,
   busy,
   glow,
   onPress,
+  onExecutePress,
   onPressIn,
   onPressOut,
   onLongPress,
   highlightStyle,
 }: {
+  active: boolean;
+  execute: boolean;
   listening: boolean;
+  speaking: boolean;
   busy: boolean;
   /** Real mic input level (0..1, see lib/voiceSession) driving the glow while listening. */
   glow: SharedValue<number>;
   onPress: () => void;
+  onExecutePress: () => void;
   onPressIn: () => void;
   onPressOut: () => void;
   onLongPress: () => void;
@@ -2277,29 +3411,61 @@ function AskAgentFloatingButton({
     transform: [{ scale: 1 + glow.value * 0.7 }],
     opacity: glow.value * 0.55,
   }));
+  const stateColor = theme.accentStrong;
+  const showExecute = active;
+  const executeStyle = useAnimatedStyle(() => {
+    return {
+      opacity: withTiming(showExecute ? 1 : 0, { duration: 220 }),
+      transform: [
+        { translateY: withTiming(showExecute ? 0 : 18, { duration: 220 }) },
+        { scale: withTiming(showExecute ? 1 : 0.86, { duration: 220 }) },
+      ],
+    };
+  });
   return (
     <>
-      {listening ? <Animated.View pointerEvents="none" style={[styles.askFabGlow, glowStyle]} /> : null}
+      <Animated.View pointerEvents={showExecute ? "auto" : "none"} style={[styles.askExecuteFabWrap, executeStyle]}>
+        <Pressable
+          onPress={onExecutePress}
+          disabled={busy}
+          style={({ pressed }) => [styles.askExecuteFab, execute ? styles.askExecuteFabActive : null, pressed ? { transform: [{ scale: 0.96 }] } : null]}
+          accessibilityRole="button"
+          accessibilityLabel="Execute command"
+        >
+          <Ionicons name="flash-outline" size={20} color="#ffffff" />
+        </Pressable>
+      </Animated.View>
+      {active || listening || speaking ? <Animated.View pointerEvents="none" style={[styles.askFabGlow, { backgroundColor: stateColor }, glowStyle]} /> : null}
       <Pressable
         onPress={onPress}
         onPressIn={onPressIn}
         onPressOut={onPressOut}
         onLongPress={onLongPress}
-        delayLongPress={2000}
-        disabled={busy || listening}
+        delayLongPress={3000}
+        disabled={busy && !active}
         {...askAgentWebPressProps}
         style={({ pressed }) => [
           styles.askFab,
-          listening ? styles.askFabActive : null,
+          active || listening || speaking ? styles.askFabActive : null,
           pressed ? { transform: [{ scale: 0.98 }] } : null,
           highlightStyle ? [highlightStyle, { borderRadius: 28 }] : null,
         ]}
         accessibilityRole="button"
         accessibilityLabel="Ask agent"
+        accessibilityState={{ selected: active || listening || speaking }}
       >
-        {listening ? <AskWave color={theme.accentStrong} /> : <Ionicons name="sparkles-outline" size={22} color="#1a0c00" />}
+        {listening && !execute ? <AskWave color={stateColor} /> : <Ionicons name={speaking ? "volume-high-outline" : active ? "stop-outline" : "sparkles-outline"} size={22} color={active || speaking ? stateColor : "#1a0c00"} />}
       </Pressable>
     </>
+  );
+}
+
+function AskAgentStatusPill({ text }: { text: string | null }) {
+  if (!text) return null;
+  return (
+    <View pointerEvents="none" style={styles.askStatusPill}>
+      <Text style={styles.askStatusText}>{text}</Text>
+    </View>
   );
 }
 
@@ -2372,37 +3538,54 @@ function AskAgentInfoSheet({
           <Ionicons name="sparkles-outline" size={15} color={theme.accentStrong} />
           <Text style={styles.askInfoSummaryText}>{result.summary}</Text>
         </View>
-        <View style={styles.askInfoTableHead}>
-          <Text style={[styles.askInfoHeadText, { flex: 1.2 }]}>Item</Text>
-          <Text style={[styles.askInfoHeadText, styles.askInfoStatusHead]}>Status</Text>
-        </View>
-        <ScrollView style={styles.askInfoScroll} contentContainerStyle={styles.askInfoRows} showsVerticalScrollIndicator>
-          {result.rows.map((row) => {
-            const toneColor = askInfoToneColor(row.tone);
-            return (
-              <Pressable
-                key={row.id}
-                onPress={() => onRowPress(row)}
-                disabled={!row.action}
-                style={({ pressed }) => [styles.askInfoRow, row.action ? styles.askInfoRowAction : null, pressed ? { opacity: 0.82 } : null]}
-                accessibilityRole={row.action ? "button" : undefined}
-                accessibilityLabel={row.action ? `Open ${row.label}` : undefined}
-              >
-                <View style={[styles.askInfoIconBox, { backgroundColor: `${toneColor}16`, borderColor: `${toneColor}44` }]}>
-                  <Ionicons name={row.icon} size={16} color={toneColor} />
-                </View>
-                <View style={styles.askInfoMainCell}>
-                  <Text style={styles.askInfoLabel} numberOfLines={1}>{row.label}</Text>
-                  <Text style={styles.askInfoDetail} numberOfLines={2}>{row.detail}</Text>
-                </View>
-                <View style={[styles.askInfoStatusPill, { borderColor: `${toneColor}44`, backgroundColor: `${toneColor}12` }]}>
-                  <Text style={[styles.askInfoStatusText, { color: toneColor }]} numberOfLines={1}>{row.status}</Text>
-                </View>
-                {row.action ? <Ionicons name="chevron-forward" size={15} color={colors.inkFaint} /> : null}
-              </Pressable>
-            );
-          })}
-        </ScrollView>
+        {result.sections?.length ? (
+          <ScrollView style={styles.askInfoReportScroll} contentContainerStyle={styles.askInfoReportBody} showsVerticalScrollIndicator>
+            {result.sections.map((section, index) => (
+              <View key={section.heading} style={index > 0 ? styles.askInfoSectionSpacing : undefined}>
+                <Text style={styles.askInfoSectionHeading}>{section.heading}</Text>
+                <Text style={styles.askInfoReportText}>{section.text}</Text>
+              </View>
+            ))}
+          </ScrollView>
+        ) : result.body ? (
+          <ScrollView style={styles.askInfoReportScroll} contentContainerStyle={styles.askInfoReportBody} showsVerticalScrollIndicator>
+            <Text style={styles.askInfoReportText}>{result.body}</Text>
+          </ScrollView>
+        ) : (
+          <>
+            <View style={styles.askInfoTableHead}>
+              <Text style={[styles.askInfoHeadText, { flex: 1.2 }]}>Item</Text>
+              <Text style={[styles.askInfoHeadText, styles.askInfoStatusHead]}>Status</Text>
+            </View>
+            <ScrollView style={styles.askInfoScroll} contentContainerStyle={styles.askInfoRows} showsVerticalScrollIndicator>
+              {result.rows.map((row) => {
+                const toneColor = askInfoToneColor(row.tone);
+                return (
+                  <Pressable
+                    key={row.id}
+                    onPress={() => onRowPress(row)}
+                    disabled={!row.action}
+                    style={({ pressed }) => [styles.askInfoRow, row.action ? styles.askInfoRowAction : null, pressed ? { opacity: 0.82 } : null]}
+                    accessibilityRole={row.action ? "button" : undefined}
+                    accessibilityLabel={row.action ? `Open ${row.label}` : undefined}
+                  >
+                    <View style={[styles.askInfoIconBox, { backgroundColor: `${toneColor}16`, borderColor: `${toneColor}44` }]}>
+                      <Ionicons name={row.icon} size={16} color={toneColor} />
+                    </View>
+                    <View style={styles.askInfoMainCell}>
+                      <Text style={styles.askInfoLabel} numberOfLines={1}>{row.label}</Text>
+                      <Text style={styles.askInfoDetail} numberOfLines={2}>{row.detail}</Text>
+                    </View>
+                    <View style={[styles.askInfoStatusPill, { borderColor: `${toneColor}44`, backgroundColor: `${toneColor}12` }]}>
+                      <Text style={[styles.askInfoStatusText, { color: toneColor }]} numberOfLines={1}>{row.status}</Text>
+                    </View>
+                    {row.action ? <Ionicons name="chevron-forward" size={15} color={colors.inkFaint} /> : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </>
+        )}
       </View>
     </View>
   );
@@ -3688,7 +4871,7 @@ function HydrationCard({ date }: { date: string }) {
       </Card>
 
       <Card>
-        <CardTitle>Today's entries</CardTitle>
+        <CardTitle>{"Today's entries"}</CardTitle>
         {day && day.entries.length > 0 ? (
           <View style={styles.waterEntryWrap}>
             {[...day.entries].reverse().map((entry) => (
@@ -4428,21 +5611,11 @@ function statusText(session: DailySession): string {
 }
 
 function AnimatedLogProgress({ value }: { value: number }) {
-  const progress = useSharedValue(value);
-  const [width, setWidth] = useState(0);
-
-  useEffect(() => {
-    progress.value = withTiming(value, { duration: 420 });
-  }, [progress, value]);
-
-  const fillStyle = useAnimatedStyle(
-    () => ({ width: (width * Math.max(0, Math.min(100, progress.value))) / 100 }),
-    [width]
-  );
+  const progress = Math.max(0, Math.min(100, value));
 
   return (
-    <View style={styles.logProgressTrack} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
-      <Animated.View style={[styles.logProgressFill, fillStyle]} />
+    <View style={styles.logProgressTrack}>
+      <View style={[styles.logProgressFill, { width: `${progress}%` }]} />
     </View>
   );
 }
@@ -4723,7 +5896,7 @@ function SessionLogSection({
       <Card style={styles.logHub}>
         <View style={styles.logHubHead}>
           <View style={{ flex: 1, minWidth: 0 }}>
-            <CardTitle>Today's log</CardTitle>
+            <CardTitle>{"Today's log"}</CardTitle>
             <View style={styles.logProgressLine}>
               <AnimatedLogProgress value={progress} />
               <Text style={[styles.logProgressText, progressDone ? styles.logProgressTextDone : null]}>
@@ -5203,7 +6376,7 @@ function LogSection({
     <View style={styles.stack}>
       <Card style={styles.logHub}>
         <View style={styles.logHubHead}>
-          <CardTitle>Today's log</CardTitle>
+          <CardTitle>{"Today's log"}</CardTitle>
           <View style={[styles.logProgressPill, doneCount === total ? styles.logProgressPillDone : null]}>
             <Text style={[styles.logProgressText, doneCount === total ? styles.logProgressTextDone : null]}>
               {doneCount === total ? "All done" : `${doneCount} of ${total} done`}
@@ -5605,7 +6778,7 @@ function AthleteMessagesPanel({
       });
       const payload = (await res.json().catch(() => ({}))) as { message?: MessageView };
       if (!res.ok || !payload.message) {
-        setThreadError("Message was not sent. Try again.");
+        setThreadError((payload as { message?: string }).message || LINK_COACH_BEFORE_MESSAGE);
         return;
       }
       setDraft("");
@@ -6018,33 +7191,6 @@ const styles = StyleSheet.create({
   todayGreetingLine: { marginTop: 2, color: colors.ink, fontSize: 18, lineHeight: 22, fontWeight: "500" },
   todayGreetingName: { color: colors.ink, fontSize: 20, lineHeight: 24, fontWeight: "900" },
   todayHeaderActions: { flexDirection: "row", alignItems: "center", gap: 8 },
-  askHeaderButton: {
-    height: 44,
-    width: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surfaceRaised,
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.08,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 2,
-  },
-  askHeaderButtonActive: {
-    borderColor: `${theme.accentStrong}55`,
-    backgroundColor: theme.accentSoft,
-  },
-  askHeaderButtonWrap: { alignItems: "center", justifyContent: "center" },
-  askHeaderButtonGlow: {
-    position: "absolute",
-    height: 44,
-    width: 44,
-    borderRadius: 15,
-    backgroundColor: theme.accentStrong,
-  },
   askWave: { width: 18, height: 18, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 2 },
   askWaveBar: { width: 3, borderRadius: 999 },
   askLogWrap: {
@@ -6075,10 +7221,20 @@ const styles = StyleSheet.create({
   askLogBubble: { borderRadius: 12, paddingHorizontal: 10, paddingVertical: 7, maxWidth: "92%" },
   askLogBubbleUser: { alignSelf: "flex-end", backgroundColor: `${theme.accent}22` },
   askLogBubbleAgent: { alignSelf: "flex-start", backgroundColor: colors.surfaceInset },
-  askLogBubbleError: { backgroundColor: `${colors.bad}18` },
+  askLogBubbleError: { backgroundColor: colors.surfaceInset },
   askLogText: { fontSize: 12, lineHeight: 16, color: colors.inkMuted },
   askLogTextUser: { color: colors.ink, fontWeight: "600" },
-  askLogTextError: { color: colors.bad },
+  askLogTextError: { color: colors.inkMuted },
+  askDismissLayer: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 820,
+    elevation: 18,
+    backgroundColor: "transparent",
+  },
   askFab: {
     position: "absolute",
     right: 16,
@@ -6097,9 +7253,33 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
   },
   askFabActive: {
-    backgroundColor: colors.surfaceRaised,
     borderWidth: 1,
     borderColor: `${theme.accentStrong}55`,
+  },
+  askExecuteFabWrap: {
+    position: "absolute",
+    right: 20,
+    bottom: 150,
+    zIndex: 2002,
+    elevation: 42,
+  },
+  askExecuteFab: {
+    height: 48,
+    width: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#16a34a",
+    borderWidth: 1,
+    borderColor: "#12813c",
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  askExecuteFabActive: {
+    borderColor: "#0f6d34",
+    shadowOpacity: 0.24,
   },
   askFabGlow: {
     position: "absolute",
@@ -6112,6 +7292,26 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     backgroundColor: "#ffad45",
   },
+  askStatusPill: {
+    position: "absolute",
+    right: 16,
+    bottom: 208,
+    zIndex: 2001,
+    elevation: 41,
+    minHeight: 28,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.line,
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  askStatusText: { color: colors.inkMuted, fontSize: 11, fontWeight: "900" },
   askInputOverlay: {
     position: "absolute",
     top: 0,
@@ -6213,6 +7413,18 @@ const styles = StyleSheet.create({
   askInfoStatusHead: { width: 78, textAlign: "center" },
   askInfoScroll: { maxHeight: 190 },
   askInfoRows: { paddingTop: 4, gap: 6 },
+  askInfoReportScroll: { maxHeight: 280, marginTop: 10 },
+  askInfoReportBody: { paddingBottom: 4 },
+  askInfoReportText: { color: colors.ink, fontSize: 13, lineHeight: 20, fontWeight: "600" },
+  askInfoSectionHeading: {
+    color: theme.accentStrong,
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 1.1,
+    marginBottom: 4,
+  },
+  askInfoSectionSpacing: { marginTop: 14 },
   askInfoRow: {
     minHeight: 54,
     flexDirection: "row",

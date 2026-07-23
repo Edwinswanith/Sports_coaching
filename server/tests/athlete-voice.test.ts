@@ -102,6 +102,74 @@ describe("POST /api/athlete/voice/interpret — contract", () => {
     expect(res.body.requiresConfirmation).toBe(true);
   });
 
+  test("generic sleep update maps to sleepHours, not sleepQuality", async () => {
+    const app = buildApp();
+    const { user } = await makeAthlete("SleepHours");
+    const token = tokenFor(user._id as Types.ObjectId, "athlete");
+    const res = await request(app)
+      .post("/api/athlete/voice/interpret")
+      .set("Cookie", [`accessToken=${token}`])
+      .send({ transcript: "Change sleep to 8" });
+    expect(res.status).toBe(200);
+    expect(res.body.intent).toBe("fill_wellness");
+    expect(res.body.fields.sleepHours).toBe(8);
+    expect(res.body.fields.sleepQuality).toBeUndefined();
+  });
+
+  test("generic sleep update accepts spoken number words", async () => {
+    const app = buildApp();
+    const { user } = await makeAthlete("SleepWord");
+    const token = tokenFor(user._id as Types.ObjectId, "athlete");
+    const res = await request(app)
+      .post("/api/athlete/voice/interpret")
+      .set("Cookie", [`accessToken=${token}`])
+      .send({ transcript: "Update your sleep is seven" });
+    expect(res.status).toBe(200);
+    expect(res.body.intent).toBe("fill_wellness");
+    expect(res.body.fields.sleepHours).toBe(7);
+    expect(res.body.fields.sleepQuality).toBeUndefined();
+    expect(res.body.missingFields).toEqual([]);
+  });
+
+  test("sleep update without duration asks one follow-up", async () => {
+    const app = buildApp();
+    const { user } = await makeAthlete("SleepMissing");
+    const token = tokenFor(user._id as Types.ObjectId, "athlete");
+    const res = await request(app)
+      .post("/api/athlete/voice/interpret")
+      .set("Cookie", [`accessToken=${token}`])
+      .send({ transcript: "Update sleep" });
+    expect(res.status).toBe(200);
+    expect(res.body.intent).toBe("fill_wellness");
+    expect(res.body.fields.sleepQuality).toBeUndefined();
+    expect(res.body.missingFields).toContain("sleepHours");
+    expect(res.body.followUpQuestion).toMatch(/how many hours/i);
+  });
+
+  test("'sleep quality' and 'sleep score' phrasing still resolve to sleepHours, not a separate score field", async () => {
+    const app = buildApp();
+    const { user } = await makeAthlete("SleepQuality");
+    const token = tokenFor(user._id as Types.ObjectId, "athlete");
+
+    const qualityRes = await request(app)
+      .post("/api/athlete/voice/interpret")
+      .set("Cookie", [`accessToken=${token}`])
+      .send({ transcript: "sleep quality is 8" });
+    expect(qualityRes.status).toBe(200);
+    expect(qualityRes.body.intent).toBe("fill_wellness");
+    expect(qualityRes.body.fields.sleepHours).toBe(8);
+    expect(qualityRes.body.fields.sleepQuality).toBeUndefined();
+
+    const scoreRes = await request(app)
+      .post("/api/athlete/voice/interpret")
+      .set("Cookie", [`accessToken=${token}`])
+      .send({ transcript: "can you update the sleep score as 8" });
+    expect(scoreRes.status).toBe(200);
+    expect(scoreRes.body.intent).toBe("fill_wellness");
+    expect(scoreRes.body.fields.sleepHours).toBe(8);
+    expect(scoreRes.body.fields.sleepQuality).toBeUndefined();
+  });
+
   test("returns add_water with missingFields when amount isn't spoken", async () => {
     const app = buildApp();
     const { user } = await makeAthlete("Chetan");

@@ -155,38 +155,40 @@ export default function GuardianDashboard() {
   const hasGoal = Boolean(summary && summary.water.goalMl > 0);
   const waterPct = summary && hasGoal ? Math.min(100, Math.round((summary.water.totalMl / summary.water.goalMl) * 100)) : 0;
 
-  async function handleAskAgent(command: string) {
+  async function handleAskAgent(command: string): Promise<string> {
     const lower = command.toLowerCase();
     setError(null);
     if (/\bnotification/.test(lower)) {
       router.push("/notifications" as never);
-      return;
+      return "Opening notifications.";
     }
     if (/\bcalendar|calender/.test(lower)) {
       setCalendarOpenSignal((value) => value + 1);
-      return;
+      return "Opening calendar.";
     }
     if (/\byesterday\b/.test(lower)) {
       setDate(addDays(today(), -1));
-      return;
+      return "Opening yesterday.";
     }
     if (/\btomorrow\b/.test(lower)) {
       setDate(addDays(today(), 1));
-      return;
+      return "Opening tomorrow.";
     }
     if (/\bnext day\b/.test(lower)) {
       setDate((value) => addDays(value, 1));
-      return;
+      return "Opening next day.";
     }
     if (/\b(previous|prev|back) day\b/.test(lower)) {
       setDate((value) => addDays(value, -1));
-      return;
+      return "Opening previous day.";
     }
     if (/\bathlete|child|detail\b/.test(lower) && selectedId) {
       router.push({ pathname: "/guardian/athletes/[athleteId]", params: { athleteId: selectedId } } as never);
-      return;
+      return "Opening athlete details.";
     }
-    setError("Try: open calendar, next day, open athlete details, or open notifications.");
+    const message = "Try: open calendar, next day, open athlete details, or open notifications.";
+    setError(message);
+    return message;
   }
 
   return (

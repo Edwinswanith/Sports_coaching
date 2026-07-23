@@ -8,7 +8,7 @@ import { Text } from "./AppText";
 
 type DemoTab = "today" | "progress" | "coach" | "lab";
 
-const tabs: Array<{ key: DemoTab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
+const tabs: { key: DemoTab; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { key: "today", label: "Today", icon: "home-outline" },
   { key: "progress", label: "Progress", icon: "pulse-outline" },
   { key: "coach", label: "Coach", icon: "people-outline" },
@@ -220,7 +220,7 @@ function TodayHero() {
           <Ionicons name="sunny-outline" size={13} color="#91dabc" />
           <Text style={styles.greetingInHero}>Good morning, Aarav</Text>
         </View>
-        <Text style={styles.heroTitleToday} numberOfLines={2}>Finish today's reporting in under a minute.</Text>
+        <Text style={styles.heroTitleToday} numberOfLines={2}>{"Finish today's reporting in under a minute."}</Text>
         <Text style={styles.heroMetaSmall} numberOfLines={1}>You have 4 items left. Speak naturally or use the assistant.</Text>
         <View style={styles.progressStrip}>
           <View style={styles.progressRingSmall}>

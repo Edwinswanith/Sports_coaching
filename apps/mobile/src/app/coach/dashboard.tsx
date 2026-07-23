@@ -83,6 +83,25 @@ function addDays(key: string, days: number) {
   return keyFromDate(date);
 }
 
+function reportDateFromCommand(command: string, currentDate: string): string {
+  const lower = command.toLowerCase();
+  if (/\byesterday\b/.test(lower)) return addDays(today(), -1);
+  if (/\btomorrow\b/.test(lower)) return addDays(today(), 1);
+  if (/\bnext day\b/.test(lower)) return addDays(currentDate, 1);
+  if (/\b(previous|prev|back) day\b/.test(lower)) return addDays(currentDate, -1);
+  if (/\btoday\b/.test(lower)) return today();
+  return currentDate;
+}
+
+function isDateOnlyCommand(command: string): boolean {
+  const lower = command.toLowerCase().trim();
+  return (
+    /\b(calendar|calender|date picker|pick date)\b/.test(lower) ||
+    /^(?:open|show|go to|move|switch|change|set)?\s*(?:to\s+)?(?:today|yesterday|tomorrow)\b/.test(lower) ||
+    /\b(next|previous|prev|back) day\b/.test(lower)
+  );
+}
+
 function shortDate(value: string): string {
   const date = new Date(`${value}T00:00:00`);
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -247,14 +266,25 @@ export default function CoachDashboard() {
     }));
   }
 
-  function buildCoachReport(kind: "summary" | "attention" | "injury" | "absent" | "nocheck" | "notes" | "roster" | "best"): CoachAskReport {
+  function buildCoachReport(kind: "summary" | "attention" | "injury" | "absent" | "nocheck" | "notes" | "roster" | "best", sourceCards = cards, reportDate = date): CoachAskReport {
     const latest = squadSeries.length ? squadSeries[squadSeries.length - 1] : null;
-    const attentionCount = attentionCards.length;
-    const injuryCount = filterCounts.injury;
-    const absentCards = cards.filter((card) => card.attendance?.status === "absent");
-    const nocheckCount = filterCounts.nocheck;
+    const sourceRanked = [...sourceCards].sort(
+      (a, b) => attentionRank(a) - attentionRank(b) || (a.readinessScore ?? 101) - (b.readinessScore ?? 101)
+    );
+    const sourceAttention = sourceRanked.filter((card) => attentionRank(card) < 2);
+    const sourcePresent = sourceCards.filter((card) => card.attendance?.status === "present").length;
+    const sourceCompleted = sourceCards.filter((card) => SESSION_SLOTS.some((slot) => card.sessions?.[slot]?.status === "completed")).length;
+    const sourceWithReadiness = sourceCards.filter((card) => card.readinessScore != null);
+    const sourceAvg = sourceWithReadiness.length > 0
+      ? Math.round(sourceWithReadiness.reduce((sum, card) => sum + (card.readinessScore ?? 0), 0) / sourceWithReadiness.length)
+      : null;
+    const attentionCount = sourceAttention.length;
+    const injuryCount = sourceCards.filter((card) => card.injury?.active).length;
+    const absentCards = sourceCards.filter((card) => card.attendance?.status === "absent");
+    const nocheckCards = sourceCards.filter((card) => card.readinessScore === null);
+    const nocheckCount = nocheckCards.length;
     const noteCount = notesInbox?.openCount ?? 0;
-    const best = [...cards].sort((a, b) => {
+    const best = [...sourceCards].sort((a, b) => {
       const aSessions = SESSION_SLOTS.filter((slot) => a.sessions?.[slot]?.status === "completed").length;
       const bSessions = SESSION_SLOTS.filter((slot) => b.sessions?.[slot]?.status === "completed").length;
       const aPenalty = attentionRank(a) < 2 ? 30 : 0;
@@ -268,8 +298,8 @@ export default function CoachDashboard() {
         id: "athletes",
         icon: "people-outline",
         label: "Athletes",
-        status: String(cards.length),
-        detail: `${present} present today.`,
+        status: String(sourceCards.length),
+        detail: `${sourcePresent} present on ${reportDate}.`,
         tone: "neutral",
         action: "roster",
       },
@@ -278,7 +308,7 @@ export default function CoachDashboard() {
         icon: "alert-circle-outline",
         label: "Needs attention",
         status: String(attentionCount),
-        detail: attentionCards.slice(0, 2).map((card) => `${card.name}: ${attentionReason(card)}`).join(" · ") || "No current attention flags.",
+        detail: sourceAttention.slice(0, 2).map((card) => `${card.name}: ${attentionReason(card)}`).join(" · ") || "No current attention flags.",
         tone: attentionCount ? "bad" : "ok",
         action: "attention",
       },
@@ -286,9 +316,9 @@ export default function CoachDashboard() {
         id: "readiness",
         icon: "pulse-outline",
         label: "Avg readiness",
-        status: avg == null ? "-" : String(avg),
+        status: sourceAvg == null ? "-" : String(sourceAvg),
         detail: latest?.avgReadiness == null ? "Current dashboard average." : `30d latest readiness ${Math.round(latest.avgReadiness)}.`,
-        tone: avg == null ? "neutral" : avg >= 75 ? "ok" : avg >= 60 ? "warn" : "bad",
+        tone: sourceAvg == null ? "neutral" : sourceAvg >= 75 ? "ok" : sourceAvg >= 60 ? "warn" : "bad",
         action: "analytics",
       },
       {
@@ -304,9 +334,9 @@ export default function CoachDashboard() {
         id: "sessions",
         icon: "checkmark-done-outline",
         label: "Sessions done",
-        status: String(completed),
-        detail: `${completed} athlete${completed === 1 ? "" : "s"} have a completed session today.`,
-        tone: completed >= cards.length ? "ok" : "warn",
+        status: String(sourceCompleted),
+        detail: `${sourceCompleted} athlete${sourceCompleted === 1 ? "" : "s"} have a completed session on ${reportDate}.`,
+        tone: sourceCompleted >= sourceCards.length ? "ok" : "warn",
         action: "analytics",
       },
       {
@@ -334,19 +364,11 @@ export default function CoachDashboard() {
             action: "roster" as const,
           },
         ]
-      : kind === "injury" ? athleteRows(cards.filter((card) => card.injury?.active), "No injured athletes")
+      : kind === "injury" ? athleteRows(sourceCards.filter((card) => card.injury?.active), "No injured athletes")
       : kind === "absent" ? athleteRows(absentCards, "No absent athletes")
-      : kind === "nocheck" ? [{
-          id: "nocheck",
-          icon: "help-circle-outline" as keyof typeof Ionicons.glyphMap,
-          label: "No check-in",
-          status: String(nocheckCount),
-          detail: nocheckCount ? `${nocheckCount} athlete${nocheckCount === 1 ? "" : "s"} have not checked in.` : "Every athlete has a readiness value.",
-          tone: nocheckCount ? "warn" as const : "ok" as const,
-          action: "nocheck" as const,
-        }, ...rows.filter((row) => row.id === "athletes")]
+      : kind === "nocheck" ? athleteRows(nocheckCards, "Everyone checked in")
       : kind === "notes" ? rows.filter((row) => row.id === "notes" || row.id === "athletes")
-      : kind === "roster" ? athleteRows(ranked, "No athletes")
+      : kind === "roster" ? athleteRows(sourceRanked, "No athletes")
       : rows;
     return {
       title:
@@ -358,17 +380,27 @@ export default function CoachDashboard() {
         : kind === "notes" ? "Athlete Notes"
         : kind === "roster" ? "Roster Report"
         : "Squad Report",
-      subtitle: date,
+      subtitle: reportDate,
       summary:
         kind === "best"
           ? (best ? `${best.name} is top today from readiness, completed sessions, and risk flags.` : "No athlete data is available yet.")
           : kind === "injury"
-            ? `${injuryCount} injured athlete${injuryCount === 1 ? "" : "s"} today.`
+            ? `${injuryCount} injured athlete${injuryCount === 1 ? "" : "s"} on ${reportDate}.`
             : kind === "absent"
-              ? `${absentCards.length} absent athlete${absentCards.length === 1 ? "" : "s"} today.`
-              : `${cards.length} athletes · ${present} present · ${completed} sessions done · readiness ${avg == null ? "-" : avg}`,
+              ? `${absentCards.length} absent athlete${absentCards.length === 1 ? "" : "s"} on ${reportDate}.`
+              : kind === "nocheck"
+                ? `${nocheckCount} athlete${nocheckCount === 1 ? "" : "s"} have not checked in on ${reportDate}.`
+                : `${sourceCards.length} athletes · ${sourcePresent} present · ${sourceCompleted} sessions done · readiness ${sourceAvg == null ? "-" : sourceAvg}`,
       rows: filtered,
     };
+  }
+
+  async function buildCoachReportForCommand(kind: "summary" | "attention" | "injury" | "absent" | "nocheck" | "notes" | "roster" | "best", command: string) {
+    const reportDate = reportDateFromCommand(command, date);
+    if (reportDate === date) return buildCoachReport(kind);
+    const reportData = await apiJson<DashboardResponse>(`/api/coach/dashboard?date=${reportDate}`);
+    setDate(reportDate);
+    return buildCoachReport(kind, reportData.cards ?? [], reportData.date);
   }
 
   function handleAskReportRow(row: CoachAskReportRow) {
@@ -409,24 +441,12 @@ export default function CoachDashboard() {
       router.push("/notifications" as never);
       return;
     }
-    if (/\b(calendar|calender|date picker|pick date)\b/.test(lower)) {
-      setCalendarOpenSignal((value) => value + 1);
-      return;
-    }
-    if (/\byesterday\b/.test(lower)) {
-      setDate(addDays(today(), -1));
-      return;
-    }
-    if (/\btomorrow\b/.test(lower)) {
-      setDate(addDays(today(), 1));
-      return;
-    }
-    if (/\bnext day\b/.test(lower)) {
-      setDate((value) => addDays(value, 1));
-      return;
-    }
-    if (/\b(previous|prev|back) day\b/.test(lower)) {
-      setDate((value) => addDays(value, -1));
+    if (isDateOnlyCommand(lower)) {
+      if (/\b(calendar|calender|date picker|pick date)\b/.test(lower)) {
+        setCalendarOpenSignal((value) => value + 1);
+        return;
+      }
+      setDate(reportDateFromCommand(lower, date));
       return;
     }
     if (/\b(message|messages|chat|inbox|dm|direct)\b/.test(lower)) {
@@ -443,39 +463,39 @@ export default function CoachDashboard() {
     }
     if (/\b(attention|needs attention|risk|risks|flag|flags|red flag|low readiness|who needs|need attention)\b/.test(lower)) {
       setFilter("attention");
-      showAskReport(buildCoachReport("attention"));
+      showAskReport(await buildCoachReportForCommand("attention", lower));
       return;
     }
-    if (/\b(absent|absented|absence|missing today|not present|who is absent|who are absent)\b/.test(lower)) {
-      showAskReport(buildCoachReport("absent"));
+    if (/\b(absent|absented|absence|missing|not present|who is absent|who are absent)\b/.test(lower)) {
+      showAskReport(await buildCoachReportForCommand("absent", lower));
       return;
     }
     if (/\b(injury|injuries|injured|hurt|pain)\b/.test(lower)) {
       setFilter("injury");
-      showAskReport(buildCoachReport("injury"));
+      showAskReport(await buildCoachReportForCommand("injury", lower));
       return;
     }
-    if (/\b(no check|no check-in|nocheck|missing check|not checked|without check)\b/.test(lower)) {
+    if (/\b(no check|no check-in|not check|not check-in|nocheck|missing check|not checked|without check|check-int|checked in|check in)\b/.test(lower) && /\b(no|not|missing|without|who|which)\b/.test(lower)) {
       setFilter("nocheck");
-      showAskReport(buildCoachReport("nocheck"));
+      showAskReport(await buildCoachReportForCommand("nocheck", lower));
       return;
     }
     if (/\b(best|top|strongest|highest|leader|leading)\b.*\b(athlete|player|student|performer)\b/.test(lower) || /\bwho\s+is\s+(?:the\s+)?best\b/.test(lower)) {
-      showAskReport(buildCoachReport("best"));
+      showAskReport(await buildCoachReportForCommand("best", lower));
       return;
     }
     if (/\b(note|notes|reply|replies|feedback)\b/.test(lower)) {
-      showAskReport(buildCoachReport("notes"));
+      showAskReport(await buildCoachReportForCommand("notes", lower));
       return;
     }
     if (/\b(analytics|trend|trends|report|reports|summary|readiness|attendance|present|load|sessions?)\b/.test(lower)) {
-      showAskReport(buildCoachReport("summary"));
+      showAskReport(await buildCoachReportForCommand("summary", lower));
       return;
     }
     if (/\b(list|listout|list out|show|who|which)\b.*\b(roster|athletes|athlete|players|player|squad|team)\b/.test(lower) || /\b(roster|athletes|players|squad|team|all)\b/.test(lower)) {
       setFilter("all");
       setQuery("");
-      showAskReport(buildCoachReport("roster"));
+      showAskReport(await buildCoachReportForCommand("roster", lower));
       return;
     }
     showAskReport({

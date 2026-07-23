@@ -92,6 +92,13 @@ export const env = {
   // services/workoutImageConverter.ts). GEMINI_MODEL overrides the default model.
   gemini: {
     apiKey: process.env.GEMINI_API_KEY ?? "",
-    model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+    model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash-lite",
+  },
+  deepgram: {
+    apiKey: process.env.DEEP_GRAM ?? process.env.DEEPGRAM_API_KEY ?? "",
+    sttModel: process.env.DEEPGRAM_STT_MODEL ?? "flux-general-multi",
+    ttsModel: process.env.DEEPGRAM_TTS_MODEL ?? "aura-2-thalia-en",
+    streamEndpointingMs: Number(process.env.DEEPGRAM_STREAM_ENDPOINTING_MS ?? 400),
+    streamUtteranceEndMs: Number(process.env.DEEPGRAM_STREAM_UTTERANCE_END_MS ?? 1000),
   },
 };

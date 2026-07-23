@@ -28,6 +28,7 @@ export type StoredUser = {
   mustChangePassword?: boolean;
   isAcademyOwner?: boolean;
   avatar?: { kind: "photo" | "default" | null; defaultId: string | null };
+  voiceLanguage?: string;
 };
 
 type AuthPayload = {
