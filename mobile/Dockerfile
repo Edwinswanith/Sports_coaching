@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Expo Router app exported as a static web (React Native Web) build, served as
 # a single-page app. Build context MUST be the repo root (workspaces):
-#   docker build -f apps/mobile/Dockerfile -t scp-web .
+#   docker build -f mobile/Dockerfile -t scp-web .
 #
 # NOTE: EXPO_PUBLIC_* vars are inlined into the client bundle at BUILD time
 # (same rule as Next.js's NEXT_PUBLIC_*), so the API base URL is a build ARG —
@@ -26,15 +26,14 @@ ARG EXPO_PUBLIC_GOOGLE_ALLOWED_ORIGINS=
 ENV EXPO_PUBLIC_GOOGLE_ALLOWED_ORIGINS=$EXPO_PUBLIC_GOOGLE_ALLOWED_ORIGINS
 COPY package.json package-lock.json ./
 COPY server/package.json ./server/package.json
-COPY apps/web/package.json ./apps/web/package.json
-COPY apps/mobile/package.json ./apps/mobile/package.json
+COPY mobile/package.json ./mobile/package.json
 RUN npm config set fetch-timeout 600000 \
   && npm config set fetch-retry-mintimeout 20000 \
   && npm config set fetch-retry-maxtimeout 120000 \
   && npm config set fetch-retries 5 \
   && npm ci --no-audit --fund=false
-COPY apps/mobile ./apps/mobile
-WORKDIR /app/apps/mobile
+COPY mobile ./mobile
+WORKDIR /app/mobile
 RUN npx expo export -p web --output-dir dist
 # Inject a <script> tag loading the (not-yet-existing) runtime-config.js as
 # the FIRST thing in <head> of every exported page, so it executes before the
@@ -47,8 +46,8 @@ RUN find dist -name "*.html" -print0 | xargs -0 sed -i 's#<head>#<head><script s
 FROM node:20-alpine AS runner
 WORKDIR /app
 RUN npm install -g serve@14 && addgroup -S app && adduser -S app -G app
-COPY --from=build /app/apps/mobile/dist ./dist
-COPY apps/mobile/docker/entrypoint.sh ./entrypoint.sh
+COPY --from=build /app/mobile/dist ./dist
+COPY mobile/docker/entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh && chown -R app:app /app
 USER app
 EXPOSE 8080

@@ -12,29 +12,25 @@ Improve the mobile Ask Agent voice conversation so it feels fast, consistent, an
 
 ## Context
 
-Monorepo: npm workspaces (`apps/mobile`, `apps/web`, `server`). Mobile auth: Bearer JWT via expo-secure-store.
+Monorepo: npm workspaces (`mobile`, `server`). Mobile auth: Bearer JWT via expo-secure-store.
 
 ### Current voice stack
 
 | Layer | File | Behavior today |
 |-------|------|----------------|
-| Conversation loop | `apps/mobile/src/lib/voiceSession.ts` → `startVoiceConversation()` | listen → execute → **await full TTS** → listen again (blocking) |
+| Conversation loop | `mobile/src/lib/voiceSession.ts` → `startVoiceConversation()` | listen → execute → **await full TTS** → listen again (blocking) |
 | STT (native) | `voiceSession.ts` → `startDeepgramStreamingVoiceSession()` | 16 kHz PCM → `wss://.../api/voice/stream` → Deepgram (batch fallback on failure) |
 | STT (web) | `voiceSession.ts` → `startWebSpeechVoiceSession()` | Browser SpeechRecognition (different from native) |
-| TTS | `apps/mobile/src/lib/agentSpeech.ts` | Deepgram `/api/voice/speak` with `downloadFirst: true` on native; Expo Speech on web |
+| TTS | `mobile/src/lib/agentSpeech.ts` | Deepgram `/api/voice/speak` with `downloadFirst: true` on native; Expo Speech on web |
 | Server STT proxy | `server/src/routes/voiceStream.ts` | WebSocket proxy; supports nova-3 and flux models |
 | NLU | `POST /api/athlete/voice/interpret` | Gemini (or mock) — **athlete role only** |
-| Athlete commands | `apps/mobile/src/app/athlete/dashboard.tsx` | Full agent: local regex fast-path → Gemini → API writes (~7400 lines) |
-| Athlete elsewhere | `RoleAskAgentOverlays.tsx` → `AthleteAskAgentOverlay` | Regex only; **hidden on dashboard** |
-| Coach | `RoleAskAgentOverlays.tsx` → `CoachAskAgentOverlay` in `coach/_layout.tsx` | Regex only, global FAB |
-| Guardian | `guardian/dashboard.tsx` | Regex only, **dashboard only** (no global overlay) |
-| Web reference | `apps/web/components/VoiceAssistant/useVoiceConversation.ts` | Passes `pendingIntent` to interpret; has `autoConfirmWrites` |
+| Athlete dashboard | `mobile/src/app/athlete/dashboard.tsx` | Full agent: local regex fast-path → Gemini → API writes |
 
 ### Known problems (fix these)
 
 1. **Blocking TTS** — `startVoiceConversation` awaits `speakAgentReply()` before re-opening mic; adds 1–3s per turn.
 2. **Intro speech delay** — `"I'm listening."` + 350ms pause before first listen.
-3. **No `pendingIntent` on mobile Gemini calls** — web sends it; mobile athlete dashboard sends `{ transcript }` only → worse multi-turn slot filling.
+3. **No `pendingIntent` on mobile Gemini calls** — athlete dashboard sends `{ transcript }` only → worse multi-turn slot filling.
 4. **Two athlete agents** — dashboard has full Gemini agent; sub-screens use weak regex overlay.
 5. **Coach dead code** — `coach/dashboard.tsx` has `handleAskAgent` + report sheet but no wired FAB (live agent is layout overlay).
 6. **Guardian not global** — no Ask Agent FAB outside dashboard.
@@ -54,7 +50,7 @@ After this work, a voice turn on athlete dashboard should feel **≤ 3–5s tota
 
 ### 1.1 Non-blocking TTS + instant UI feedback
 
-**File:** `apps/mobile/src/lib/voiceSession.ts`
+**File:** `mobile/src/lib/voiceSession.ts`
 
 Change `startVoiceConversation` so that after `handlers.onResult(transcript)` resolves:
 - Callers update conversation log / UI **immediately** when they have the reply text (already partially done via `askLastReplyRef` on dashboard).
@@ -65,7 +61,7 @@ Options (pick one, document choice in PR):
 - **B:** Fire `speakAgentReply()` without awaiting in the conversation loop; re-open mic after a short debounce (300ms) while TTS plays in background. Allow barge-in via existing stop FAB.
 - **C:** Skip TTS for acks matching `/^(opening|logged|saved|cancelled|done)\b/i` or under 40 chars; speak longer replies only.
 
-**File:** `apps/mobile/src/components/AskAgentControl.tsx` — same pattern if it duplicates the loop.
+**File:** `mobile/src/components/AskAgentControl.tsx` — same pattern if it duplicates the loop.
 
 **Acceptance:** Say "open water" → section opens and log updates in **< 1s after STT**; mic can reopen before TTS finishes.
 
@@ -81,7 +77,7 @@ Options (pick one, document choice in PR):
 
 **Server:** `server/.env.example` — document `GEMINI_MODEL=gemini-2.5-flash-lite`.
 
-**Mobile athlete dashboard:** When calling `/api/athlete/voice/interpret`, send full pending intent like web:
+**Mobile athlete dashboard:** When calling `/api/athlete/voice/interpret`, send full pending intent:
 
 ```ts
 body: JSON.stringify({
@@ -90,25 +86,21 @@ body: JSON.stringify({
 })
 ```
 
-Where `askPendingGeminiRef` holds `{ intent, collected, missingFields }` (mirror web `useVoiceConversation.ts` lines 259–293), not just `VoiceIntentName | null`.
-
-On `result.missingFields.length > 0`, store pending intent from response. Clear on success/unsupported/navigate.
-
-**Reference:** `apps/web/components/VoiceAssistant/useVoiceConversation.ts`
+Where `askPendingGeminiRef` holds `{ intent, collected, missingFields }`, not just `VoiceIntentName | null`.
 
 ### 1.4 Widen local fast-path (skip Gemini)
 
 Before `/voice/interpret`, ensure these never hit Gemini:
-- `open/show/go to` + section keywords (mirror web `localNavIntent`)
+- `open/show/go to` + section keywords
 - Obvious water amount: `\d+\s*ml`
 - Rest day set/clear
 - Coach message / note extractors (already partially done)
 
-Extract shared helpers to `apps/mobile/src/lib/askAgentCommands.ts` if needed — do not duplicate web and mobile parsers forever.
+Extract shared helpers to `mobile/src/lib/askAgentCommands.ts` if needed.
 
 ### 1.5 TTS latency
 
-**File:** `apps/mobile/src/lib/agentSpeech.ts`
+**File:** `mobile/src/lib/agentSpeech.ts`
 
 - Evaluate removing `downloadFirst: true` or switching to streaming if expo-audio supports it.
 - Keep Deepgram → Expo fallback chain.
@@ -130,14 +122,14 @@ Extract shared helpers to `apps/mobile/src/lib/askAgentCommands.ts` if needed �
 **Problem:** `AthleteAskAgentOverlay` (regex) on `/athlete/water`, `/trends`, etc. vs full agent on dashboard.
 
 **Pick one approach:**
-- **A (recommended):** Extract dashboard ask logic to `apps/mobile/src/lib/useAthleteAskAgent.ts` (or hook + provider). Use on dashboard; overlay on other screens delegates to same hook or navigates to dashboard with `?section=` + auto-open agent.
+- **A (recommended):** Extract dashboard ask logic to `mobile/src/lib/useAthleteAskAgent.ts` (or hook + provider). Use on dashboard; overlay on other screens delegates to same hook or navigates to dashboard with `?section=` + auto-open agent.
 - **B:** Remove overlay entirely; FAB on athlete sub-screens deep-links to dashboard ask mode.
 
 Do not maintain two divergent command handlers.
 
 ### 2.2 Coach dashboard cleanup
 
-**File:** `apps/mobile/src/app/coach/dashboard.tsx`
+**File:** `mobile/src/app/coach/dashboard.tsx`
 
 - Remove unused `handleAskAgent`, `askInputOpen`, `CoachAskReportSheet` if `CoachAskAgentOverlay` in layout is the sole entry point.
 - Or wire dashboard to overlay ( worse — prefer delete dead code).
@@ -146,7 +138,7 @@ Verify e2e: `e2e/ask-agent-mobile.spec.ts` coach tests still pass.
 
 ### 2.3 Guardian global overlay
 
-**Files:** `apps/mobile/src/app/guardian/_layout.tsx`, new or moved handler from `guardian/dashboard.tsx`
+**Files:** `mobile/src/app/guardian/_layout.tsx`, new or moved handler from `guardian/dashboard.tsx`
 
 - Add `GuardianAskAgentOverlay` (mirror coach pattern) or move existing `AskAgentControl` + handler to layout.
 - FAB visible on guardian athlete detail and all guardian routes.
@@ -165,7 +157,7 @@ Server already sends `{ type: "interim", transcript }`. Surface in status pill o
 
 **Files:** `server/src/routes/voiceStream.ts`, `server/src/routes/voice.ts`, `voiceSession.ts`
 
-- Add `apps/mobile/src/lib/voiceLanguage.ts` — persist `en-IN | ta | te` (AsyncStorage / SecureStore).
+- Add `mobile/src/lib/voiceLanguage.ts` — persist `en-IN | ta | te` (AsyncStorage / SecureStore).
 - Append `&language=` to WebSocket URL; pass to batch transcribe.
 - Settings UI: simple language picker (profile or ask-agent long-press menu).
 
@@ -260,16 +252,16 @@ Target: new module **< 400 lines**; dashboard shrinks meaningfully.
 
 | File | Changes |
 |------|---------|
-| `apps/mobile/src/lib/voiceSession.ts` | Non-blocking TTS, intro, batch timer, interim handler |
-| `apps/mobile/src/lib/agentSpeech.ts` | TTS latency |
-| `apps/mobile/src/lib/voiceLanguage.ts` | **New** — language preference |
-| `apps/mobile/src/lib/askAgentCommands.ts` | **New** — shared parsers (optional) |
-| `apps/mobile/src/lib/useAthleteAskAgent.ts` | **New** — extracted hook (optional) |
-| `apps/mobile/src/app/athlete/dashboard.tsx` | pendingIntent, intro, extract hook |
-| `apps/mobile/src/components/AskAgentControl.tsx` | Align with voiceSession changes |
-| `apps/mobile/src/components/RoleAskAgentOverlays.tsx` | Unify athlete; guardian overlay |
-| `apps/mobile/src/app/coach/dashboard.tsx` | Remove dead ask code |
-| `apps/mobile/src/app/guardian/_layout.tsx` | Global guardian FAB |
+| `mobile/src/lib/voiceSession.ts` | Non-blocking TTS, intro, batch timer, interim handler |
+| `mobile/src/lib/agentSpeech.ts` | TTS latency |
+| `mobile/src/lib/voiceLanguage.ts` | **New** — language preference |
+| `mobile/src/lib/askAgentCommands.ts` | **New** — shared parsers (optional) |
+| `mobile/src/lib/useAthleteAskAgent.ts` | **New** — extracted hook (optional) |
+| `mobile/src/app/athlete/dashboard.tsx` | pendingIntent, intro, extract hook |
+| `mobile/src/components/AskAgentControl.tsx` | Align with voiceSession changes |
+| `mobile/src/components/RoleAskAgentOverlays.tsx` | Unify athlete; guardian overlay |
+| `mobile/src/app/coach/dashboard.tsx` | Remove dead ask code |
+| `mobile/src/app/guardian/_layout.tsx` | Global guardian FAB |
 | `server/src/services/voiceIntentInterpreter.ts` | Multilingual prompt |
 | `server/src/routes/voiceStream.ts` | language param, Flux events, keyterms |
 | `server/src/routes/voice.ts` | language on batch transcribe |
@@ -291,7 +283,7 @@ Target: new module **< 400 lines**; dashboard shrinks meaningfully.
   ```bash
   npm run typecheck
   npm test --workspace server
-  npm run lint --workspace apps/mobile
+  npm run lint --workspace mobile
   npm run test:e2e -- e2e/ask-agent-mobile.spec.ts
   ```
 

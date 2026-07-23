@@ -11,15 +11,15 @@ Implement Deepgram streaming WebSocket STT with endpointing for the mobile Ask A
 
 ## Context
 
-Monorepo: npm workspaces (`apps/mobile`, `apps/web`, `server`). Mobile authenticates with Bearer JWT via expo-secure-store (`apps/mobile/src/lib/api.ts`). Server is Express on port 4000.
+Monorepo: npm workspaces (`mobile`, `server`). Mobile authenticates with Bearer JWT via expo-secure-store (`mobile/src/lib/api.ts`). Server is Express on port 4000.
 
 ### Current voice stack (slow — replace STT only)
 
 | Layer | File | Behavior today |
 |-------|------|----------------|
-| Conversation loop | `apps/mobile/src/lib/voiceSession.ts` → `startVoiceConversation()` | listen → execute command → TTS → listen again |
-| STT (batch) | `apps/mobile/src/lib/voiceSession.ts` → `startDeepgramVoiceSession()` | Records up to 9s, uploads full file to `POST /api/voice/transcribe`, waits for transcript |
-| TTS | `apps/mobile/src/lib/agentSpeech.ts` | Deepgram via `GET /api/voice/speak` with Expo Speech fallback — keep as-is |
+| Conversation loop | `mobile/src/lib/voiceSession.ts` → `startVoiceConversation()` | listen → execute command → TTS → listen again |
+| STT (batch) | `mobile/src/lib/voiceSession.ts` → `startDeepgramVoiceSession()` | Records up to 9s, uploads full file to `POST /api/voice/transcribe`, waits for transcript |
+| TTS | `mobile/src/lib/agentSpeech.ts` | Deepgram via `GET /api/voice/speak` with Expo Speech fallback — keep as-is |
 | NLU | `POST /api/athlete/voice/interpret` | Gemini intent classification — keep as-is |
 | Server STT proxy | `server/src/routes/voice.ts` | Prerecorded Deepgram `/v1/listen` — keep for fallback, add streaming alongside |
 
@@ -128,7 +128,7 @@ Do not delete `POST /api/voice/transcribe`. Mobile may fall back if WebSocket fa
 
 ## Mobile implementation
 
-### 1. Replace `startDeepgramVoiceSession()` in `apps/mobile/src/lib/voiceSession.ts`
+### 1. Replace `startDeepgramVoiceSession()` in `mobile/src/lib/voiceSession.ts`
 
 Implement `startDeepgramStreamingVoiceSession(handlers: VoiceSessionHandlers): VoiceSessionHandle` and make `startVoiceSession()` call it instead of the batch recorder.
 
@@ -142,7 +142,7 @@ Implement `startDeepgramStreamingVoiceSession(handlers: VoiceSessionHandlers): V
   - `onNeedsFallback()` on permission denied or unsupported platform
   - `stop()` cancels mic, closes WebSocket, does NOT call `onResult`
 
-- **WebSocket URL**: derive from `API_BASE` in `apps/mobile/src/lib/api.ts`:
+- **WebSocket URL**: derive from `API_BASE` in `mobile/src/lib/api.ts`:
   - `http://` → `ws://`, `https://` → `wss://`
   - Path: `/api/voice/stream?token=${encodeURIComponent(accessToken)}`
   - Use `getAccessToken()` from api.ts
@@ -166,7 +166,7 @@ Implement `startDeepgramStreamingVoiceSession(handlers: VoiceSessionHandlers): V
 ### 2. Do NOT change
 
 - `startVoiceConversation()` turn loop (listen → onResult → speakAgentReply → listen)
-- `apps/mobile/src/lib/agentSpeech.ts` (Deepgram TTS)
+- `mobile/src/lib/agentSpeech.ts` (Deepgram TTS)
 - `AskAgentControl.tsx`, `RoleAskAgentOverlays.tsx`, athlete dashboard ask handlers
 - Gemini `/api/athlete/voice/interpret`
 
@@ -272,13 +272,12 @@ npm run typecheck
 | `server/src/routes/voiceStream.ts` | New proxy |
 | `server/src/config/env.ts` | Optional streaming tuning env vars |
 | `server/package.json` | Add `ws` |
-| `apps/mobile/src/lib/voiceSession.ts` | Streaming STT replaces batch |
+| `mobile/src/lib/voiceSession.ts` | Streaming STT replaces batch |
 | `.env.example` | Document new env vars |
 | `server/tests/voice-stream.test.ts` | New tests |
 
 Optional later (out of scope for v1):
 
-- Web client streaming in `apps/web/components/VoiceAssistant/`
 - Show interim transcript in Ask Agent UI
 - `GEMINI_MODEL=gemini-2.5-flash-lite` for faster NLU (separate change)
 
@@ -292,7 +291,6 @@ Optional later (out of scope for v1):
 - Match existing TypeScript style, no over-abstraction
 - Files should stay under ~300 lines; split helpers if needed
 - Do not commit secrets (`.env`, API keys)
-- Do not remove `/voice-demo` sandbox — unrelated code path
 
 ---
 
@@ -326,10 +324,10 @@ Tested: Android device, athlete dashboard voice commands, multi-turn conversatio
 ## Quick reference: current code locations
 
 ```
-apps/mobile/src/lib/voiceSession.ts     # Replace startDeepgramVoiceSession (batch)
-apps/mobile/src/lib/agentSpeech.ts      # TTS — do not change
-apps/mobile/src/lib/api.ts              # API_BASE, getAccessToken()
-apps/mobile/src/components/AskAgentControl.tsx
+mobile/src/lib/voiceSession.ts     # Replace startDeepgramVoiceSession (batch)
+mobile/src/lib/agentSpeech.ts      # TTS — do not change
+mobile/src/lib/api.ts              # API_BASE, getAccessToken()
+mobile/src/components/AskAgentControl.tsx
 server/src/routes/voice.ts              # Batch STT + TTS REST
 server/src/config/env.ts                # deepgram.* config
 server/src/middleware/auth.ts           # JWT verification to reuse

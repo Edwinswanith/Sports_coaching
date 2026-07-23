@@ -1,4 +1,4 @@
-// Design tokens ported from the web app (apps/web globals.css + roleThemes.ts)
+// Design tokens for the mobile app (role accents + semantic colors).
 // so the native app shares one visual identity. Light, warm off-white theme with
 // a per-role accent hue.
 

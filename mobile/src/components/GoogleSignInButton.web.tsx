@@ -67,9 +67,8 @@ function isAllowedGoogleOrigin(): boolean {
  * by the .tsx version (@react-native-google-signin/google-signin) has no
  * browser implementation; there, `hasPlayServices()` always rejects with
  * PLAY_SERVICES_NOT_AVAILABLE, since "Play Services" isn't a concept in a
- * browser. So this build instead loads Google Identity Services directly —
- * the same approach as apps/web's own GoogleSignInButton — and reuses the
- * shared useAuth().signInWithGoogle for the token exchange + result handling
+ * browser. So this build instead loads Google Identity Services directly and
+ * reuses the shared useAuth().signInWithGoogle for the token exchange + result handling
  * so both platforms produce identical outcomes from the same ID token.
  */
 export function GoogleSignInButton({

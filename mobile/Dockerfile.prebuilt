@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Runtime-only image for an already-exported Expo web bundle.
-# Build context must be apps/mobile after running:
+# Build context must be mobile after running:
 #   npx expo export -p web --output-dir dist
 
 FROM node:20-alpine

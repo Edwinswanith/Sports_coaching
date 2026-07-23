@@ -22,7 +22,7 @@ import { speakTourStep, stopTourNarration } from "./tourNarration";
 // every time the container boots — so changing it in the Cloud Run console
 // and deploying a new revision takes effect with no image rebuild. Local dev
 // and native builds have no window/__RUNTIME_CONFIG__, so they fall back to
-// the build-time EXPO_PUBLIC_TOUR_ALWAYS_SHOW from apps/mobile/.env.
+// the build-time EXPO_PUBLIC_TOUR_ALWAYS_SHOW from mobile/.env.
 function readTourAlwaysShow(): boolean {
   if (Platform.OS === "web" && typeof window !== "undefined") {
     const runtimeValue = (window as unknown as { __RUNTIME_CONFIG__?: Record<string, string> }).__RUNTIME_CONFIG__

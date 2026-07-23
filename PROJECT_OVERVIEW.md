@@ -113,15 +113,13 @@ Coaches own the **plan** (type, intensity, duration). Athletes log the **outcome
 
 ```
 sports-coaching-platform/
-  apps/
-    web/                 # Next.js 14 App Router (mobile-only PWA)
-    mobile/              # Expo (React Native) native app + web/PWA
+  mobile/                # Expo (React Native) native app + web/PWA
   server/                # Express + Mongoose API under /api/*
   docs/                  # Engineering notes and QA reports
   skills/
     sports-coaching-platform-builder/   # Full blueprint
   scripts/               # Dev helpers
-  docker-compose.yml     # Local Mongo + API + web
+  docker-compose.yml     # Local Mongo + API + mobile web export
   deploy.bat             # Google Cloud Run deployment
   package.json           # npm workspaces root
 ```
@@ -136,12 +134,11 @@ Every protected API call passes through:
 4. `requireAthleteAccess` - per-athlete scope check on single-athlete routes
 5. Handler - service layer - Mongoose models - MongoDB
 
-### Two auth transports, one API
+### Auth transport
 
 | Client | Token transport | Storage |
 |--------|-----------------|---------|
-| Web (`apps/web`) | httpOnly cookies | Access token never in JS-readable storage |
-| Mobile (`apps/mobile`) | Authorization Bearer header | expo-secure-store |
+| Mobile (`mobile`) | Authorization Bearer header | expo-secure-store (localStorage on Expo web) |
 
 ### Service layer
 
@@ -162,8 +159,7 @@ Every protected API call passes through:
 
 | Layer | Technology |
 |-------|------------|
-| Web frontend | Next.js 14, React, TypeScript, Tailwind CSS, Recharts |
-| Mobile frontend | Expo, expo-router, React Native, TypeScript |
+| Frontend | Expo, expo-router, React Native, TypeScript |
 | Backend | Node.js, Express, TypeScript |
 | Database | MongoDB via Mongoose |
 | Auth | JWT, bcrypt, optional Google ID token sign-in |
@@ -268,17 +264,11 @@ Full contract: `skills/sports-coaching-platform-builder/api-contract.md`
 
 ---
 
-## Frontend Applications
+## Frontend Application
 
-### Web (`apps/web`)
+### Mobile (`mobile`)
 
-Next.js mobile-only PWA. Shared AppShell with per-role accents. Routes under `app/{athlete,coach,guardian}/`.
-
-Key routes: dashboards, RPE, roster, athlete detail, onboarding, coaches (owner), messages, announcements, account, notifications.
-
-### Mobile (`apps/mobile`)
-
-Expo app mirroring web by role. Bearer auth. Substantial screen parity; athlete messaging screen still in progress.
+Expo app with screens by role. Bearer auth. Substantial feature coverage; athlete messaging screen still in progress. Design tokens live in [mobile/src/lib/theme.ts](mobile/src/lib/theme.ts).
 
 ---
 
@@ -286,7 +276,7 @@ Expo app mirroring web by role. Bearer auth. Substantial screen parity; athlete 
 
 Brand: **Apex** - Evergreen Performance. Light off-white canvas, role accents (emerald coach, amber athlete, teal guardian), semantic status colors for readiness/risk only. Signature Ring component for readiness display.
 
-Full spec: `apps/web/DESIGN_SYSTEM.md`
+Tokens: [mobile/src/lib/theme.ts](mobile/src/lib/theme.ts)
 
 ---
 
@@ -302,7 +292,7 @@ npm run dev
 
 | Service | URL |
 |---------|-----|
-| Web | http://localhost:3000 |
+| Mobile (Expo) | http://localhost:8081 |
 | API | http://localhost:4000 |
 | Health | http://localhost:4000/api/health |
 
@@ -310,9 +300,9 @@ npm run dev
 
 | Command | Purpose |
 |---------|---------|
-| `npm run dev` | Web + server |
+| `npm run dev` | Server + Expo mobile |
 | `npm run dev:mobile` | Expo dev server |
-| `npm run build` | Build web + server |
+| `npm run build` | Build server |
 | `npm run typecheck` | TypeScript all workspaces |
 | `npm test --workspace server` | Jest suite |
 
@@ -337,15 +327,15 @@ npm test --workspace server
 
 203 tests across 17 suites. Covers auth, RBAC, dashboard, athlete workspace, RPE, onboarding, messaging, media, analytics.
 
-Web and mobile: no automated tests; use `npm run typecheck`.
+Web and mobile: mobile has no automated tests; use `npm run typecheck:mobile`.
 
 ---
 
 ## Deployment
 
 - **Local full stack:** `docker compose up --build`
-- **Production:** `deploy.bat` deploys scp-server then scp-web to Google Cloud Run
-- API URL is baked into web at build time; CORS updated after web deploy
+- **Production:** `deploy.bat` deploys scp-server then scp-web (mobile web export) to Google Cloud Run
+- API URL is baked into the mobile bundle at build time; CORS updated after web deploy
 - MongoDB Atlas requires Cloud Run egress IPs on allowlist
 
 ---
@@ -354,7 +344,7 @@ Web and mobile: no automated tests; use `npm run typecheck`.
 
 ### Shipped
 
-Three-role workspaces (web + mobile in progress), JWT and Google auth, coach-led onboarding, daily cards with readiness/risk, RPE monitoring, trends and activity feeds, squad analytics, messaging, notifications, announcements, water tracking, session photos, avatars, achievements, 203 passing server tests.
+Three-role mobile workspaces, JWT and Google auth, coach-led onboarding, daily cards with readiness/risk, RPE monitoring, trends and activity feeds, squad analytics, messaging, notifications, announcements, water tracking, session photos, avatars, achievements, 203 passing server tests.
 
 ### In progress
 
@@ -369,7 +359,6 @@ Athlete mobile messaging, sport-specific performance catalog UI, real-time messa
 | [README.md](README.md) | Quick start, scripts, feature checklist |
 | [APP_WORKFLOW.md](APP_WORKFLOW.md) | End-to-end flows and API reference |
 | [CLAUDE.md](CLAUDE.md) | Agent guardrails and commands |
-| [apps/web/DESIGN_SYSTEM.md](apps/web/DESIGN_SYSTEM.md) | UI tokens and components |
 | [skills/sports-coaching-platform-builder/](skills/sports-coaching-platform-builder/) | Full blueprint (schema, RBAC, API, UI) |
 
 ---

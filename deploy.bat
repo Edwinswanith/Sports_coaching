@@ -6,16 +6,14 @@ REM ----------------------------------------------------------------------------
 REM This is a SPLIT monorepo, so it deploys TWO Cloud Run services (not one
 REM combined container):
 REM   1. scp-server  Express + Mongoose API              (server/Dockerfile) -> $PORT
-REM   2. scp-web     Expo Router app exported as a static (apps/mobile/Dockerfile)
+REM   2. scp-web     Expo Router app exported as a static (mobile/Dockerfile)
 REM                  web (React Native Web) SPA, served by `serve`             -> $PORT
 REM
-REM scp-web deploys the MOBILE app's web export (apps/mobile), not the Next.js
-REM app in apps/web — that app's code is still in the repo but is no longer
-REM deployed by this script. NOTE: the mobile app authenticates with a Bearer
-REM token in SecureStore, which falls back to plain localStorage on web (an
-REM Expo limitation) — unlike the old Next.js app's httpOnly-cookie auth, the
-REM access token is JS-readable on this deployment. Accepted tradeoff; revisit
-REM if this becomes a real security concern.
+REM scp-web deploys the MOBILE app's web export (mobile), served by `serve`
+REM on Cloud Run. The mobile app authenticates with a Bearer token in
+REM SecureStore, which falls back to plain localStorage on web (an Expo
+REM limitation) — the access token is JS-readable on this deployment.
+REM Accepted tradeoff; revisit if this becomes a real security concern.
 REM
 REM Ordering matters: the web bundle inlines the API URL at BUILD time
 REM (EXPO_PUBLIC_* is baked into the client bundle), so we must:
@@ -25,15 +23,14 @@ REM
 REM Server secrets (MONGODB_URI, JWT_*, GEMINI_API_KEY, GOOGLE_CLIENT_ID, ...)
 REM are read from env.server.yaml. Copy env.server.yaml.example first and fill
 REM it in. The web service is a static SPA with no server-side secrets, so it
-REM has no env-vars-file (env.web.yaml is no longer used by this script — it
-REM only ever powered the apps/web-only /voice-demo sandbox).
+REM has no env-vars-file (the mobile SPA has no server-side secrets).
 REM Both containers read Cloud Run's injected PORT automatically.
 REM ============================================================================
 
 set PROJECT_ID=legel-assistent-466812
 set REPOSITORY_NAME=sports-coaching-platform
 set REGION=asia-south1
-set IMAGE_TAG=v18
+set IMAGE_TAG=v19
 
 set SERVER_IMAGE=scp-server
 set SERVER_SERVICE=scp-server
@@ -112,11 +109,11 @@ if "%SERVER_URL%"=="" (
 echo API server URL: %SERVER_URL%
 
 REM ===========================================================================
-REM 2/3) Web frontend -- build apps/mobile's web export (API URL baked in), push, deploy
+REM 2/3) Web frontend -- build mobile's web export (API URL baked in), push, deploy
 REM ===========================================================================
 echo.
 echo === [2/3] Building mobile-web image (EXPO_PUBLIC_API_BASE_URL=%SERVER_URL%) ===
-docker build --no-cache -f apps/mobile/Dockerfile ^
+docker build --no-cache -f mobile/Dockerfile ^
   --build-arg EXPO_PUBLIC_API_BASE_URL=%SERVER_URL% ^
   --build-arg EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=%GOOGLE_CLIENT_ID% ^
   --build-arg EXPO_PUBLIC_GOOGLE_ALLOWED_ORIGINS=%GOOGLE_ALLOWED_ORIGINS% ^
@@ -173,8 +170,4 @@ echo allow-list) or the API cannot reach the database.
 echo.
 echo AI keys:
 echo   API  GEMINI_API_KEY in env.server.yaml  - workout OCR, voice NLU, tour
-echo.
-echo Note: apps/web (Next.js) is no longer deployed by this script. Its code is
-echo still in the repo, unused, including the /voice-demo sandbox and its
-echo GOOGLE_API_KEY/DEEP_GRAM keys in env.web.yaml.
 endlocal

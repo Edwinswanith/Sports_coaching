@@ -1,6 +1,6 @@
 # Sports Coaching Platform
 
-A multi-role web application for academies to manage athletes, training, attendance, wellness, recovery, performance, and coach ↔ athlete communication.
+A multi-role mobile app for academies to manage athletes, training, attendance, wellness, recovery, performance, and coach ↔ athlete communication.
 
 > **Core rule:** A coach only sees data for athletes assigned to that coach. Enforced in three layers (JWT → scope loader → route guard).
 
@@ -12,132 +12,32 @@ A multi-role web application for academies to manage athletes, training, attenda
 
 ## Tech stack
 
-- **Frontend:** Next.js 14 (App Router) + TypeScript + Tailwind CSS
+- **Frontend:** Expo (React Native) + TypeScript — native iOS/Android and web via React Native Web
 - **Backend:** Node.js + Express + TypeScript
 - **Database:** MongoDB via Mongoose (Atlas in production, local or `mongodb-memory-server` in tests)
-- **Auth:** JWT (httpOnly access + rotating refresh cookies) with bcrypt password hashing and per-IP login rate limiting
+- **Auth:** JWT (Bearer header on mobile; server also accepts httpOnly cookies for legacy clients) with bcrypt password hashing and per-IP login rate limiting
 
 ## Repository layout
 
 ```
 sports-coaching-platform/
-├── apps/
-│   └── web/                        # Next.js frontend
-│       └── app/
-│           ├── page.tsx            # Landing + sign-in (routes by role)
-│           ├── coach/dashboard/    # Coach workspace
-│           └── athlete/dashboard/  # Athlete workspace (mobile-first)
+├── mobile/                         # Expo Router app (native + web/PWA)
+│   └── src/app/
+│       ├── login/                  # Role sign-in
+│       ├── coach/                  # Coach workspace
+│       ├── athlete/                # Athlete workspace
+│       └── guardian/               # Guardian workspace
 ├── server/
 │   └── src/
-│       ├── models/                 # 13 Mongoose models
-│       ├── routes/
-│       │   ├── auth.ts             # /api/auth/*
-│       │   ├── coach.ts            # /api/coach/*
-│       │   └── athlete.ts          # /api/athlete/*
+│       ├── models/                 # Mongoose models
+│       ├── routes/                 # /api/* routers
 │       ├── middleware/             # auth, role, coachAthleteAccess
-│       ├── services/dashboard.ts   # daily-card aggregator
-│       ├── lib/tokens.ts           # access + refresh JWT helpers
+│       ├── services/               # domain logic
 │       └── scripts/seed.ts         # seed demo academy with realistic data
 ├── docs/
 ├── skills/sports-coaching-platform-builder/   # Full blueprint & build skill
 └── package.json                    # npm workspaces root
 ```
-
-## Apex Assist demo architecture
-
-`/voice-demo` is an isolated, synthetic product demo inside the Next.js web workspace. It does not use the production Express API, MongoDB collections, authentication, or real athlete data. Its purpose is to validate the athlete assistant, deterministic analytics, coach-plan workflow, and confirmation UX before production integration.
-
-```mermaid
-flowchart TD
-  subgraph Browser["Browser · /voice-demo"]
-    UI["Athlete dashboard, assistant, progress, coach planner"]
-    CTX["Session-only conversation context"]
-  end
-
-  subgraph API["Next.js route handlers · /voice-demo/api/*"]
-    TURN["Assistant turn API"]
-    ACTIONS["Manual action API"]
-    PLANS["Confirm / cancel plan APIs"]
-    COACH["Coach draft / publish APIs"]
-  end
-
-  subgraph Reasoning["Constrained assistant pipeline"]
-    SANITIZE["Context sanitizer"]
-    INTERPRET["Rules first, Gemini function calling second"]
-    VALIDATE["Typed planner and deterministic validation"]
-    ANALYTICS["Deterministic analytics query engine"]
-    HUMANIZE["Grounded Gemini humanizer"]
-    GUARD["Grounding and safety validator"]
-  end
-
-  subgraph Execution["Server-owned execution"]
-    PROPOSAL["Stored action plan"]
-    TOOLS["Allowlisted, idempotent domain tools"]
-    PLANRULES["Coach-plan validation and versioning"]
-  end
-
-  STORE["Local schema-v2 JSON state<br/>30 days + plans + operations<br/>.voice-demo-data/state.json"]
-
-  UI -->|"text + validated context"| TURN
-  CTX --> TURN
-  TURN --> SANITIZE --> INTERPRET --> VALIDATE
-  VALIDATE -->|"read-only query"| ANALYTICS
-  ANALYTICS -->|"evidence + grounding tokens"| HUMANIZE --> GUARD
-  GUARD -->|"validated response or deterministic fallback"| UI
-  VALIDATE -->|"write candidate"| PROPOSAL
-  PROPOSAL -->|"preview"| UI
-  UI -->|"explicit confirmation"| PLANS --> TOOLS --> STORE
-  UI --> ACTIONS --> TOOLS
-  UI --> COACH --> PLANRULES --> STORE
-  STORE --> TURN
-  STORE --> UI
-```
-
-### Request flows
-
-**Read-only analytics**
-
-1. The browser sends the athlete's text plus small session-only context.
-2. The server sanitizes that context against stored dates, metrics, plans, and exercises.
-3. Deterministic rules handle common prompts; Gemini function calling handles flexible language and may only select an allowlisted typed query.
-4. The server validates the query and calculates rankings, averages, trends, comparisons, and relationships from the stored 30-day history.
-5. Gemini may make the response more conversational using immutable evidence tokens. A second validator rejects free numeric claims, unsupported metrics, causal language, diagnoses, or prescriptions and falls back to the deterministic answer.
-6. Read-only questions return evidence without creating an action plan or changing athlete data.
-
-**Write actions**
-
-1. Text or manual input is mapped to an allowlisted tool such as `add_water`, `record_wellness`, `update_training_session`, `record_recovery`, or `send_coach_message`.
-2. The planner rejects unknown fields, invalid ranges, ambiguous sessions, and unsupported recipients. It never fills an unstated wellness value.
-3. Assistant writes are saved as short-lived server-owned plans and shown as a preview.
-4. Only the plan ID is sent back for confirmation; Gemini never receives database authority and never executes a tool.
-5. The deterministic executor applies the confirmed operation once. Stable operation IDs make retries idempotent.
-6. State is written through a serialized queue using a temporary file plus atomic rename, then the dashboard refreshes.
-
-### Main layers
-
-| Layer | Responsibility | Primary code |
-|---|---|---|
-| UI | Responsive athlete dashboard, scrollable assistant, fixed composer, progress view, coach planner, test laboratory | [`apps/web/components/voice-demo/`](apps/web/components/voice-demo/) |
-| API boundary | Validates HTTP requests and keeps keys and provider calls server-side | [`apps/web/app/voice-demo/api/`](apps/web/app/voice-demo/api/) |
-| Interpreter | Uses deterministic fast paths first and Gemini function calling for flexible language | [`assistantInterpreter.ts`](apps/web/lib/voice-demo/assistantInterpreter.ts) |
-| Planner and policy | Resolves sessions, coach plans, dates, fields, permissions, clarifications, and previews | [`assistantPlanner.ts`](apps/web/lib/voice-demo/assistantPlanner.ts) |
-| Analytics | Validates typed queries and calculates every numeric insight from recorded data | [`analyticsQuery.ts`](apps/web/lib/voice-demo/analyticsQuery.ts), [`analytics.ts`](apps/web/lib/voice-demo/analytics.ts) |
-| Response grounding | Lets Gemini improve phrasing, then rejects unsupported claims and uses the deterministic fallback | [`assistantHumanizer.ts`](apps/web/lib/voice-demo/assistantHumanizer.ts) |
-| Tool execution | Performs only allowlisted, range-validated, idempotent domain updates | [`tools.ts`](apps/web/lib/voice-demo/tools.ts) |
-| Persistence | Seeds, versions, serializes, atomically writes, resets, and retrieves local demo state | [`store.ts`](apps/web/lib/voice-demo/store.ts), [`seed.ts`](apps/web/lib/voice-demo/seed.ts) |
-| Coach planning | Maintains private drafts, validates exercise prescriptions, and publishes visible versions | [`coachPlans.ts`](apps/web/lib/voice-demo/coachPlans.ts) |
-
-### Reliability boundaries
-
-- Gemini interprets language and optionally rewrites grounded prose; deterministic TypeScript owns identity, dates, calculations, validation, permissions, and execution.
-- Unknown tool arguments and unsupported analytics metrics are rejected.
-- Conversation memory contains validated references only, remains in browser memory, and is cleared by refresh or demo reset.
-- Read-only questions cannot create plans or operations.
-- Every assistant write requires a visible confirmation; repeat confirmation cannot repeat the domain action.
-- Training intensity is reported from Coach Priya's published plan. The assistant cannot prescribe or increase it.
-- `GOOGLE_API_KEY` and `GEMINI_MODEL` are read only on the server. `DEEP_GRAM` is reserved for the later push-to-talk phase and is not used by the current text workflow.
-
-This is intentionally a demo architecture. File-backed state, authentication-free routes, and the in-process write queue must be replaced by authenticated domain services, production persistence, shared idempotency, auditing, and durable notification handling before integration with real athlete data. See [the detailed demo notes](docs/voice-demo-30-day-analytics.md).
 
 ## Prerequisites
 
@@ -154,17 +54,16 @@ npm install
 # 2. Copy env templates
 cp .env.example .env
 cp .env.example server/.env
-cp apps/web/.env.example apps/web/.env.local
 
 # 3. Seed the database (creates a demo academy with users, athletes, sessions, etc.)
 npm run seed --workspace server
 
-# 4. Run web + server in parallel
+# 4. Run API + Expo in parallel
 npm run dev
 ```
 
 By default:
-- Web: <http://localhost:3000>
+- Mobile (Expo): scan QR for native, or open the web tab at <http://localhost:8081>
 - API: <http://localhost:4000>
 - Health check: <http://localhost:4000/api/health>
 
@@ -172,10 +71,10 @@ By default:
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Run web + server in parallel |
-| `npm run dev:web` | Next.js dev server |
-| `npm run dev:server` | Express dev server with ts-node-dev |
-| `npm run build` | Build both web and server |
+| `npm run dev` | Run API + Expo mobile in parallel |
+| `npm run dev:server` | Express dev server |
+| `npm run dev:mobile` | Expo dev server (native + web) |
+| `npm run build` | Build server |
 | `npm test --workspace server` | Run Jest suite (uses `mongodb-memory-server`, no external Mongo needed) |
 | `npm run seed --workspace server` | Populate the connected database with demo data |
 
@@ -209,7 +108,7 @@ This is the deliberately role-scoped replacement for the removed admin provision
 - Per-IP rate limit: **5 login attempts per 60 s** → `429 too_many_login_attempts`
 - Security headers on every response: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`
 - Mongo connection string is redacted in logs
-- **Web client is cookie-only**: the access token is never stored in JS-readable storage (no XSS exposure); the shared `apiFetch` helper ([apps/web/lib/api.ts](apps/web/lib/api.ts)) sends the httpOnly cookie and transparently refreshes on a 401
+- **Mobile client uses Bearer JWT** stored in expo-secure-store (localStorage fallback on Expo web); see [mobile/src/lib/api.ts](mobile/src/lib/api.ts)
 
 ### Coach workspace (✅ shipped)
 
@@ -301,7 +200,7 @@ Current count: **131 tests across 13 suites**, all passing — covering auth, th
 ## Current status
 
 **Shipped:**
-- Auth (login / refresh / logout / me, rate-limited, security headers, cookie-only web client)
+- Auth (login / refresh / logout / me, rate-limited, security headers, Bearer mobile client)
 - All three role workspaces with UI: **coach** (`/coach/dashboard`), **athlete** (`/athlete/dashboard`), **guardian** (`/guardian/dashboard`)
 - Coach: dashboard + RPE view + write endpoints (comment / attendance / training plan / performance) with an inline feedback composer
 - Athlete: daily workflow (check-in / attendance / training / recovery / notes ↔ coach) with input range validation + write rate-limiting
@@ -309,8 +208,8 @@ Current count: **131 tests across 13 suites**, all passing — covering auth, th
 - Guardian read API + UI (`/api/guardian/*`) — read-only linked-athlete roster, daily card, and coach comments
 - Trends API + UI (`/api/*/trends`) — trailing per-day readiness/load/sleep series rendered as dependency-free SVG sparklines on the athlete, coach, and guardian views
 - Activity API + UI (`/api/*/activity`) — merged, time-sorted timeline of sessions/RPE/check-ins/recovery/comments/notes/performance/injuries on the athlete and guardian views
-- Premium **light** sports-performance UI: clean off-white backgrounds, white cards, lime accents, readiness rings, status chips, risk-sorted coach cockpit, condensed athletic type (token-driven theme in [apps/web/app/globals.css](apps/web/app/globals.css))
-- 131/131 server tests passing; web app typechecks and production-builds clean
+- Premium **light** sports-performance UI: clean off-white backgrounds, white cards, lime accents, readiness rings, status chips, risk-sorted coach cockpit, condensed athletic type (token-driven theme in [mobile/src/lib/theme.ts](mobile/src/lib/theme.ts))
+- Server tests passing; mobile app typechecks clean
 
 **Up next:**
 - Sport-specific performance entry (athletics / badminton / etc.) driven by a shared metric catalog

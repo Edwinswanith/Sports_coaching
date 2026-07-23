@@ -1,6 +1,6 @@
-# Full stack: MongoDB + API + web. Run with:
+# Full stack: MongoDB + API + mobile web export. Run with:
 #   docker compose up --build
-# Then open http://localhost:3000  (API at http://localhost:4000).
+# Then open http://localhost:8080  (API at http://localhost:4000).
 #
 # Override secrets via a root .env file (JWT_ACCESS_SECRET, JWT_REFRESH_SECRET).
 
@@ -30,7 +30,7 @@ services:
       NODE_ENV: production
       PORT: "4000"
       MONGODB_URI: mongodb://mongo:27017/athletes
-      CORS_ORIGIN: http://localhost:3000
+      CORS_ORIGIN: http://localhost:8080
       # mongo's hostname is non-localhost, so the server enforces strong secrets —
       # these MUST NOT be the literal placeholders. Override in a root .env file!
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-please_change_me_access_0123456789abcdef0123}
@@ -40,18 +40,18 @@ services:
     ports:
       - "4000:4000"
 
-  web:
+  mobile-web:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
+      dockerfile: mobile/Dockerfile
       args:
         # Baked into the client bundle at build time → must be browser-reachable.
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:4000
+        EXPO_PUBLIC_API_BASE_URL: http://localhost:4000
     restart: unless-stopped
     depends_on:
       - server
     ports:
-      - "3000:3000"
+      - "8080:8080"
 
 volumes:
   mongo-data:

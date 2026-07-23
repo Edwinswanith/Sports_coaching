@@ -26,7 +26,7 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      command: `EXPO_PUBLIC_API_BASE_URL=${apiUrl} npm run web --workspace apps/mobile -- --port 8081`,
+      command: `EXPO_PUBLIC_API_BASE_URL=${apiUrl} npm run web --workspace mobile -- --port 8081`,
       url: mobileUrl,
       reuseExistingServer: true,
       timeout: 180_000,

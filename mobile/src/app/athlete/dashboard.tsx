@@ -499,7 +499,7 @@ const API_ERROR_MESSAGES: Record<string, string> = {
   invalid_sessionType: "Session must be AM, afternoon, or PM.",
   invalid_trainingCategory: "That training category isn't recognized.",
   invalid_plannedIntensityPercent: "Planned intensity must be between 0 and 100 percent.",
-  invalid_rpe: "RPM must be between 0 and 10.",
+  invalid_rpe: "RPE must be between 0 and 10.",
   invalid_muscleSoreness: "Soreness is out of range.",
   invalid_moodMotivation: "Mood is out of range.",
   invalid_restingHeartRate: "Resting heart rate must be between 20 and 220 bpm.",
@@ -602,6 +602,40 @@ function parseOpenSessionLogCommand(text: string): SessionSlot | null {
 
 function isAskAcknowledgement(text: string) {
   return /^(?:ok|okay|yes|yeah|yep|done|fine|good|thanks|thank you)\.?$/i.test(text.trim());
+}
+
+const ASK_METRIC_FIELD_LABEL_PATTERN: Record<Exclude<AskSessionWizardField, "trainingCategory">, RegExp> = {
+  rpe: /\brpe\b|\brpm\b|\beffort\b/,
+  plannedIntensityPercent: /\bplanned\s+intensity\b|\bintensity\b|\bpercent\b|\bpercentage\b/,
+  muscleSoreness: /\bsoreness\b|\bsore\b/,
+  fatigue: /\bfatigue\b|\btired\b/,
+  moodMotivation: /\bmood\b/,
+};
+
+/**
+ * True when `text` names a DIFFERENT metric than `current` and does not also
+ * name `current`'s own label — used to stop a wizard/follow-up question about
+ * one field from grabbing a bare number that actually belongs to a different
+ * field mentioned in the same reply (e.g. answering an RPE question with
+ * "soreness is 6"). An explicit mention of `current`'s own label always wins
+ * even if other field words also appear (e.g. "high intensity plyos, RPE 8" —
+ * training-category names legitimately contain "intensity"). Never call this
+ * with "trainingCategory" — it has no fixed label to check against.
+ */
+function isAskMetricFieldMismatch(current: Exclude<AskSessionWizardField, "trainingCategory">, text: string): boolean {
+  const lower = text.toLowerCase();
+  if (ASK_METRIC_FIELD_LABEL_PATTERN[current].test(lower)) return false;
+  return (Object.keys(ASK_METRIC_FIELD_LABEL_PATTERN) as (keyof typeof ASK_METRIC_FIELD_LABEL_PATTERN)[]).some(
+    (field) => field !== current && ASK_METRIC_FIELD_LABEL_PATTERN[field].test(lower)
+  );
+}
+
+/** Anchored to the whole utterance (minus trailing punctuation/filler) so it never matches a longer command like "cancel rest day". */
+function isAskCancelCommand(text: string) {
+  const normalized = text.trim().toLowerCase().replace(/[!.?]+$/, "");
+  return /^(?:ok(?:ay)?[,\s]+)?(?:no[,\s]+)?(?:never\s*mind|nevermind|cancel(?:\s+that)?|forget\s+it|scratch\s+that|stop(?:\s+that)?|abort|skip\s+(?:it|that)|not\s+now|nvm)$/.test(
+    normalized
+  );
 }
 
 function isSetRestDayCommand(text: string) {
@@ -806,25 +840,25 @@ function parseWellnessCommand(text: string): WellnessCommandFields | null {
   return Object.keys(fields).length || isCheckIn ? fields : null;
 }
 
-const WELLNESS_FIELD_LABEL: Record<keyof WellnessCommandFields, string> = {
-  sleepHours: "Sleep",
-  sleepQuality: "Sleep",
-  mood: "Mood",
-  stress: "Stress",
-  soreness: "Soreness",
-  fatigue: "Fatigue",
-};
-
 /**
  * A targeted single-field update ("update mood to 7") gets its own
- * confirmation ("Mood is updated.") instead of the generic "Check-in saved.",
- * which is reserved for genuine multi-field/"check-in" commands.
+ * confirmation naming the value ("Today's check-in: mood 7 updated.") instead
+ * of the generic "Today's check-in saved.", reserved for genuine multi-field/
+ * "check-in" commands. Always prefixed with "Today's check-in" so it can't be
+ * confused with sessionRpeUpdateMessage's "Saved to your <slot> session" —
+ * the two write to different records and both now state the saved value.
  */
 function wellnessUpdateMessage(fields: WellnessCommandFields, isExplicitCheckIn: boolean): string {
-  const keys = Object.keys(fields) as (keyof WellnessCommandFields)[];
-  const labels = Array.from(new Set(keys.map((key) => WELLNESS_FIELD_LABEL[key])));
-  if (!isExplicitCheckIn && labels.length === 1) return `${labels[0]} is updated.`;
-  return "Check-in saved.";
+  const parts: string[] = [];
+  if (fields.sleepHours !== undefined) parts.push(`sleep ${fields.sleepHours}h`);
+  if (fields.sleepQuality !== undefined) parts.push(`sleep quality ${fields.sleepQuality}`);
+  if (fields.mood !== undefined) parts.push(`mood ${fields.mood}`);
+  if (fields.stress !== undefined) parts.push(`stress ${fields.stress}`);
+  if (fields.soreness !== undefined) parts.push(`soreness ${fields.soreness}`);
+  if (fields.fatigue !== undefined) parts.push(`fatigue ${fields.fatigue}`);
+  if (!parts.length) return "Today's check-in saved.";
+  if (!isExplicitCheckIn && parts.length === 1) return `Today's check-in: ${parts[0]} updated.`;
+  return `Today's check-in saved: ${parts.join(", ")}.`;
 }
 
 /** Wake/bed resting heart rate — distinct from parseTrainingCommand's per-session restingHeartRate. */
@@ -970,20 +1004,25 @@ function metricText(value: number | null | undefined, digits = 2): string {
   return Number.isInteger(roundedValue) ? String(roundedValue) : roundedValue.toFixed(digits);
 }
 
+/**
+ * Always prefixed with "Saved to your <slot> session" so it can't be
+ * confused with wellnessUpdateMessage's "Today's check-in" — the two write to
+ * different records (per-session RpeMonitoring vs. daily Wellness) and both
+ * now state the saved value(s).
+ */
 function sessionRpeUpdateMessage(slot: SessionSlot, patch: TrainingCommandPatch): string {
-  const changed: string[] = [];
-  if (patch.rpe !== undefined || patch.effortRating !== undefined) changed.push("RPM");
-  if (patch.plannedIntensityPercent !== undefined) changed.push("planned intensity");
-  if (patch.muscleSoreness !== undefined) changed.push("soreness");
-  if (patch.fatigue !== undefined) changed.push("fatigue");
-  if (patch.sleepQuality !== undefined) changed.push("sleep quality");
-  if (patch.moodMotivation !== undefined) changed.push("mood");
-  if (patch.restingHeartRate !== undefined) changed.push("resting heart rate");
-  if (patch.bodyConditionFeedback !== undefined) changed.push("body condition");
-  const unique = Array.from(new Set(changed));
-  if (unique.length === 1) return `${SLOT_LABEL[slot]} ${unique[0]} updated.`;
-  if (unique.length > 1) return `${SLOT_LABEL[slot]} session check-in updated.`;
-  return `${SLOT_LABEL[slot]} RPM updated.`;
+  const parts: string[] = [];
+  const rpeValue = patch.rpe ?? patch.effortRating;
+  if (rpeValue !== undefined) parts.push(`RPE ${rpeValue}`);
+  if (patch.plannedIntensityPercent !== undefined) parts.push(`planned intensity ${patch.plannedIntensityPercent}%`);
+  if (patch.muscleSoreness !== undefined) parts.push(`soreness ${patch.muscleSoreness}`);
+  if (patch.fatigue !== undefined) parts.push(`fatigue ${patch.fatigue}`);
+  if (patch.sleepQuality !== undefined) parts.push(`sleep quality ${patch.sleepQuality}`);
+  if (patch.moodMotivation !== undefined) parts.push(`mood ${patch.moodMotivation}`);
+  if (patch.restingHeartRate !== undefined) parts.push(`resting heart rate ${patch.restingHeartRate} bpm`);
+  if (patch.bodyConditionFeedback !== undefined) parts.push("body condition");
+  if (!parts.length) return `Saved to your ${SLOT_LABEL[slot]} session.`;
+  return `Saved to your ${SLOT_LABEL[slot]} session: ${parts.join(", ")}.`;
 }
 
 function buildDailyInfoResult({
@@ -1027,7 +1066,7 @@ function buildDailyInfoResult({
       status: done ? "Done" : "Pending",
       detail: done
         ? `${session.workoutType ?? session.type ?? rpe?.trainingCategory ?? "Training"} logged`
-        : `${session.workoutType ?? session.type ?? "Training"} needs log/RPM.`,
+        : `${session.workoutType ?? session.type ?? "Training"} needs log/RPE.`,
       tone: done ? "ok" : "warn",
       action: { type: "section", section: "log", slot },
     });
@@ -1061,7 +1100,7 @@ function buildDailyInfoResult({
       icon: "flame-outline",
       label: "Training load",
       status: `${latestRpe.calculatedTrainingLoad}`,
-      detail: `${latestRpe.trainingCategory} · RPM ${latestRpe.rpe} · ${latestRpe.plannedIntensityPercent}%`,
+      detail: `${latestRpe.trainingCategory} · RPE ${latestRpe.rpe} · ${latestRpe.plannedIntensityPercent}%`,
       tone: latestRpe.riskFlag === "green" ? "ok" : latestRpe.riskFlag === "amber" ? "warn" : "bad",
       action: { type: "section", section: "log", slot: latestRpe.sessionType },
     });
@@ -1611,7 +1650,7 @@ export default function AthleteDashboard() {
 
   function askSessionWizardQuestion(field: AskSessionWizardField) {
     if (field === "trainingCategory") return "What training category did you do?";
-    if (field === "rpe") return "What was your session RPM from 1 to 10?";
+    if (field === "rpe") return "What was your session RPE from 1 to 10?";
     if (field === "plannedIntensityPercent") return "What was the planned intensity percent?";
     if (field === "muscleSoreness") return "What was your soreness from 1 to 10?";
     if (field === "fatigue") return "What was your fatigue from 1 to 10?";
@@ -1664,6 +1703,10 @@ export default function AthleteDashboard() {
       }
       await finishAskSessionWizard(nextWizard);
       return true;
+    }
+    if (isAskMetricFieldMismatch(field, transcript)) {
+      askSessionWizardRef.current = null;
+      return false;
     }
     if (value === null) {
       sayInfo(askSessionWizardQuestion(field));
@@ -1743,7 +1786,8 @@ export default function AthleteDashboard() {
       const form = card ? makeSessionForms(card)[slot] : null;
       const categoryFromText = TRAINING_CATEGORIES.find((item) => lower.includes(item.toLowerCase()));
       if (categoryFromText) collected.trainingCategory = categoryFromText;
-      if (value !== null && value >= 0 && value <= 10) {
+      const rpeMismatch = isAskMetricFieldMismatch("rpe", transcript);
+      if (!rpeMismatch && value !== null && value >= 0 && value <= 10) {
         collected.effortRating = value;
         collected.rpe = value;
       }
@@ -1755,6 +1799,10 @@ export default function AthleteDashboard() {
             ? collected.rpe
             : null;
       if (rpe === null) {
+        if (rpeMismatch) {
+          askPendingGeminiRef.current = null;
+          return false;
+        }
         askPendingGeminiRef.current = { ...pending, collected };
         sayError("Tell me the RPE as a number from 1 to 10.");
         return true;
@@ -1796,12 +1844,18 @@ export default function AthleteDashboard() {
       return true;
     }
 
-    if (pending.intent === "fill_training" && value !== null) {
-      const slot = SESSION_SLOTS.includes(collected.slot as SessionSlot) ? (collected.slot as SessionSlot) : currentLogSlot;
-      askPendingGeminiRef.current = null;
-      askPendingIntentRef.current = null;
-      await saveTrainingCommandFromAsk({ slot, patch: { effortRating: Math.max(1, Math.min(10, value)) } });
-      return true;
+    if (pending.intent === "fill_training") {
+      if (value !== null && !isAskMetricFieldMismatch("rpe", transcript)) {
+        const slot = SESSION_SLOTS.includes(collected.slot as SessionSlot) ? (collected.slot as SessionSlot) : currentLogSlot;
+        askPendingGeminiRef.current = null;
+        askPendingIntentRef.current = null;
+        await saveTrainingCommandFromAsk({ slot, patch: { effortRating: Math.max(1, Math.min(10, value)) } });
+        return true;
+      }
+      if (value !== null) {
+        askPendingGeminiRef.current = null;
+        return false;
+      }
     }
 
     return false;
@@ -1908,7 +1962,7 @@ export default function AthleteDashboard() {
       icon: "flame-outline",
       label: "Training load",
       status: latestRpe ? metricText(latestRpe.calculatedTrainingLoad) : "--",
-      detail: latestRpe ? `${latestRpe.trainingCategory} · RPM ${metricText(latestRpe.rpe)} · ${latestRpe.riskFlag} flag.` : "No RPM/load entry logged today.",
+      detail: latestRpe ? `${latestRpe.trainingCategory} · RPE ${metricText(latestRpe.rpe)} · ${latestRpe.riskFlag} flag.` : "No RPE/load entry logged today.",
       tone: latestRpe ? latestRpe.riskFlag === "green" ? "ok" : latestRpe.riskFlag === "amber" ? "warn" : "bad" : "neutral",
       action: { type: "section", section: "log", slot: latestRpe?.sessionType },
     });
@@ -1917,7 +1971,7 @@ export default function AthleteDashboard() {
       icon: "battery-dead-outline",
       label: "Fatigue",
       status: fatigue === null ? "--" : `${metricText(fatigue)}/10`,
-      detail: fatigue === null ? "No fatigue score logged in today's RPM entries." : "Higher fatigue means you may need more recovery.",
+      detail: fatigue === null ? "No fatigue score logged in today's RPE entries." : "Higher fatigue means you may need more recovery.",
       tone: fatigue === null ? "neutral" : fatigue <= 4 ? "ok" : fatigue <= 7 ? "warn" : "bad",
       action: { type: "section", section: "log", slot: latestRpe?.sessionType },
     });
@@ -2231,7 +2285,7 @@ export default function AthleteDashboard() {
         lines.push("Log every drink so the trend is accurate for the next report.");
       } else {
         lines.push("No action plan was generated from this data window.");
-        lines.push("Keep logging check-ins, RPM, recovery, and hydration so the next analysis has enough signal.");
+        lines.push("Keep logging check-ins, RPE, recovery, and hydration so the next analysis has enough signal.");
       }
       lines.push(
         kind === "down"
@@ -2289,7 +2343,7 @@ export default function AthleteDashboard() {
           icon: "barbell-outline",
           label: "Training logged",
           status: `${sessionsDone}/${sessionsPlanned}`,
-          detail: `${allRpeEntries.length} RPM entr${allRpeEntries.length === 1 ? "y" : "ies"} captured.`,
+          detail: `${allRpeEntries.length} RPE entr${allRpeEntries.length === 1 ? "y" : "ies"} captured.`,
           tone: sessionsPlanned && sessionsDone / sessionsPlanned >= 0.8 ? "ok" : "warn",
           action: { type: "section", section: "log" },
         },
@@ -2298,7 +2352,7 @@ export default function AthleteDashboard() {
           icon: "flame-outline",
           label: "Average load",
           status: rounded(loadAvg),
-          detail: `Average RPM ${rounded(rpmAvg, 1)} with ${highRiskLoads} flagged load${highRiskLoads === 1 ? "" : "s"}.`,
+          detail: `Average RPE ${rounded(rpmAvg, 1)} with ${highRiskLoads} flagged load${highRiskLoads === 1 ? "" : "s"}.`,
           tone: highRiskLoads ? "warn" : "ok",
           action: { type: "section", section: "log" },
         },
@@ -2317,7 +2371,7 @@ export default function AthleteDashboard() {
           label: "Next-step plan",
           status: highRiskLoads || lowReadinessDays ? "Adjust" : "Maintain",
           detail: highRiskLoads
-            ? "Reduce intensity after flagged RPM days and add recovery before the next hard session."
+            ? "Reduce intensity after flagged RPE days and add recovery before the next hard session."
             : sleepAvg !== null && sleepAvg < 7
               ? "Move bedtime earlier until sleep average is at least 7 hours."
               : "No threshold-based next step was generated from this report window.",
@@ -2377,7 +2431,7 @@ export default function AthleteDashboard() {
         icon: "speedometer-outline",
         label: "Load control",
         status: `${highRiskLoads} flags`,
-        detail: highRiskLoads ? "Review amber/red load sessions and adjust intensity with your coach." : "Load is controlled; keep logging RPM.",
+        detail: highRiskLoads ? "Review amber/red load sessions and adjust intensity with your coach." : "Load is controlled; keep logging RPE.",
         tone: highRiskLoads ? "bad" : "ok",
         action: { type: "section", section: "log" },
       },
@@ -2463,6 +2517,21 @@ export default function AthleteDashboard() {
     try {
       if (isAskAcknowledgement(transcript)) {
         sayInfo("Okay.");
+        return;
+      }
+
+      const hasActiveAskFlow = Boolean(
+        askSessionWizardRef.current ||
+          askPendingGeminiRef.current ||
+          askPendingIntentRef.current ||
+          askPendingCoachMessageRef.current
+      );
+      if (hasActiveAskFlow && isAskCancelCommand(transcript)) {
+        askSessionWizardRef.current = null;
+        askPendingGeminiRef.current = null;
+        askPendingIntentRef.current = null;
+        askPendingCoachMessageRef.current = false;
+        sayInfo("Okay, cancelled.");
         return;
       }
 
@@ -2606,6 +2675,7 @@ export default function AthleteDashboard() {
         !contextualSessionMetricCommand.slot &&
         section === "log" &&
         !/\bcheck.?in\b/i.test(transcript) &&
+        !parseWellnessCommand(transcript) &&
         (
           contextualSessionMetricCommand.patch.muscleSoreness !== undefined ||
           contextualSessionMetricCommand.patch.fatigue !== undefined
