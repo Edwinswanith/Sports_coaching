@@ -8,6 +8,8 @@ import { generateKeyPairSync } from "crypto";
 import { User } from "../src/models/User";
 import { AthleteProfile } from "../src/models/AthleteProfile";
 import { CoachAthleteAssignment } from "../src/models/CoachAthleteAssignment";
+import { Wellness } from "../src/models/Wellness";
+import { Notification } from "../src/models/Notification";
 import authRouter, { __resetLoginRateLimit } from "../src/routes/auth";
 import coachRouter from "../src/routes/coach";
 import athleteRouter from "../src/routes/athlete";
@@ -375,14 +377,18 @@ describe("POST /api/auth/apple self-signup roles", () => {
     env.appleClientIds = previousAppleClientIds;
   });
 
-  function appleToken(email: string, audience = "app.apex.coaching") {
+  function appleToken(
+    email: string,
+    audience = "app.apex.coaching",
+    subject = `apple-${email}`
+  ) {
     return jwt.sign(
       {
         iss: "https://appleid.apple.com",
         aud: audience,
         email,
         email_verified: "true",
-        sub: `apple-${email}`,
+        sub: subject,
       },
       privateKey,
       { algorithm: "RS256", keyid: "apple-test-key", expiresIn: "5m" }
@@ -430,6 +436,54 @@ describe("POST /api/auth/apple self-signup roles", () => {
     expect(typeof res.body.refreshToken).toBe("string");
   });
 
+  test("repeat Apple sign-in uses the stable subject even if the disclosed email changes", async () => {
+    const subject = "stable-apple-user";
+    const first = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({
+        identityToken: appleToken("first@privaterelay.appleid.com", "app.apex.coaching", subject),
+        requestedRole: "athlete",
+      });
+    const second = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({
+        identityToken: appleToken("changed@privaterelay.appleid.com", "app.apex.coaching", subject),
+        requestedRole: "coach",
+      });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body.user.id).toBe(first.body.user.id);
+    expect(second.body.user.role).toBe("athlete");
+    expect(await User.countDocuments({ appleSubject: subject })).toBe(1);
+  });
+
+  test("repeat Apple sign-in succeeds when Apple omits email on later authorization", async () => {
+    const subject = "returning-apple-user";
+    const first = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({
+        identityToken: appleToken("returning@privaterelay.appleid.com", "app.apex.coaching", subject),
+        requestedRole: "athlete",
+      });
+    const tokenWithoutProfile = jwt.sign(
+      {
+        iss: "https://appleid.apple.com",
+        aud: "app.apex.coaching",
+        sub: subject,
+      },
+      privateKey,
+      { algorithm: "RS256", keyid: "apple-test-key", expiresIn: "5m" }
+    );
+    const second = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({ identityToken: tokenWithoutProfile, requestedRole: "coach" });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body.user.id).toBe(first.body.user.id);
+  });
+
   test("Apple token with wrong audience is rejected", async () => {
     const res = await request(buildApp())
       .post("/api/auth/apple")
@@ -440,6 +494,63 @@ describe("POST /api/auth/apple self-signup roles", () => {
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ error: "invalid_apple_token" });
+  });
+});
+
+describe("DELETE /api/auth/account", () => {
+  test("requires explicit confirmation", async () => {
+    await makeCoach("delete-me");
+    const login = await request(buildApp())
+      .post("/api/auth/login")
+      .send({ email: "coach@test.io", password: "delete-me" });
+
+    const res = await request(buildApp())
+      .delete("/api/auth/account")
+      .set("Authorization", `Bearer ${login.body.accessToken}`)
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "confirmation_required" });
+    expect(await User.countDocuments({ email: "coach@test.io" })).toBe(1);
+  });
+
+  test("permanently deletes an athlete account and its athlete-scoped personal data", async () => {
+    const passwordHash = await bcrypt.hash("delete-me", 10);
+    const athlete = await User.create({
+      email: "delete@test.io",
+      passwordHash,
+      role: "athlete",
+      name: "Delete Me",
+    });
+    const profile = await AthleteProfile.create({
+      userId: athlete._id,
+      sport: "Athletics",
+    });
+    await Wellness.create({
+      athleteId: profile._id,
+      date: new Date("2026-07-24T00:00:00.000Z"),
+      sleepQuality: 4,
+    });
+    await Notification.create({
+      recipientUserId: athlete._id,
+      type: "test",
+      title: "Personal notification",
+    });
+
+    const login = await request(buildApp())
+      .post("/api/auth/login")
+      .send({ email: "delete@test.io", password: "delete-me" });
+    const res = await request(buildApp())
+      .delete("/api/auth/account")
+      .set("Authorization", `Bearer ${login.body.accessToken}`)
+      .send({ confirmation: "DELETE" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(await User.countDocuments({ _id: athlete._id })).toBe(0);
+    expect(await AthleteProfile.countDocuments({ _id: profile._id })).toBe(0);
+    expect(await Wellness.countDocuments({ athleteId: profile._id })).toBe(0);
+    expect(await Notification.countDocuments({ recipientUserId: athlete._id })).toBe(0);
   });
 });
 

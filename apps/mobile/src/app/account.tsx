@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Text } from "../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -13,7 +13,7 @@ import { Avatar, AvatarBadgePicker } from "../components/Avatar";
 
 export default function Account() {
   const router = useRouter();
-  const { user, setUser, signOut } = useAuth();
+  const { user, setUser, signOut, deleteAccount } = useAuth();
   const theme: RoleTheme = ROLE_THEMES[(user?.role as keyof typeof ROLE_THEMES) ?? "coach"] ?? ROLE_THEMES.coach;
 
   const [current, setCurrent] = useState("");
@@ -24,6 +24,7 @@ export default function Account() {
 
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   async function applyAvatarResponse(res: Response) {
     const json = (await res.json().catch(() => ({}))) as {
@@ -137,6 +138,50 @@ export default function Account() {
     router.replace("/");
   }
 
+  function confirmAccountDeletion() {
+    Alert.alert(
+      "Permanently delete account?",
+      "This permanently deletes your account and associated personal data. This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete account",
+          style: "destructive",
+          onPress: () => {
+            Alert.alert(
+              "Final confirmation",
+              "Are you sure? Your account cannot be recovered after deletion.",
+              [
+                { text: "Keep account", style: "cancel" },
+                {
+                  text: "Delete permanently",
+                  style: "destructive",
+                  onPress: async () => {
+                    setDeleting(true);
+                    setMsg(null);
+                    const result = await deleteAccount();
+                    setDeleting(false);
+                    if (result.ok) {
+                      router.replace("/");
+                    } else {
+                      setMsg({
+                        kind: "error",
+                        text:
+                          result.status === 0
+                            ? "Couldn’t reach the server. Check your connection and try again."
+                            : "Couldn’t delete your account. Please try again.",
+                      });
+                    }
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
@@ -234,6 +279,24 @@ export default function Account() {
             <Ionicons name="log-out-outline" size={18} color={colors.bad} />
             <Text style={styles.signOutText}>Sign out</Text>
           </Pressable>
+
+          <Text style={styles.section}>Delete account</Text>
+          <Card style={{ gap: 12 }}>
+            <Text style={styles.deleteDescription}>
+              Permanently remove your account and associated personal data. This action cannot be undone.
+            </Text>
+            <Pressable
+              onPress={confirmAccountDeletion}
+              disabled={deleting}
+              style={[styles.deleteButton, deleting && styles.disabled]}
+            >
+              {deleting ? (
+                <ActivityIndicator size="small" color={colors.bad} />
+              ) : (
+                <Text style={styles.deleteButtonText}>Delete account permanently</Text>
+              )}
+            </Pressable>
+          </Card>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -266,4 +329,16 @@ const styles = StyleSheet.create({
   photoRemoveText: { fontSize: 12, fontWeight: "700", color: colors.bad },
   signOut: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 24, paddingVertical: 12 },
   signOutText: { fontSize: 15, fontWeight: "700", color: colors.bad },
+  deleteDescription: { fontSize: 13, lineHeight: 19, color: colors.inkMuted },
+  deleteButton: {
+    minHeight: 48,
+    borderWidth: 1.5,
+    borderColor: colors.bad,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  deleteButtonText: { fontSize: 14, fontWeight: "800", color: colors.bad },
+  disabled: { opacity: 0.55 },
 });

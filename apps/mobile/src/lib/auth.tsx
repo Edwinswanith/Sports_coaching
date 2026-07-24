@@ -6,6 +6,7 @@ import {
   registerAthlete as apiRegisterAthlete,
   loadSession,
   logout as apiLogout,
+  deleteAccount as apiDeleteAccount,
   type StoredUser,
 } from "./api";
 import type { Role } from "./roles";
@@ -24,6 +25,7 @@ type AuthValue = {
   ) => ReturnType<typeof apiAppleLogin>;
   signUp: (fields: Parameters<typeof apiRegisterAthlete>[0]) => ReturnType<typeof apiRegisterAthlete>;
   signOut: () => Promise<void>;
+  deleteAccount: () => ReturnType<typeof apiDeleteAccount>;
   setUser: (u: StoredUser) => void;
 };
 
@@ -89,11 +91,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStatus("anon");
   }, []);
 
+  const deleteAccount = useCallback(async () => {
+    const result = await apiDeleteAccount();
+    if (result.ok) {
+      setUserState(null);
+      setStatus("anon");
+    }
+    return result;
+  }, []);
+
   const setUser = useCallback((u: StoredUser) => setUserState(u), []);
 
   const value = useMemo(
-    () => ({ status, user, signIn, signInWithGoogle, signInWithApple, signUp, signOut, setUser }),
-    [status, user, signIn, signInWithGoogle, signInWithApple, signUp, signOut, setUser]
+    () => ({ status, user, signIn, signInWithGoogle, signInWithApple, signUp, signOut, deleteAccount, setUser }),
+    [status, user, signIn, signInWithGoogle, signInWithApple, signUp, signOut, deleteAccount, setUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

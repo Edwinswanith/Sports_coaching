@@ -306,6 +306,25 @@ export async function logout(): Promise<void> {
   await clearStorage();
 }
 
+export async function deleteAccount(): Promise<
+  { ok: true } | { ok: false; status: number; error: string }
+> {
+  try {
+    const res = await apiFetch("/api/auth/account", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE" }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    if (!res.ok) {
+      return { ok: false, status: res.status, error: body.error ?? "delete_failed" };
+    }
+    await clearStorage();
+    return { ok: true };
+  } catch {
+    return { ok: false, status: 0, error: "network_error" };
+  }
+}
+
 export function isAuthFailure(status: number): boolean {
   return status === 401 || status === 403;
 }

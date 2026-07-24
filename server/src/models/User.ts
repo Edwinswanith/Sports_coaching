@@ -34,6 +34,9 @@ const userSchema = new Schema(
     // nudged to set their own password on first sign-in. Cleared on change.
     mustChangePassword: { type: Boolean, default: false },
     refreshTokenHash: { type: String },
+    // Stable identifier returned by Sign in with Apple. Email/name are not a
+    // reliable account key because Apple may only disclose them on first use.
+    appleSubject: { type: String, unique: true, sparse: true, index: true },
     academyId: { type: Schema.Types.ObjectId, ref: "Academy", index: true },
     // Profile avatar — either an uploaded photo or a bundled default badge.
     // null/unset means the client falls back to rendering initials.

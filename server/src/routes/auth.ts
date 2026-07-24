@@ -13,6 +13,7 @@ import {
 import { env } from "../config/env";
 import { requireAuth } from "../middleware/auth";
 import { avatarSummary } from "../services/avatar";
+import { permanentlyDeleteAccount } from "../services/accountDeletion";
 
 const router = Router();
 
@@ -172,9 +173,13 @@ async function findOrCreateSocialUser(input: {
   email: string;
   name?: string;
   requestedRole: unknown;
+  appleSubject?: string;
 }): Promise<{ user: UserDoc | null; error?: { status: number; code: string } }> {
   const email = input.email.trim().toLowerCase();
-  let user = await User.findOne({ email });
+  let user = input.appleSubject
+    ? await User.findOne({ appleSubject: input.appleSubject })
+    : null;
+  if (!user) user = await User.findOne({ email });
 
   if (user && !user.isActive) {
     return { user: null, error: { status: 403, code: "account_disabled" } };
@@ -199,6 +204,7 @@ async function findOrCreateSocialUser(input: {
         name: displayName,
         isActive: true,
         mustChangePassword: false,
+        ...(input.appleSubject ? { appleSubject: input.appleSubject } : {}),
       });
       if (signupRole === "athlete") {
         await AthleteProfile.create({ userId: user._id, sport: "Not set" });
@@ -214,6 +220,11 @@ async function findOrCreateSocialUser(input: {
         return { user: null, error: { status: 500, code: "signup_failed" } };
       }
     }
+  }
+
+  if (input.appleSubject && !user.appleSubject) {
+    user.appleSubject = input.appleSubject;
+    await user.save();
   }
 
   return { user };
@@ -326,6 +337,7 @@ router.post("/google", async (req: Request, res: Response) => {
 type AppleJwk = NodeJsonWebKey & { kid?: string; alg?: string };
 type AppleJwks = { keys?: AppleJwk[] };
 type AppleTokenPayload = jwt.JwtPayload & {
+  sub?: string;
   email?: string;
   email_verified?: string | boolean;
 };
@@ -394,6 +406,24 @@ router.post("/apple", async (req: Request, res: Response) => {
     return;
   }
 
+  if (!info.sub) {
+    res.status(401).json({ error: "invalid_apple_token" });
+    return;
+  }
+
+  // Apple may omit profile claims after the first authorization. Existing
+  // accounts therefore authenticate by Apple's stable subject, not by email.
+  const existingAppleUser = await User.findOne({ appleSubject: info.sub });
+  if (existingAppleUser) {
+    if (!existingAppleUser.isActive) {
+      res.status(403).json({ error: "account_disabled" });
+      return;
+    }
+    const tokens = await issueTokensForUser(existingAppleUser, res);
+    res.json(authResponsePayload(req, tokens, existingAppleUser));
+    return;
+  }
+
   const emailVerified = info.email_verified === true || info.email_verified === "true";
   if (!emailVerified || !info.email) {
     res.status(401).json({ error: "invalid_apple_token" });
@@ -404,6 +434,7 @@ router.post("/apple", async (req: Request, res: Response) => {
     email: info.email,
     name: typeof req.body?.fullName === "string" ? req.body.fullName : undefined,
     requestedRole: req.body?.requestedRole,
+    appleSubject: info.sub,
   });
   if (error || !user) {
     res.status(error?.status ?? 500).json({ error: error?.code ?? "signup_failed" });
@@ -586,6 +617,23 @@ router.post("/change-password", requireAuth, async (req: Request, res: Response)
   // Rotate tokens so any other session using the old refresh token is invalidated.
   const tokens = await issueTokensForUser(user, res);
   res.json({ ok: true, ...authResponsePayload(req, tokens, user) });
+});
+
+router.delete("/account", requireAuth, async (req: Request, res: Response) => {
+  if (req.body?.confirmation !== "DELETE") {
+    res.status(400).json({ error: "confirmation_required" });
+    return;
+  }
+
+  const user = await User.findById(req.actor?.userId);
+  if (!user || !user.isActive) {
+    res.status(401).json({ error: "user_inactive" });
+    return;
+  }
+
+  await permanentlyDeleteAccount(user);
+  clearAuthCookies(res);
+  res.json({ ok: true });
 });
 
 router.post("/logout", async (req: Request, res: Response) => {
