@@ -30,10 +30,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   let expressApp: ExpressApp;
   try {
     expressApp = await ensureApp();
+  } catch (err) {
+    console.error("[api] app startup failed", err);
+    res.status(500).json({ error: "api_startup_failed", stage: "app" });
+    return;
+  }
+  try {
     await ensureMongo();
   } catch (err) {
-    console.error("[api] startup failed", err);
-    res.status(500).json({ error: "api_startup_failed" });
+    console.error("[api] mongo startup failed", err);
+    res.status(500).json({ error: "api_startup_failed", stage: "mongo" });
     return;
   }
   expressApp(req, res);
