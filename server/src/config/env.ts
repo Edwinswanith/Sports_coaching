@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import os from "os";
 import path from "path";
 
 // Prefer the server package env file even when the process is launched from the
@@ -37,6 +38,7 @@ function isRemoteMongo(uri: string): boolean {
 }
 
 const strictSecrets = isProduction || isRemoteMongo(mongoUri);
+const defaultUploadDir = process.env.VERCEL === "1" ? path.join(os.tmpdir(), "uploads") : "uploads";
 
 function requiredSecret(name: string, fallback: string): string {
   const value = process.env[name] ?? process.env.AUTH_SECRET ?? (strictSecrets ? undefined : fallback);
@@ -86,7 +88,7 @@ export const env = {
   // disk, outside any statically-served directory — every read goes through an
   // authenticated, ownership-checked route (see routes/coach.ts, routes/athlete.ts).
   upload: {
-    dir: path.resolve(/* turbopackIgnore: true */ process.cwd(), process.env.UPLOAD_DIR ?? "uploads"),
+    dir: path.resolve(/* turbopackIgnore: true */ process.cwd(), process.env.UPLOAD_DIR ?? defaultUploadDir),
     maxSizeBytes: Number(process.env.MAX_UPLOAD_SIZE_MB ?? 8) * 1024 * 1024,
   },
   // Vision engine for turning a coach's workout image into a structured table.
