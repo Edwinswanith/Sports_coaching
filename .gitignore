@@ -11,6 +11,8 @@ coverage
 .env.*.local
 # Cloud Run deploy secrets (keep the .example template only)
 env.server.yaml
+env.web.yaml
+all_env.txt
 *.log
 .DS_Store
 .vscode

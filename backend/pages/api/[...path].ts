@@ -1,6 +1,4 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { createApp } from "../../../server/src/app";
-import { connectMongo } from "../../../server/src/db/mongoose";
 
 export const config = {
   api: {
@@ -10,15 +8,33 @@ export const config = {
   },
 };
 
-const app = createApp();
+type ExpressApp = import("express").Express;
+
+let app: ExpressApp | null = null;
 let mongoConnection: Promise<void> | null = null;
 
-function ensureMongo(): Promise<void> {
+async function ensureApp(): Promise<ExpressApp> {
+  if (app) return app;
+  const { createApp } = await import("../../../server/src/app");
+  app = createApp();
+  return app;
+}
+
+async function ensureMongo(): Promise<void> {
+  const { connectMongo } = await import("../../../server/src/db/mongoose");
   mongoConnection ??= connectMongo();
   return mongoConnection;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse): Promise<void> {
-  await ensureMongo();
-  app(req, res);
+  let expressApp: ExpressApp;
+  try {
+    expressApp = await ensureApp();
+    await ensureMongo();
+  } catch (err) {
+    console.error("[api] startup failed", err);
+    res.status(500).json({ error: "api_startup_failed" });
+    return;
+  }
+  expressApp(req, res);
 }
