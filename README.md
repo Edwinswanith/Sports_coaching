@@ -89,7 +89,7 @@ This repo deploys the Expo web UI and API routes on one Vercel URL.
 
 - Vercel Root Directory: `./`
 - Build Command: `npm run vercel-build`
-- Install Command: `HUSKY=0 npm ci`
+- Install Command: `HUSKY=0 npm ci --include=dev`
 - Output Directory: leave empty/default
 - Dashboard env vars: `MONGODB_URI`, `MONGODB_DB`, `AUTH_SECRET`
 
