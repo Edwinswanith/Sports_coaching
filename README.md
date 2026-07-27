@@ -1,6 +1,6 @@
 # Sports Coaching Platform
 
-A multi-role web application for academies to manage athletes, training, attendance, wellness, recovery, performance, and coach ↔ athlete communication.
+A multi-role mobile application for academies to manage athletes, training, attendance, wellness, recovery, performance, and coach ↔ athlete communication.
 
 > **Core rule:** A coach only sees data for athletes assigned to that coach. Enforced in three layers (JWT → scope loader → route guard).
 
@@ -12,7 +12,7 @@ A multi-role web application for academies to manage athletes, training, attenda
 
 ## Tech stack
 
-- **Frontend:** Next.js 14 (App Router) + TypeScript + Tailwind CSS
+- **Frontend:** Expo + React Native + TypeScript
 - **Backend:** Node.js + Express + TypeScript
 - **Database:** MongoDB via Mongoose (Atlas in production, local or `mongodb-memory-server` in tests)
 - **Auth:** JWT (httpOnly access + rotating refresh cookies) with bcrypt password hashing and per-IP login rate limiting
@@ -21,12 +21,11 @@ A multi-role web application for academies to manage athletes, training, attenda
 
 ```
 sports-coaching-platform/
-├── apps/
-│   └── web/                        # Next.js frontend
-│       └── app/
-│           ├── page.tsx            # Landing + sign-in (routes by role)
-│           ├── coach/dashboard/    # Coach workspace
-│           └── athlete/dashboard/  # Athlete workspace (mobile-first)
+├── mobile/                         # Expo app
+│   └── src/app/
+│       ├── index.tsx               # Landing + sign-in routing
+│       ├── coach/                  # Coach workspace
+│       └── athlete/                # Athlete workspace
 ├── server/
 │   └── src/
 │       ├── models/                 # 13 Mongoose models
@@ -58,17 +57,17 @@ npm install
 # 2. Copy env templates
 cp .env.example .env
 cp .env.example server/.env
-cp apps/web/.env.example apps/web/.env.local
+cp .env.example mobile/.env
 
 # 3. Seed the database (creates a demo academy with users, athletes, sessions, etc.)
 npm run seed --workspace server
 
-# 4. Run web + server in parallel
+# 4. Run mobile + server in parallel
 npm run dev
 ```
 
 By default:
-- Web: <http://localhost:3000>
+- Expo: <http://localhost:8081>
 - API: <http://localhost:4000>
 - Health check: <http://localhost:4000/api/health>
 
@@ -76,12 +75,27 @@ By default:
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Run web + server in parallel |
-| `npm run dev:web` | Next.js dev server |
+| `npm run dev` | Run mobile + server in parallel |
+| `npm run dev:mobile` | Expo dev server |
 | `npm run dev:server` | Express dev server with ts-node-dev |
-| `npm run build` | Build both web and server |
+| `npm run build` | Build server TypeScript |
+| `npm run vercel-build` | Export Expo web to root `public/`, expose `backend/pages/api`, and run root `next build` |
 | `npm test --workspace server` | Run Jest suite (uses `mongodb-memory-server`, no external Mongo needed) |
 | `npm run seed --workspace server` | Populate the connected database with demo data |
+
+## Vercel single-domain deployment
+
+This repo deploys the Expo web UI and API routes on one Vercel URL.
+
+- Vercel Root Directory: `./`
+- Build Command: `npm run vercel-build`
+- Install Command: `HUSKY=0 npm ci`
+- Output Directory: leave empty/default
+- Dashboard env vars: `MONGODB_URI`, `MONGODB_DB`, `AUTH_SECRET`
+
+The build command exports the Expo web app with `EXPO_PUBLIC_API_URL` empty, copies the static export into root `public/`, symlinks root `pages` to `backend/pages`, copies the root Next config, and runs `next build` from the repo root. Production web uses `window.location.origin`, so frontend requests go to same-origin `/api/*`.
+
+For native iOS/Android builds, set `EXPO_PUBLIC_API_URL` to the deployed Vercel URL, for example `https://your-vercel-domain.vercel.app`.
 
 ## Demo accounts (after seeding)
 
@@ -113,7 +127,7 @@ This is the deliberately role-scoped replacement for the removed admin provision
 - Per-IP rate limit: **5 login attempts per 60 s** → `429 too_many_login_attempts`
 - Security headers on every response: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`
 - Mongo connection string is redacted in logs
-- **Web client is cookie-only**: the access token is never stored in JS-readable storage (no XSS exposure); the shared `apiFetch` helper ([apps/web/lib/api.ts](apps/web/lib/api.ts)) sends the httpOnly cookie and transparently refreshes on a 401
+- **Mobile client stores tokens in SecureStore** and sends the access token as a Bearer header through [mobile/src/lib/api.ts](mobile/src/lib/api.ts).
 
 ### Coach workspace (✅ shipped)
 
@@ -205,7 +219,7 @@ Current count: **131 tests across 13 suites**, all passing — covering auth, th
 ## Current status
 
 **Shipped:**
-- Auth (login / refresh / logout / me, rate-limited, security headers, cookie-only web client)
+- Auth (login / refresh / logout / me, rate-limited, security headers, mobile Bearer auth)
 - All three role workspaces with UI: **coach** (`/coach/dashboard`), **athlete** (`/athlete/dashboard`), **guardian** (`/guardian/dashboard`)
 - Coach: dashboard + RPE view + write endpoints (comment / attendance / training plan / performance) with an inline feedback composer
 - Athlete: daily workflow (check-in / attendance / training / recovery / notes ↔ coach) with input range validation + write rate-limiting
@@ -213,8 +227,8 @@ Current count: **131 tests across 13 suites**, all passing — covering auth, th
 - Guardian read API + UI (`/api/guardian/*`) — read-only linked-athlete roster, daily card, and coach comments
 - Trends API + UI (`/api/*/trends`) — trailing per-day readiness/load/sleep series rendered as dependency-free SVG sparklines on the athlete, coach, and guardian views
 - Activity API + UI (`/api/*/activity`) — merged, time-sorted timeline of sessions/RPE/check-ins/recovery/comments/notes/performance/injuries on the athlete and guardian views
-- Premium **light** sports-performance UI: clean off-white backgrounds, white cards, lime accents, readiness rings, status chips, risk-sorted coach cockpit, condensed athletic type (token-driven theme in [apps/web/app/globals.css](apps/web/app/globals.css))
-- 131/131 server tests passing; web app typechecks and production-builds clean
+- Premium **light** sports-performance UI: clean off-white backgrounds, white cards, lime accents, readiness rings, status chips, risk-sorted coach cockpit, condensed athletic type with tokens in [mobile/src/lib/theme.ts](mobile/src/lib/theme.ts)
+- Server and mobile tests/typechecks passing
 
 **Up next:**
 - Sport-specific performance entry (athletics / badminton / etc.) driven by a shared metric catalog

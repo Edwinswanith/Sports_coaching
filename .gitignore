@@ -3,6 +3,9 @@ node_modules
 dist
 build
 coverage
+/public/
+/pages
+/next.config.js
 .env
 .env.local
 .env.*.local
@@ -32,4 +35,3 @@ env.server.yaml
 
 # Coach-uploaded media (local disk storage) — never committed, never publicly served
 /server/uploads/
-

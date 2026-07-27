@@ -1,22 +1,11 @@
-// Pre-dev cleanup: guarantee a single, clean web dev server.
-//
-// Why: `next dev` silently spills to :3001 when :3000 is busy, so a second
-// `npm run dev` quietly starts a SECOND web server. Two servers writing the
-// same apps/web/.next corrupt it (EPERM on .next\trace) and the dev server
-// then 404s the page AND its own JS/CSS chunks. This script runs as the root
-// `predev` hook so every `npm run dev` frees the dev ports and wipes the stale
-// cache first, then starts exactly one server on :3000.
+// Pre-dev cleanup: free the API and Expo dev ports before starting both.
 //
 // Scope: only kills processes LISTENING on the three known dev ports — never a
 // broad node.exe sweep — so the API, MCP servers, and editor stay untouched.
 
 import { execSync } from "node:child_process";
-import { rmSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const PORTS = [3000, 3001, 4000];
+const PORTS = [4000, 8081, 19000];
 const isWindows = process.platform === "win32";
 
 function pidsOnPort(port) {
@@ -57,11 +46,4 @@ for (const port of PORTS) {
   for (const pid of pidsOnPort(port)) {
     if (killPid(pid)) console.log(`[dev-clean] freed :${port} (killed PID ${pid})`);
   }
-}
-
-try {
-  rmSync(join(ROOT, "apps", "web", ".next"), { recursive: true, force: true });
-  console.log("[dev-clean] removed apps/web/.next");
-} catch (err) {
-  console.warn(`[dev-clean] could not remove apps/web/.next: ${err.message}`);
 }

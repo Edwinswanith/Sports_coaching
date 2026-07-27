@@ -21,7 +21,8 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.5.1",
     "multer": "^2.2.0",
-    "uuid": "^14.0.1"
+    "uuid": "^14.0.1",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -33,6 +34,7 @@
     "@types/node": "^20.12.12",
     "@types/supertest": "^7.2.0",
     "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
     "jest": "^30.4.2",
     "mongodb-memory-server": "^11.1.0",
     "supertest": "^7.2.2",

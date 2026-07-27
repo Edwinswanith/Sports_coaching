@@ -49,18 +49,17 @@
 
 ## Validation
 
-- `npm run lint --workspace apps/mobile` passed.
-- `npm run typecheck --workspace apps/mobile` passed.
-- `npm run typecheck --workspace apps/web` passed.
+- `npm run lint --workspace mobile` passed.
+- `npm run typecheck --workspace mobile` passed.
 - `npm run typecheck --workspace server` passed.
 - `git diff --check` passed.
-- Web and API runtime health checks passed.
+- Mobile and API runtime health checks passed.
 
 ## Remaining Unverified Item
 
 - A fresh Android release APK was not produced in this fast pass.
 - Current APK output is still:
-  - `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`
+  - `mobile/android/app/build/outputs/apk/release/app-release.apk`
   - Last modified: `2026-06-22 11:51:07`
 - No Android device is attached in `adb devices`.
 - Because the APK is old, the current Android source changes still need one final build/install/screenshot pass before claiming full real-device visual verification.

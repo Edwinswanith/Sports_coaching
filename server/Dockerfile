@@ -8,7 +8,7 @@ WORKDIR /app
 # Manifests first so `npm ci` is cached until a package.json/lockfile changes.
 COPY package.json package-lock.json ./
 COPY server/package.json ./server/package.json
-COPY apps/web/package.json ./apps/web/package.json
+COPY mobile/package.json ./mobile/package.json
 RUN npm ci
 COPY server ./server
 RUN npm run build -w server
@@ -18,7 +18,7 @@ FROM node:20-alpine AS prod-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY server/package.json ./server/package.json
-COPY apps/web/package.json ./apps/web/package.json
+COPY mobile/package.json ./mobile/package.json
 RUN npm ci --omit=dev
 
 # ---------- Runtime: minimal, non-root ----------

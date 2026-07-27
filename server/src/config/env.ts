@@ -4,8 +4,8 @@ import path from "path";
 // Prefer the server package env file even when the process is launched from the
 // monorepo root. dotenv does not override existing vars, so CI/prod env still
 // wins when variables are already provided by the host.
-dotenv.config({ path: path.resolve(__dirname, "../../.env") });
-dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+dotenv.config({ path: path.resolve(/* turbopackIgnore: true */ __dirname, "../../.env") });
+dotenv.config({ path: path.resolve(/* turbopackIgnore: true */ process.cwd(), ".env") });
 
 function required(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
@@ -22,6 +22,7 @@ const mongoUri = required(
   "MONGODB_URI",
   isProduction ? undefined : "mongodb://localhost:27017/sports_coaching"
 );
+const mongoDb = process.env.MONGODB_DB?.trim() || undefined;
 
 /**
  * A remote DB (Atlas `mongodb+srv://` or any non-localhost host) almost always
@@ -38,7 +39,7 @@ function isRemoteMongo(uri: string): boolean {
 const strictSecrets = isProduction || isRemoteMongo(mongoUri);
 
 function requiredSecret(name: string, fallback: string): string {
-  const value = process.env[name] ?? (strictSecrets ? undefined : fallback);
+  const value = process.env[name] ?? process.env.AUTH_SECRET ?? (strictSecrets ? undefined : fallback);
   if (strictSecrets && (!value || value === fallback)) {
     throw new Error(
       `Refusing to start: ${name} is missing or set to the placeholder value ` +
@@ -62,12 +63,11 @@ export const env = {
   nodeEnv,
   port: Number(process.env.PORT ?? 4000),
   mongoUri,
+  mongoDb,
   corsOrigins: csv("CORS_ORIGIN", "http://localhost:3000,http://localhost:8081"),
-  // Google OAuth client ID(s) for "Sign in with Google". Empty = feature disabled
-  // (the endpoint 503s and the web button hides itself). May be a comma-separated
-  // list to accept tokens from multiple clients (e.g. the web client used by the
-  // browser/PWA AND the Android client used by the mobile app, whose ID tokens
-  // carry that client as the audience). The first entry is the canonical web ID.
+  // Google OAuth client ID(s) for "Sign in with Google". Empty = feature disabled.
+  // May be a comma-separated list to accept tokens from multiple native/mobile
+  // clients whose ID tokens carry that client as the audience.
   googleClientId: (process.env.GOOGLE_CLIENT_ID ?? "").split(",")[0]?.trim() ?? "",
   googleClientIds: (process.env.GOOGLE_CLIENT_ID ?? "")
     .split(",")
@@ -86,7 +86,7 @@ export const env = {
   // disk, outside any statically-served directory — every read goes through an
   // authenticated, ownership-checked route (see routes/coach.ts, routes/athlete.ts).
   upload: {
-    dir: path.resolve(process.cwd(), process.env.UPLOAD_DIR ?? "uploads"),
+    dir: path.resolve(/* turbopackIgnore: true */ process.cwd(), process.env.UPLOAD_DIR ?? "uploads"),
     maxSizeBytes: Number(process.env.MAX_UPLOAD_SIZE_MB ?? 8) * 1024 * 1024,
   },
   // Vision engine for turning a coach's workout image into a structured table.
@@ -96,5 +96,12 @@ export const env = {
   gemini: {
     apiKey: process.env.GEMINI_API_KEY ?? "",
     model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+  },
+  deepgram: {
+    apiKey: process.env.DEEP_GRAM ?? process.env.DEEPGRAM_API_KEY ?? "",
+    sttModel: process.env.DEEPGRAM_STT_MODEL ?? "flux-general-multi",
+    ttsModel: process.env.DEEPGRAM_TTS_MODEL ?? "aura-2-thalia-en",
+    streamEndpointingMs: Number(process.env.DEEPGRAM_STREAM_ENDPOINTING_MS ?? 400),
+    streamUtteranceEndMs: Number(process.env.DEEPGRAM_STREAM_UTTERANCE_END_MS ?? 1000),
   },
 };

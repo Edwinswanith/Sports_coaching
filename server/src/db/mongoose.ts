@@ -5,7 +5,7 @@ let retryTimer: NodeJS.Timeout | null = null;
 
 async function attemptConnect(): Promise<boolean> {
   try {
-    await mongoose.connect(env.mongoUri, { serverSelectionTimeoutMS: 3000 });
+    await mongoose.connect(env.mongoUri, { dbName: env.mongoDb, serverSelectionTimeoutMS: 3000 });
     console.log(`[mongo] connected: ${env.mongoUri.replace(/\/\/[^@]+@/, "//***@")}`);
     return true;
   } catch (err) {
