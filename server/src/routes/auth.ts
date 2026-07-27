@@ -121,6 +121,21 @@ async function issueTokensForUser(
   return { accessToken, refreshToken };
 }
 
+async function ensureAthleteProfile(user: UserDoc): Promise<void> {
+  if (user.role !== "athlete") return;
+  await AthleteProfile.updateOne(
+    { userId: user._id },
+    {
+      $setOnInsert: {
+        userId: user._id,
+        ...(user.academyId ? { academyId: user.academyId } : {}),
+        sport: "Not set",
+      },
+    },
+    { upsert: true }
+  );
+}
+
 function authResponsePayload(
   req: Request,
   tokens: { accessToken: string; refreshToken: string },
@@ -308,6 +323,7 @@ router.post("/google", async (req: Request, res: Response) => {
     }
   }
 
+  await ensureAthleteProfile(user);
   const tokens = await issueTokensForUser(user, res);
   res.json(authResponsePayload(req, tokens, user));
 });

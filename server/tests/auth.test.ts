@@ -348,6 +348,55 @@ describe("POST /api/auth/google self-signup roles", () => {
     expect(await User.countDocuments({ email: "existing-role@test.io" })).toBe(1);
     expect(await AthleteProfile.countDocuments({ userId: user._id })).toBe(1);
   });
+
+  test("existing Google athlete without a profile keeps role and gets profile repaired", async () => {
+    const user = await User.create({
+      email: "missing-profile@test.io",
+      passwordHash: "x",
+      role: "athlete",
+      name: "Missing Profile",
+      isActive: true,
+    });
+    mockGoogleToken("missing-profile@test.io", "Missing Profile Google");
+
+    const res = await request(buildApp())
+      .post("/api/auth/google")
+      .send({ credential: "missing-profile-token", requestedRole: "coach" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user).toMatchObject({
+      email: "missing-profile@test.io",
+      role: "athlete",
+      name: "Missing Profile",
+    });
+    const profile = await AthleteProfile.findOne({ userId: user._id }).lean();
+    expect(profile?.sport).toBe("Not set");
+  });
+
+  test("existing Google coach keeps coach role even if athlete page is selected", async () => {
+    await User.create({
+      email: "existing-coach-role@test.io",
+      passwordHash: "x",
+      role: "coach",
+      name: "Existing Coach Role",
+      isActive: true,
+    });
+    mockGoogleToken("existing-coach-role@test.io", "Wrong Athlete Attempt");
+
+    const res = await request(buildApp())
+      .post("/api/auth/google")
+      .send({ credential: "existing-coach-token", requestedRole: "athlete" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user).toMatchObject({
+      email: "existing-coach-role@test.io",
+      role: "coach",
+      name: "Existing Coach Role",
+    });
+    const user = await User.findOne({ email: "existing-coach-role@test.io" }).lean();
+    expect(user?.role).toBe("coach");
+    expect(await AthleteProfile.exists({ userId: user!._id })).toBeFalsy();
+  });
 });
 
 describe("protected routes", () => {

@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "test": "jest --runInBand",
     "seed": "ts-node --transpile-only src/scripts/seed.ts",
-    "create-owner": "ts-node --transpile-only src/scripts/create-owner.ts"
+    "create-owner": "ts-node --transpile-only src/scripts/create-owner.ts",
+    "repair-edwin-athlete": "ts-node --transpile-only src/scripts/repair-edwin-athlete.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

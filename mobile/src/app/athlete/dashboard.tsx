@@ -24,6 +24,7 @@ import { apiFetch, apiJson, API_BASE, getAccessToken, loadSession } from "../../
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../lib/sessions";
 import { TRAINING_CATEGORIES } from "../../lib/trainingCategories";
+import { classifyReportQuery, isReportLikeQuery, requestedHistoryDays, type ReportDirection, type ReportMetric, type ReportSubject } from "../../lib/askAgentReportIntents";
 import { useAutoStartMobileTour, useTourAction, useTourHighlight, type TourHighlightStyle } from "../../lib/tour/MobileTourProvider";
 import {
   summarizeTrend,
@@ -735,15 +736,6 @@ function isExplicitDataViewQuery(text: string) {
     /\b(show|view|display|inspect|list|see|open)\b.*\b(readiness|recovery|sleep|load|water|hydration|fatigue|soreness|mood|stress|heart\s*rate|heartbeat|pulse|streak)\b/i.test(text);
 }
 
-function requestedHistoryDays(text: string, fallback = 7): number {
-  const lower = text.toLowerCase();
-  const explicit = lower.match(/\b(?:last|past|previous|recent)\s+(\d{1,2})\s+days?\b/);
-  if (explicit) return Math.max(1, Math.min(30, Number(explicit[1])));
-  if (/\b30\s*days?\b|\bmonth(?:ly)?\b/.test(lower)) return 30;
-  if (/\bweek(?:ly)?\b|\b7\s*days?\b/.test(lower)) return 7;
-  return fallback;
-}
-
 function parseTrainingCommand(text: string): TrainingCommand | null {
   const lower = text.toLowerCase();
   const slot = parseCommandSlot(lower);
@@ -917,24 +909,6 @@ function isMetricInfoQuery(text: string) {
   return /\b(readiness|recovery|sleep|load|water|hydrat|streak|fatigue|soreness|sore|mood|stress|heart\s*rate|heart\s*beat|heartbeat|pulse|bpm|rpm|rpe|score|scores|metric|metrics|stats|data|details)\b/.test(lower);
 }
 
-function isReportInfoQuery(text: string) {
-  const lower = text.toLowerCase();
-  return (
-    /\b(report|last week|weekly|week|improve|improvement|area|areas|down|low|weak|weaker|drop|dropped|struggle|struggling|better|progress|suggest|suggestion|advice|recommend|recommendation|next)\b/.test(lower) &&
-    /\b(report|week|improve|improvement|area|areas|down|low|weak|drop|struggle|readiness|recovery|sleep|water|load|training|rpm|performance|progress|suggest|suggestion|advice|recommend|recommendation|next)\b/.test(lower)
-  );
-}
-
-function isProgressAdviceQuery(text: string) {
-  const lower = text.toLowerCase();
-  return (
-    /\b(progress|how am i doing|suggest|suggestion|advice|recommend|recommendation|what should i do|next step|next steps|improve|improvement|better)\b/.test(lower) ||
-    /\bhow\b.*\bprogress\b/.test(lower) ||
-    /\bwhat\b.*\bthings?\b.*\bsuggest\b/.test(lower) ||
-    /\bthings?\b.*\bsuggest\b/.test(lower)
-  );
-}
-
 function isBareImproveQuery(text: string) {
   const lower = text.toLowerCase().trim();
   return /^(?:need\s+to\s+improve|improvement|improve|better)$/.test(lower);
@@ -1003,6 +977,30 @@ function metricText(value: number | null | undefined, digits = 2): string {
   const roundedValue = Number(value.toFixed(digits));
   return Number.isInteger(roundedValue) ? String(roundedValue) : roundedValue.toFixed(digits);
 }
+
+/** Metrics rankable via "which day/training was worst/best/average" — higherIsBetter flips which end counts as "worst". */
+const DAY_EXTREMUM_METRICS: Record<ReportMetric, { label: string; unit: string; higherIsBetter: boolean; getValue: (card: DailyCard) => number | null }> = {
+  readiness: { label: "Readiness", unit: "/100", higherIsBetter: true, getValue: (card) => card.readinessScore },
+  sleep: { label: "Sleep", unit: "h", higherIsBetter: true, getValue: (card) => card.sleep.hours },
+  recovery: { label: "Recovery", unit: "", higherIsBetter: true, getValue: (card) => card.recovery.score },
+  soreness: { label: "Soreness", unit: "/10", higherIsBetter: false, getValue: (card) => card.soreness },
+  training: {
+    label: "Training load",
+    unit: "",
+    higherIsBetter: true,
+    getValue: (card) => {
+      const entries = SESSION_SLOTS.map((slot) => card.rpeEntries?.[slot]).filter((entry): entry is RpeEntry => Boolean(entry));
+      if (!entries.length) return null;
+      return entries.reduce((sum, entry) => sum + entry.calculatedTrainingLoad, 0) / entries.length;
+    },
+  },
+  heartRate: {
+    label: "Heart rate",
+    unit: " bpm",
+    higherIsBetter: false,
+    getValue: (card) => card.heartRate.wakeHr ?? card.heartRate.bedHr,
+  },
+};
 
 /**
  * Always prefixed with "Saved to your <slot> session" so it can't be
@@ -2479,14 +2477,230 @@ export default function AthleteDashboard() {
     };
   }
 
+  /** Ranks past daily cards by one metric to answer "which day was my worst/best/average". */
+  async function buildDayExtremumInfoResult(intent: { direction: ReportDirection; metric: ReportMetric; days: number }): Promise<AskInfoResult> {
+    const { direction, metric: metricKey, days } = intent;
+    const metric = DAY_EXTREMUM_METRICS[metricKey];
+    const dates = Array.from({ length: days }, (_, index) => addDays(date, index - (days - 1)));
+    const dailyCards = await Promise.all(
+      dates.map((day) => apiJson<DailyResponse>(`/api/athlete/daily?date=${day}`).then((res) => res.card).catch(() => null))
+    );
+    const cards = dailyCards.filter((item): item is DailyCard => Boolean(item));
+    const scored = cards
+      .map((item) => ({ item, value: metric.getValue(item) }))
+      .filter((entry): entry is { item: DailyCard; value: number } => typeof entry.value === "number");
+
+    const titlePrefix = direction === "worst" ? "Worst" : direction === "best" ? "Best" : "Average";
+    if (!scored.length) {
+      return {
+        kind: "data",
+        title: `${titlePrefix} Day`,
+        subtitle: `Last ${days} days`,
+        summary: `No ${metric.label.toLowerCase()} data was logged in the last ${days} days, so I can't tell which day was the ${direction === "average" ? "most typical" : direction}.`,
+        rows: [],
+      };
+    }
+
+    let target: { item: DailyCard; value: number };
+    if (direction === "average") {
+      const mean = scored.reduce((sum, entry) => sum + entry.value, 0) / scored.length;
+      target = scored.reduce((closest, entry) => (Math.abs(entry.value - mean) < Math.abs(closest.value - mean) ? entry : closest), scored[0]);
+    } else {
+      target = scored.reduce((acc, entry) => {
+        const wantsHigher = direction === "best" ? metric.higherIsBetter : !metric.higherIsBetter;
+        const isBetterPick = wantsHigher ? entry.value > acc.value : entry.value < acc.value;
+        return isBetterPick ? entry : acc;
+      }, scored[0]);
+    }
+
+    const dayLabelText = target.item.date === date
+      ? "today"
+      : target.item.date === addDays(date, -1)
+        ? "yesterday"
+        : localDateFromKey(target.item.date).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+    const valueText = `${rounded(target.value, metricKey === "sleep" ? 1 : 0)}${metric.unit}`;
+    const context = metricKey === "readiness"
+      ? [
+          target.item.sleep.hours !== null ? `sleep ${rounded(target.item.sleep.hours, 1)}h` : null,
+          target.item.soreness !== null ? `soreness ${rounded(target.item.soreness, 1)}/10` : null,
+        ].filter(Boolean).join(", ")
+      : "";
+    const directionWord = direction === "average" ? "closest-to-average" : direction;
+
+    return {
+      kind: "data",
+      title: `${titlePrefix} Day`,
+      subtitle: `Last ${days} days`,
+      summary: `Your ${directionWord} ${metric.label.toLowerCase()} day in the last ${days} days was ${dayLabelText} (${target.item.date}) — ${metric.label.toLowerCase()} ${valueText}${context ? `, ${context}` : ""}.`,
+      rows: [{
+        id: "day-extremum",
+        icon: direction === "worst" ? "trending-down-outline" : direction === "best" ? "trending-up-outline" : "analytics-outline",
+        label: `${titlePrefix} day`,
+        status: dayLabelText,
+        detail: `${metric.label} ${valueText}${context ? ` · ${context}` : ""}.`,
+        tone: direction === "worst" ? "bad" : direction === "best" ? "ok" : "neutral",
+        action: { type: "section", section: "today" },
+      }],
+    };
+  }
+
+  /**
+   * A plain average/trend report scoped to ONE named metric — e.g. "give me a
+   * report of my heart rate". Distinct from buildReportInfoResult (the general
+   * readiness/load overview) and from buildDayExtremumInfoResult (a single-day
+   * ranking): this is neither — just "how has X been over the last N days".
+   */
+  async function buildMetricReportInfoResult(subject: ReportSubject, days: number): Promise<AskInfoResult> {
+    const dates = Array.from({ length: days }, (_, index) => addDays(date, index - (days - 1)));
+
+    if (subject === "water") {
+      const water = await apiJson<WaterSeries>(`/api/athlete/analytics/water?days=${days}`).catch(() => null);
+      const points = (water?.series ?? []).filter((point): point is WaterPoint & { totalMl: number } => typeof point.totalMl === "number");
+      if (!water || !points.length) {
+        return { kind: "data", title: "Hydration Report", subtitle: `Last ${days} days`, summary: `No water intake was logged in the last ${days} days.`, rows: [] };
+      }
+      const avgMl = points.reduce((sum, point) => sum + point.totalMl, 0) / points.length;
+      const avgPct = Math.round((avgMl / Math.max(1, water.goalMl)) * 100);
+      const goalDays = points.filter((point) => point.totalMl >= water.goalMl).length;
+      return {
+        kind: "data",
+        title: "Hydration Report",
+        subtitle: `Last ${days} days`,
+        summary: `You averaged ${avgPct}% of your ${litres(water.goalMl)} L water goal over the last ${days} days, reaching it on ${goalDays} of ${points.length} logged day${points.length === 1 ? "" : "s"}.`,
+        rows: [{
+          id: "water-report",
+          icon: "water-outline",
+          label: "Hydration",
+          status: `${avgPct}%`,
+          detail: `${goalDays}/${points.length} days at goal.`,
+          tone: avgPct >= 90 ? "ok" : avgPct >= 60 ? "warn" : "bad",
+          action: { type: "section", section: "progress", progressTab: "water" },
+        }],
+      };
+    }
+
+    if (subject === "mood" || subject === "stress" || subject === "fatigue") {
+      const wellness = await apiJson<{ series: WellnessPoint[] }>(`/api/athlete/analytics/wellness?days=${days}`).catch(() => null);
+      const values = (wellness?.series ?? [])
+        .map((point) => point[subject])
+        .filter((value): value is number => typeof value === "number");
+      const label = subject === "mood" ? "Mood" : subject === "stress" ? "Stress" : "Fatigue";
+      const lowerIsBetter = subject !== "mood";
+      if (!values.length) {
+        return { kind: "data", title: `${label} Report`, subtitle: `Last ${days} days`, summary: `No ${label.toLowerCase()} check-ins were logged in the last ${days} days.`, rows: [] };
+      }
+      const avgVal = values.reduce((sum, value) => sum + value, 0) / values.length;
+      const first = values[0];
+      const last = values[values.length - 1];
+      const improving = lowerIsBetter ? last < first - 1 : last > first + 1;
+      const worsening = lowerIsBetter ? last > first + 1 : last < first - 1;
+      const trend = improving ? "improving" : worsening ? "worsening" : "steady";
+      return {
+        kind: "data",
+        title: `${label} Report`,
+        subtitle: `Last ${days} days`,
+        summary: `Your ${label.toLowerCase()} has averaged ${rounded(avgVal, 1)}/10 over the last ${days} days and is ${trend}.`,
+        rows: [{
+          id: `${subject}-report`,
+          icon: subject === "mood" ? "happy-outline" : subject === "stress" ? "alert-circle-outline" : "battery-dead-outline",
+          label,
+          status: `${rounded(avgVal, 1)}/10`,
+          detail: `Trend: ${trend}.`,
+          tone: worsening ? "bad" : improving ? "ok" : "neutral",
+          action: { type: "section", section: "log" },
+        }],
+      };
+    }
+
+    const metricKey: ReportMetric = subject;
+    const config = DAY_EXTREMUM_METRICS[metricKey];
+    const dailyCards = await Promise.all(
+      dates.map((day) => apiJson<DailyResponse>(`/api/athlete/daily?date=${day}`).then((res) => res.card).catch(() => null))
+    );
+    const cards = dailyCards.filter((item): item is DailyCard => Boolean(item));
+    const scored = cards.map((item) => config.getValue(item)).filter((value): value is number => typeof value === "number");
+    if (!scored.length) {
+      return { kind: "data", title: `${config.label} Report`, subtitle: `Last ${days} days`, summary: `No ${config.label.toLowerCase()} data was logged in the last ${days} days.`, rows: [] };
+    }
+    const digits = metricKey === "sleep" ? 1 : 0;
+    const avgVal = scored.reduce((sum, value) => sum + value, 0) / scored.length;
+    const bestVal = config.higherIsBetter ? Math.max(...scored) : Math.min(...scored);
+    const worstVal = config.higherIsBetter ? Math.min(...scored) : Math.max(...scored);
+    return {
+      kind: "data",
+      title: `${config.label} Report`,
+      subtitle: `Last ${days} days`,
+      summary: `Your ${config.label.toLowerCase()} averaged ${rounded(avgVal, digits)}${config.unit} over the last ${days} days — best ${rounded(bestVal, digits)}${config.unit}, lowest ${rounded(worstVal, digits)}${config.unit}.`,
+      rows: [{
+        id: `${metricKey}-report`,
+        icon: metricKey === "heartRate" ? "heart-circle-outline" : metricKey === "training" ? "barbell-outline" : metricKey === "recovery" ? "heart-outline" : metricKey === "soreness" ? "body-outline" : metricKey === "sleep" ? "moon-outline" : "pulse-outline",
+        label: config.label,
+        status: `${rounded(avgVal, digits)}${config.unit}`,
+        detail: `Best ${rounded(bestVal, digits)}${config.unit} · Lowest ${rounded(worstVal, digits)}${config.unit}.`,
+        tone: "neutral",
+        action: { type: "section", section: "today" },
+      }],
+    };
+  }
+
+  /** Lists past training sessions (not a ranking) to answer "list out my past training/workouts". */
+  async function buildTrainingHistoryInfoResult(days: number): Promise<AskInfoResult> {
+    const dates = Array.from({ length: days }, (_, index) => addDays(date, index - (days - 1)));
+    const dailyCards = await Promise.all(
+      dates.map((day) => apiJson<DailyResponse>(`/api/athlete/daily?date=${day}`).then((res) => res.card).catch(() => null))
+    );
+    const cards = dailyCards.filter((item): item is DailyCard => Boolean(item));
+    const rows: AskInfoRow[] = [];
+    for (const item of cards) {
+      for (const slot of SESSION_SLOTS) {
+        const session = item.sessions[slot];
+        const rpe = item.rpeEntries?.[slot];
+        if (!session.type && !session.status && !rpe) continue;
+        const statusLabel = TRAINING_STATUS.find((entry) => entry.value === session.status)?.label ?? (rpe ? "Logged" : "Planned");
+        rows.push({
+          id: `training-${item.date}-${slot}`,
+          icon: "barbell-outline",
+          label: `${item.date} · ${SLOT_LABEL[slot]}`,
+          status: statusLabel,
+          detail: [session.type, rpe ? `RPE ${metricText(rpe.rpe)}` : null].filter(Boolean).join(" · ") || "No details logged.",
+          tone: session.status === "completed" ? "ok" : session.status === "skipped" ? "bad" : "neutral",
+          action: { type: "section", section: "log", slot },
+        });
+      }
+    }
+    rows.reverse();
+
+    return {
+      kind: "data",
+      title: "Training History",
+      subtitle: `Last ${days} days`,
+      summary: rows.length
+        ? `${rows.length} training entr${rows.length === 1 ? "y" : "ies"} logged in the last ${days} days.`
+        : `No training sessions were logged in the last ${days} days.`,
+      rows: rows.length ? rows.slice(0, 20) : [{
+        id: "training-history-empty",
+        icon: "barbell-outline",
+        label: "Training history",
+        status: "None",
+        detail: `No sessions logged in the last ${days} days.`,
+        tone: "neutral",
+        action: { type: "section", section: "log" },
+      }],
+    };
+  }
+
   async function buildAskInfoResult(query: string): Promise<AskInfoResult | null> {
     const lower = query.toLowerCase();
     if (/^(send|sent|sending|message|note)\b/.test(lower) || /^tell\s+(?:my\s+)?(?:coach|couch)\b/.test(lower)) return null;
     if (parseSleepUpdateCommand(query)) return null;
     if (isBareImproveQuery(query)) return null;
     const questionStyle = /\b(tell me|what|which|how|how many|any|do i|have i|status|summary|pending|left|remaining)\b/.test(lower);
-    if (isProgressAdviceQuery(query)) return buildReportInfoResult(`${query} improvement`);
-    if (isReportInfoQuery(query)) return buildReportInfoResult(query);
+    const reportIntent = classifyReportQuery(query);
+    if (reportIntent.kind === "day_extremum") return buildDayExtremumInfoResult(reportIntent);
+    if (reportIntent.kind === "progress_advice") return buildReportInfoResult(`${query} improvement`);
+    if (reportIntent.kind === "metric_report") return buildMetricReportInfoResult(reportIntent.subject, reportIntent.days);
+    if (reportIntent.kind === "list_training_history") return buildTrainingHistoryInfoResult(reportIntent.days);
+    if (reportIntent.kind === "report") return buildReportInfoResult(query);
     if (isDailyInfoQuery(query)) return buildDailyInfoResult({ query, card, latestRpe, coachComments, activity });
     const personalInfo = await buildPersonalInfoResult(query);
     if (personalInfo) return personalInfo;
@@ -3012,7 +3226,7 @@ export default function AthleteDashboard() {
     return shouldNavigateFromAsk(lower) ||
       isPersonalInfoQuery(transcript) ||
       isNotificationInfoQuery(transcript) ||
-      isReportInfoQuery(transcript) ||
+      isReportLikeQuery(transcript) ||
       isDailyInfoQuery(transcript) ||
       isWaterWriteCommand(transcript) ||
       Boolean(parseOpenSessionLogCommand(transcript)) ||

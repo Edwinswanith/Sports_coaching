@@ -30,7 +30,7 @@ REM ============================================================================
 set PROJECT_ID=legel-assistent-466812
 set REPOSITORY_NAME=sports-coaching-platform
 set REGION=asia-south1
-set IMAGE_TAG=v19
+set IMAGE_TAG=v21
 
 set SERVER_IMAGE=scp-server
 set SERVER_SERVICE=scp-server

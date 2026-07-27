@@ -37,6 +37,10 @@ type AuthPayload = {
   user?: StoredUser;
   error?: string;
 };
+type MePayload = {
+  user?: StoredUser;
+  error?: string;
+};
 
 export type LoginResult =
   | { ok: true; user: StoredUser }
@@ -85,9 +89,41 @@ export async function loadSession(): Promise<StoredUser | null> {
     return null;
   }
   try {
-    return JSON.parse(raw) as StoredUser;
+    const cached = JSON.parse(raw) as StoredUser;
+    const current = await loadCurrentUser();
+    return current ?? cached;
   } catch {
     await clearStorage();
+    return null;
+  }
+}
+
+async function loadCurrentUser(): Promise<StoredUser | null> {
+  if (!accessToken) return null;
+
+  const requestMe = () =>
+    fetchWithTimeout(`${API_BASE}/api/auth/me`, {
+      method: "GET",
+      headers: {
+        "X-Client-Type": "native",
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+  try {
+    let res = await requestMe();
+    if (res.status === 401) {
+      const refreshed = await tryRefresh();
+      if (!refreshed) return null;
+      res = await requestMe();
+    }
+    if (!res.ok) return null;
+
+    const payload = (await res.json().catch(() => ({}))) as MePayload;
+    if (!payload.user) return null;
+    await persistUser(payload.user);
+    return payload.user;
+  } catch {
     return null;
   }
 }
