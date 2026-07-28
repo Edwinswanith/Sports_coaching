@@ -10,6 +10,10 @@ import notificationsRouter from "./routes/notifications";
 import avatarRouter from "./routes/avatar";
 import tourRouter from "./routes/tour";
 import voiceRouter from "./routes/voice";
+import deviceTokensRouter from "./routes/deviceTokens";
+import notificationPreferencesRouter from "./routes/notificationPreferences";
+import presenceRouter from "./routes/presence";
+import internalNotificationsRouter from "./routes/internalNotifications";
 import { errorHandler } from "./middleware/errorHandler";
 
 function isSameHostOrigin(origin: string, host: string | undefined): boolean {
@@ -69,9 +73,17 @@ export function createApp(): express.Express {
   app.use("/api/athlete", athleteRouter);
   app.use("/api/guardian", guardianRouter);
   app.use("/api/notifications", notificationsRouter);
+  app.use("/api/device-tokens", deviceTokensRouter);
+  app.use("/api/notification-preferences", notificationPreferencesRouter);
+  app.use("/api/presence", presenceRouter);
   app.use("/api/me", avatarRouter);
   app.use("/api/tour", tourRouter);
   app.use("/api/voice", voiceRouter);
+
+  // Same router mounted under /api for Vercel's catch-all API proxy and outside
+  // /api for standalone Express deployments.
+  app.use("/api/internal/notifications", internalNotificationsRouter);
+  app.use("/internal/notifications", internalNotificationsRouter);
 
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "not_found" });

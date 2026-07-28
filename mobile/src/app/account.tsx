@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, View } from "react-native";
 import { Text } from "../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -11,6 +11,51 @@ import { ROLE_THEMES, colors, type RoleTheme } from "../lib/theme";
 import { DEFAULT_VOICE_LANGUAGE, VOICE_LANGUAGES, setVoiceLanguagePreference } from "../lib/voiceLanguage";
 import { Banner, Card, Label, Muted, PrimaryButton, TextField } from "../components/ui";
 import { Avatar, AvatarBadgePicker } from "../components/Avatar";
+import { useNotificationPreferences, type NotificationCategories } from "../lib/notificationPreferences";
+
+const CATEGORY_LABELS: Record<keyof NotificationCategories, string> = {
+  reminders: "Reminders",
+  alerts: "Alerts",
+  deadlines: "Deadlines",
+  digests: "Weekly summaries",
+  milestones: "Milestones",
+  messages: "Messages & feedback",
+};
+
+function NotificationsCard({ accent }: { accent: string }) {
+  const { prefs, status, update } = useNotificationPreferences();
+  if (!prefs) return null;
+  const saving = status === "saving";
+
+  return (
+    <Card style={{ gap: 4 }}>
+      <View style={rowStyles.row}>
+        <View style={rowStyles.textCol}>
+          <Text style={rowStyles.label}>Push notifications</Text>
+          <Muted>Phone alerts for messages, reminders, and safety updates.</Muted>
+        </View>
+        <Switch
+          value={prefs.enabled}
+          disabled={saving}
+          onValueChange={(value) => update({ enabled: value })}
+          trackColor={{ true: accent }}
+        />
+      </View>
+      <View style={rowStyles.divider} />
+      {(Object.keys(CATEGORY_LABELS) as (keyof NotificationCategories)[]).map((key) => (
+        <View key={key} style={rowStyles.row}>
+          <Text style={rowStyles.label}>{CATEGORY_LABELS[key]}</Text>
+          <Switch
+            value={prefs.categories[key]}
+            disabled={saving || !prefs.enabled}
+            onValueChange={(value) => update({ categories: { [key]: value } })}
+            trackColor={{ true: accent }}
+          />
+        </View>
+      ))}
+    </Card>
+  );
+}
 
 export default function Account() {
   const router = useRouter();
@@ -286,6 +331,9 @@ export default function Account() {
             </View>
           </Card>
 
+          <Text style={styles.section}>Notifications</Text>
+          <NotificationsCard accent={theme.accentStrong} />
+
           <Text style={styles.section}>Change password</Text>
           <Card style={{ gap: 14 }}>
             <View>
@@ -400,4 +448,17 @@ const styles = StyleSheet.create({
   },
   deleteButtonText: { fontSize: 14, fontWeight: "800", color: colors.bad },
   disabled: { opacity: 0.55 },
+});
+
+const rowStyles = StyleSheet.create({
+  row: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  textCol: { flex: 1, minWidth: 0, gap: 3 },
+  label: { flex: 1, fontSize: 14, fontWeight: "700", color: colors.ink },
+  divider: { height: 1, backgroundColor: colors.line, marginVertical: 4 },
 });

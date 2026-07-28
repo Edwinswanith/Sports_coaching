@@ -5,6 +5,8 @@ import { User } from "../models/User";
 import { WorkoutMedia, type WorkoutMediaDoc } from "../models/WorkoutMedia";
 import { serializeMedia, type MediaView } from "./media";
 import { createNotification } from "./notifications";
+import { evaluateAndDispatch } from "./notificationEligibility";
+import { resolveTimezoneForUser } from "./timezone";
 
 /** Shape returned to the client for one message. `mine` is viewer-relative. */
 export type MessageView = {
@@ -130,32 +132,78 @@ export async function sendMessage(args: {
       User.findById(args.coachId).select("name").lean(),
     ]);
     if (profile?.userId) {
+      const recipientUserId = profile.userId as Types.ObjectId;
+      const academyId = (profile.academyId as Types.ObjectId | undefined) ?? null;
+      const title = `New message from ${(coach?.name as string) || "your coach"}`;
+      const link = `/athlete/dashboard?section=coach&coachId=${args.coachId.toString()}`;
       await createNotification({
-        recipientUserId: profile.userId as Types.ObjectId,
+        recipientUserId,
         type: "message",
-        title: `New message from ${(coach?.name as string) || "your coach"}`,
+        title,
         body: notifBody,
         priority: "medium",
-        link: `/athlete/dashboard?section=coach&coachId=${args.coachId.toString()}`,
-        academyId: (profile.academyId as Types.ObjectId | undefined) ?? null,
+        link,
+        academyId,
       });
+      const timezone = await resolveTimezoneForUser({ userId: recipientUserId, role: "athlete" });
+      await evaluateAndDispatch(
+        {
+          userId: recipientUserId,
+          type: "message",
+          category: "messages",
+          priorityTier: 2,
+          dedupKey: `message:${created._id.toString()}`,
+          title,
+          body: notifBody,
+          link,
+          academyId,
+          entityRef: { collection: "Message", id: created._id as Types.ObjectId },
+          timezone,
+        },
+        { createInAppNotification: false }
+      );
     }
   } else {
     const profile = await AthleteProfile.findById(args.athleteId)
       .select("userId academyId")
       .lean();
-    const athleteUser = profile?.userId
-      ? await User.findById(profile.userId).select("name").lean()
-      : null;
+    const [athleteUser, coachDoc] = await Promise.all([
+      profile?.userId ? User.findById(profile.userId).select("name").lean() : null,
+      User.findById(args.coachId).select("academyId").lean(),
+    ]);
+    const academyId = (profile?.academyId as Types.ObjectId | undefined) ?? null;
+    const title = `New message from ${(athleteUser?.name as string) || "your athlete"}`;
+    const link = `/coach/messages?athleteId=${args.athleteId.toString()}`;
     await createNotification({
       recipientUserId: args.coachId,
       type: "message",
-      title: `New message from ${(athleteUser?.name as string) || "your athlete"}`,
+      title,
       body: notifBody,
       priority: "medium",
-      link: `/coach/messages?athleteId=${args.athleteId.toString()}`,
-      academyId: (profile?.academyId as Types.ObjectId | undefined) ?? null,
+      link,
+      academyId,
     });
+    const timezone = await resolveTimezoneForUser({
+      userId: args.coachId,
+      role: "coach",
+      academyId: (coachDoc?.academyId as Types.ObjectId | undefined) ?? null,
+    });
+    await evaluateAndDispatch(
+      {
+        userId: args.coachId,
+        type: "message",
+        category: "messages",
+        priorityTier: 2,
+        dedupKey: `message:${created._id.toString()}`,
+        title,
+        body: notifBody,
+        link,
+        academyId,
+        entityRef: { collection: "Message", id: created._id as Types.ObjectId },
+        timezone,
+      },
+      { createInAppNotification: false }
+    );
   }
 
   return { message: created, media };

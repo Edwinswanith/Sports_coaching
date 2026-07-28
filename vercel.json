@@ -1,5 +1,11 @@
 {
   "buildCommand": "npm run vercel-build",
   "installCommand": "HUSKY=0 npm ci --include=dev",
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "crons": [
+    {
+      "path": "/api/cron/notifications-sweep",
+      "schedule": "0 3 * * *"
+    }
+  ]
 }

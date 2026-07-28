@@ -30,7 +30,9 @@
       "package": "app.apex.coaching",
       "versionCode": 17,
       "predictiveBackGestureEnabled": false,
+      "googleServicesFile": "./google-services.json",
       "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE"
@@ -63,6 +65,12 @@
         }
       ],
       "expo-audio",
+      [
+        "expo-notifications",
+        {
+          "enableBackgroundRemoteNotifications": true
+        }
+      ],
       [
         "expo-video",
         {

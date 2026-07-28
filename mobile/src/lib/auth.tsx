@@ -9,6 +9,7 @@ import {
   deleteAccount as apiDeleteAccount,
   type StoredUser,
 } from "./api";
+import { registerPushToken, deregisterPushToken } from "./push";
 import type { Role } from "./roles";
 import { loadVoiceLanguagePreference, setCachedVoiceLanguage } from "./voiceLanguage";
 
@@ -43,6 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!active) return;
         setUserState(u);
         setStatus(u ? "authed" : "anon");
+        if (u) registerPushToken();
       })
       .catch(() => active && setStatus("anon"));
     return () => {
@@ -64,6 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (result.ok) {
       setUserState(result.user);
       setStatus("authed");
+      registerPushToken();
     }
     return result;
   }, []);
@@ -73,6 +76,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (result.ok) {
       setUserState(result.user);
       setStatus("authed");
+      registerPushToken();
     }
     return result;
   }, []);
@@ -82,6 +86,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (result.ok) {
       setUserState(result.user);
       setStatus("authed");
+      registerPushToken();
     }
     return result;
   }, []);
@@ -91,11 +96,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (result.ok) {
       setUserState(result.user);
       setStatus("authed");
+      registerPushToken();
     }
     return result;
   }, []);
 
   const signOut = useCallback(async () => {
+    await deregisterPushToken();
     await apiLogout();
     setUserState(null);
     setStatus("anon");

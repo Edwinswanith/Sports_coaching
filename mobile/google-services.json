@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "61359455183",
+    "project_id": "apex-coaching-669d2",
+    "storage_bucket": "apex-coaching-669d2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:61359455183:android:12977531006efd7f9ff0ba",
+        "android_client_info": {
+          "package_name": "app.apex.coaching"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCRgL1ltjKikDydhDPvPV7xww0JkVMw1c4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -7,10 +7,13 @@ import { Attendance } from "../models/Attendance";
 import { AuditLog } from "../models/AuditLog";
 import { CoachAthleteAssignment } from "../models/CoachAthleteAssignment";
 import { CoachComment } from "../models/CoachComment";
+import { DeviceToken } from "../models/DeviceToken";
 import { GuardianAthleteLink } from "../models/GuardianAthleteLink";
 import { Injury } from "../models/Injury";
 import { Message } from "../models/Message";
 import { Notification } from "../models/Notification";
+import { NotificationDecision } from "../models/NotificationDecision";
+import { NotificationPreference } from "../models/NotificationPreference";
 import { Performance } from "../models/Performance";
 import { Recovery } from "../models/Recovery";
 import { RpeMonitoring } from "../models/RpeMonitoring";
@@ -81,6 +84,9 @@ export async function permanentlyDeleteAccount(user: UserDoc): Promise<void> {
 
   await Promise.all([
     Notification.deleteMany({ recipientUserId: userId }),
+    NotificationDecision.deleteMany({ userId }),
+    NotificationPreference.deleteOne({ userId }),
+    DeviceToken.deleteMany({ userId }),
     AuditLog.deleteMany({ actorId: userId }),
   ]);
   await User.deleteOne({ _id: userId });

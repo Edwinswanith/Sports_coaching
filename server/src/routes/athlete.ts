@@ -59,6 +59,9 @@ import { WorkoutMedia, type WorkoutMediaDoc } from "../models/WorkoutMedia";
 import { mediaUpload, mediaFilePath, serializeMedia } from "../services/media";
 import { notifyGuardiansOfAthleteUpdate } from "../services/notifications";
 import { getVoiceIntentInterpreter, type VoicePendingIntent } from "../services/voiceIntentInterpreter";
+import { evaluateAndDispatch } from "../services/notificationEligibility";
+import { resolveTimezoneForUser } from "../services/timezone";
+import { buildReadinessRiskFlag } from "../services/notificationTemplates";
 import multer from "multer";
 import fs from "fs";
 
@@ -1281,6 +1284,43 @@ router.post("/rpe-monitoring", async (req: Request, res: Response) => {
     date,
     sessionType,
   }).lean();
+
+  // Surface a flagged readiness reading to every currently-assigned coach.
+  // Entity-based dedup on the RpeMonitoring row's own id means re-editing the
+  // same slot the same day does not re-fire a push or create another bell row.
+  if (saved && saved.riskFlag !== "green" && assignments.length > 0) {
+    const athleteUser = await User.findById(req.actor!.userId).select("name").lean();
+    const academyId = (profile.academyId as Types.ObjectId | null | undefined) ?? null;
+    const link = `/coach/athletes/${profileId.toString()}`;
+    const { title, body: alertBody } = buildReadinessRiskFlag({
+      athleteName: (athleteUser?.name as string) || "An athlete",
+      riskReasons: (saved.riskReasons as string[]) ?? [],
+    });
+    await Promise.all(
+      assignments.map(async (a) => {
+        const coachUserId = a.coachId as Types.ObjectId;
+        const timezone = await resolveTimezoneForUser({
+          userId: coachUserId,
+          role: "coach",
+          academyId,
+        });
+        await evaluateAndDispatch({
+          userId: coachUserId,
+          type: "readiness_risk_flag",
+          category: "alerts",
+          priorityTier: 2,
+          dedupKey: `readiness_risk_flag:${(saved._id as Types.ObjectId).toString()}:${coachUserId.toString()}`,
+          title,
+          body: alertBody,
+          link,
+          academyId,
+          entityRef: { collection: "RpeMonitoring", id: saved._id as Types.ObjectId },
+          timezone,
+        });
+      })
+    );
+  }
+
   res.status(result.upsertedCount ? 201 : 200).json({
     entry: saved,
     wasNew: result.upsertedCount === 1,

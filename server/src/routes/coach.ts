@@ -18,6 +18,7 @@ import { Announcement } from "../models/Announcement";
 import { createNotification } from "../services/notifications";
 import { generateTempPassword } from "../lib/tempPassword";
 import { RpeMonitoring } from "../models/RpeMonitoring";
+import { Injury, INJURY_SEVERITY } from "../models/Injury";
 import { Attendance, ATTENDANCE_STATUS } from "../models/Attendance";
 import {
   TrainingSession,
@@ -32,6 +33,9 @@ import {
   buildDailyCardsForAthletes,
   dayRange,
 } from "../services/dashboard";
+import { evaluateAndDispatch } from "../services/notificationEligibility";
+import { resolveTimezoneForUser } from "../services/timezone";
+import { buildCoachFeedback, buildInjuryAlert } from "../services/notificationTemplates";
 import { buildTrendSeries, clampDays } from "../services/trends";
 import { buildActivityFeed, clampLimit } from "../services/activity";
 import {
@@ -144,18 +148,36 @@ router.post("/announcements", writeRateLimit({ windowMs: 60_000, max: 20 }), asy
 
   const coach = await User.findById(coachId).select("name").lean();
   const coachName = (coach?.name as string) || "Your coach";
+  const announcementTitle = `Team update from ${coachName}`;
   await Promise.all(
-    recipientUserIds.map((uid) =>
-      createNotification({
+    recipientUserIds.map(async (uid) => {
+      await createNotification({
         recipientUserId: uid,
         type: "announcement",
-        title: `Team update from ${coachName}`,
+        title: announcementTitle,
         body,
         priority: "medium",
         link: "/athlete/dashboard",
         academyId,
-      })
-    )
+      });
+      const timezone = await resolveTimezoneForUser({ userId: uid, role: "athlete" });
+      await evaluateAndDispatch(
+        {
+          userId: uid,
+          type: "announcement",
+          category: "messages",
+          priorityTier: 2,
+          dedupKey: `announcement:${announcement._id.toString()}:${uid.toString()}`,
+          title: announcementTitle,
+          body,
+          link: "/athlete/dashboard",
+          academyId,
+          entityRef: { collection: "Announcement", id: announcement._id as Types.ObjectId },
+          timezone,
+        },
+        { createInAppNotification: false }
+      );
+    })
   );
 
   res.status(201).json({
@@ -786,13 +808,179 @@ router.post(
     }
     const start = strictDate(req.body?.date, res);
     if (!start) return;
+    const athleteId = new Types.ObjectId(req.params.athleteId);
     const created = await CoachComment.create({
-      athleteId: new Types.ObjectId(req.params.athleteId),
+      athleteId,
       coachId: req.actor.userId,
       date: start,
       body,
     });
+
+    const [profile, coach] = await Promise.all([
+      AthleteProfile.findById(athleteId).select("userId academyId").lean(),
+      User.findById(req.actor.userId).select("name").lean(),
+    ]);
+    if (profile?.userId) {
+      const recipientUserId = profile.userId as Types.ObjectId;
+      const academyId = (profile.academyId as Types.ObjectId | undefined) ?? null;
+      const { title, body: pushBody, link } = buildCoachFeedback({
+        coachName: (coach?.name as string) || "your coach",
+        preview: body.length > 140 ? `${body.slice(0, 137)}...` : body,
+      });
+      await createNotification({
+        recipientUserId,
+        type: "coach_feedback",
+        title,
+        body: pushBody,
+        priority: "medium",
+        link,
+        academyId,
+      });
+      const timezone = await resolveTimezoneForUser({ userId: recipientUserId, role: "athlete" });
+      await evaluateAndDispatch(
+        {
+          userId: recipientUserId,
+          type: "coach_feedback",
+          category: "messages",
+          priorityTier: 2,
+          dedupKey: `coach_feedback:${created._id.toString()}`,
+          title,
+          body: pushBody,
+          link,
+          academyId,
+          entityRef: { collection: "CoachComment", id: created._id as Types.ObjectId },
+          timezone,
+        },
+        { createInAppNotification: false }
+      );
+    }
     res.status(201).json({ comment: created.toObject() });
+  }
+);
+
+/**
+ * POST /api/coach/athletes/:athleteId/injuries
+ * body: { bodyPart, description?, severity, restriction? }
+ * Coach logs an injury for an assigned athlete and notifies assigned coaches
+ * plus linked guardians. Severe injuries bypass quiet-hours/cap throttles.
+ */
+router.post(
+  "/athletes/:athleteId/injuries",
+  requireAthleteAccess("athleteId"),
+  async (req: Request, res: Response) => {
+    const bodyPart = strOrUndef(req.body?.bodyPart);
+    if (!bodyPart) {
+      res.status(400).json({ error: "body_part_required" });
+      return;
+    }
+    const severity = req.body?.severity;
+    if (!INJURY_SEVERITY.includes(severity)) {
+      res.status(400).json({ error: "invalid_severity" });
+      return;
+    }
+    const restriction = strOrUndef(req.body?.restriction);
+    const athleteId = new Types.ObjectId(req.params.athleteId);
+    const created = await Injury.create({
+      athleteId,
+      bodyPart,
+      description: strOrUndef(req.body?.description),
+      severity,
+      restriction,
+    });
+
+    const [profile, assignedCoaches, guardians] = await Promise.all([
+      AthleteProfile.findById(athleteId).select("userId academyId").lean(),
+      CoachAthleteAssignment.find({ athleteId, endedAt: null }).select("coachId").lean(),
+      GuardianAthleteLink.find({ athleteId, endedAt: null }).select("guardianId").lean(),
+    ]);
+    const athleteUser = profile?.userId
+      ? await User.findById(profile.userId).select("name").lean()
+      : null;
+    const academyId = (profile?.academyId as Types.ObjectId | undefined) ?? null;
+    const isSevere = severity === "severe";
+    const { title, body: alertBody } = buildInjuryAlert({
+      athleteName: (athleteUser?.name as string) || "An athlete",
+      bodyPart,
+      severity,
+      restriction: restriction ?? null,
+    });
+
+    const coachLink = `/coach/athletes/${athleteId.toString()}`;
+    await Promise.all(
+      assignedCoaches.map(async (a) => {
+        const coachUserId = a.coachId as Types.ObjectId;
+        await createNotification({
+          recipientUserId: coachUserId,
+          type: "injury_alert",
+          title,
+          body: alertBody,
+          priority: isSevere ? "high" : "medium",
+          link: coachLink,
+          academyId,
+        });
+        const timezone = await resolveTimezoneForUser({
+          userId: coachUserId,
+          role: "coach",
+          academyId,
+        });
+        await evaluateAndDispatch(
+          {
+            userId: coachUserId,
+            type: "injury_alert",
+            category: "alerts",
+            priorityTier: isSevere ? 1 : 2,
+            dedupKey: `injury_alert:${created._id.toString()}:${coachUserId.toString()}`,
+            title,
+            body: alertBody,
+            link: coachLink,
+            academyId,
+            entityRef: { collection: "Injury", id: created._id as Types.ObjectId },
+            timezone,
+            override: isSevere,
+          },
+          { createInAppNotification: false }
+        );
+      })
+    );
+
+    await Promise.all(
+      guardians.map(async (g) => {
+        const guardianUserId = g.guardianId as Types.ObjectId;
+        await createNotification({
+          recipientUserId: guardianUserId,
+          type: "injury_alert",
+          title,
+          body: alertBody,
+          priority: isSevere ? "high" : "medium",
+          link: "/guardian/dashboard",
+          academyId,
+        });
+        const timezone = await resolveTimezoneForUser({
+          userId: guardianUserId,
+          role: "guardian",
+          academyId,
+        });
+        await evaluateAndDispatch(
+          {
+            userId: guardianUserId,
+            type: "injury_alert",
+            category: "alerts",
+            priorityTier: isSevere ? 1 : 2,
+            dedupKey: `injury_alert:${created._id.toString()}:${guardianUserId.toString()}`,
+            title,
+            body: alertBody,
+            link: "/guardian/dashboard",
+            academyId,
+            entityRef: { collection: "Injury", id: created._id as Types.ObjectId },
+            timezone,
+            override: isSevere,
+          },
+          { createInAppNotification: false }
+        );
+      })
+    );
+
+    res.status(201).json({ injury: created.toObject() });
   }
 );
 

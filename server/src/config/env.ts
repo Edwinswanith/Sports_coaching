@@ -40,18 +40,26 @@ function isRemoteMongo(uri: string): boolean {
 const strictSecrets = isProduction || isRemoteMongo(mongoUri);
 const defaultUploadDir = process.env.VERCEL === "1" ? path.join(os.tmpdir(), "uploads") : "uploads";
 
-function requiredSecret(name: string, fallback: string): string {
-  const value = process.env[name] ?? process.env.AUTH_SECRET ?? (strictSecrets ? undefined : fallback);
+function requiredSecretFrom(names: string[], fallback: string): string {
+  const value =
+    names.map((name) => process.env[name]).find((candidate): candidate is string => Boolean(candidate)) ??
+    process.env.AUTH_SECRET ??
+    (strictSecrets ? undefined : fallback);
   if (strictSecrets && (!value || value === fallback)) {
+    const label = names.join(" or ");
     throw new Error(
-      `Refusing to start: ${name} is missing or set to the placeholder value ` +
+      `Refusing to start: ${label} is missing or set to the placeholder value ` +
         `while pointing at a production/remote database. Set a strong unique secret.`
     );
   }
   if (!value) {
-    throw new Error(`Missing required env var: ${name}`);
+    throw new Error(`Missing required env var: ${names.join(" or ")}`);
   }
   return value;
+}
+
+function requiredSecret(name: string, fallback: string): string {
+  return requiredSecretFrom([name], fallback);
 }
 
 function csv(name: string, fallback: string): string[] {
@@ -59,6 +67,20 @@ function csv(name: string, fallback: string): string[] {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+}
+
+function minuteOfDay(name: string, fallback: string): number {
+  const raw = process.env[name] ?? fallback;
+  const match = /^(\d{1,2}):(\d{2})$/.exec(raw);
+  if (!match) {
+    throw new Error(`Invalid ${name}: expected HH:mm, got "${raw}"`);
+  }
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    throw new Error(`Invalid ${name}: expected HH:mm, got "${raw}"`);
+  }
+  return hour * 60 + minute;
 }
 
 export const env = {
@@ -98,6 +120,35 @@ export const env = {
   gemini: {
     apiKey: process.env.GEMINI_API_KEY ?? "",
     model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+  },
+  // Push delivery (Firebase Cloud Messaging, HTTP v1). Empty values keep push
+  // in no-op mode, while in-app notifications and decision rows still work.
+  fcm: {
+    projectId: process.env.FCM_PROJECT_ID ?? "",
+    serviceAccountJson: process.env.FCM_SERVICE_ACCOUNT_JSON ?? "",
+  },
+  internalNotifications: {
+    sweepSecret: requiredSecretFrom(["INTERNAL_SWEEP_SECRET", "CRON_SECRET"], "change_me_sweep_secret"),
+  },
+  notification: {
+    sweepDefaultLimit: Number(process.env.NOTIFICATION_SWEEP_DEFAULT_LIMIT ?? 200),
+    sweepDefaultPages: Number(process.env.NOTIFICATION_SWEEP_DEFAULT_PAGES ?? 5),
+    dailyCap: Number(process.env.NOTIFICATION_DAILY_CAP ?? 6),
+    minIntervalMinutes: Number(process.env.NOTIFICATION_MIN_INTERVAL_MINUTES ?? 60),
+    quietHoursDefaultStartMinute: minuteOfDay("NOTIFICATION_QUIET_HOURS_DEFAULT_START", "22:00"),
+    quietHoursDefaultEndMinute: minuteOfDay("NOTIFICATION_QUIET_HOURS_DEFAULT_END", "07:00"),
+    presenceSuppressWindowMin: Number(process.env.NOTIFICATION_PRESENCE_SUPPRESS_WINDOW_MIN ?? 10),
+    dailyCheckinReminderMinute: minuteOfDay("DAILY_CHECKIN_REMINDER_LOCAL_TIME", "20:00"),
+    trainingSessionReminderAmMinute: minuteOfDay("TRAINING_SESSION_REMINDER_AM_TIME", "07:00"),
+    trainingSessionReminderAftMinute: minuteOfDay("TRAINING_SESSION_REMINDER_AFT_TIME", "12:00"),
+    trainingSessionReminderPmMinute: minuteOfDay("TRAINING_SESSION_REMINDER_PM_TIME", "16:00"),
+    rpeMonitoringReminderAmMinute: minuteOfDay("RPE_MONITORING_REMINDER_AM_TIME", "07:00"),
+    rpeMonitoringReminderAftMinute: minuteOfDay("RPE_MONITORING_REMINDER_AFT_TIME", "12:00"),
+    rpeMonitoringReminderPmMinute: minuteOfDay("RPE_MONITORING_REMINDER_PM_TIME", "16:00"),
+    missedActivityReminderMinute: minuteOfDay("MISSED_ACTIVITY_REMINDER_LOCAL_TIME", "08:00"),
+    noteNeedsReplyHours: Number(process.env.NOTE_NEEDS_REPLY_HOURS ?? 24),
+    weeklySummaryMinute: minuteOfDay("WEEKLY_SUMMARY_LOCAL_TIME", "09:00"),
+    squadDigestMinute: minuteOfDay("SQUAD_DIGEST_LOCAL_TIME", "09:00"),
   },
   deepgram: {
     apiKey: process.env.DEEP_GRAM ?? process.env.DEEPGRAM_API_KEY ?? "",

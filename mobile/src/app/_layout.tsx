@@ -17,8 +17,15 @@ import { AuthProvider, useAuth } from "../lib/auth";
 import { dashboardPathForRole } from "../lib/roles";
 import { colors } from "../lib/theme";
 import { MobileTourProvider } from "../lib/tour/MobileTourProvider";
+import { subscribeToPushMessages } from "../lib/push";
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
+
+const KNOWN_PUSH_ROUTES = [
+  "/athlete/dashboard", "/athlete/check-in", "/athlete/rpe", "/athlete/water", "/athlete/trends",
+  "/coach/dashboard", "/coach/athletes", "/coach/messages", "/coach/announcements", "/coach/coaches",
+  "/guardian/dashboard", "/guardian/athletes", "/account", "/notifications",
+];
 
 function Gate() {
   const { status, user } = useAuth();
@@ -38,6 +45,16 @@ function Gate() {
       router.replace(dest as never);
     }
   }, [status, user, segments, router]);
+
+  useEffect(() => {
+    if (status !== "authed") return;
+    return subscribeToPushMessages((link) => {
+      const path = link.includes("?") ? link.slice(0, link.indexOf("?")) : link;
+      const known = KNOWN_PUSH_ROUTES.some((route) => path === route || path.startsWith(`${route}/`));
+      const dest = known ? link : (dashboardPathForRole(user?.role ?? "") ?? "/notifications");
+      router.push(dest as never);
+    });
+  }, [status, user, router]);
 
   if (status === "loading") {
     return (
