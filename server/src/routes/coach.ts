@@ -15,6 +15,8 @@ import { GuardianAthleteLink } from "../models/GuardianAthleteLink";
 import { AuditLog } from "../models/AuditLog";
 import { CoachComment } from "../models/CoachComment";
 import { Announcement } from "../models/Announcement";
+import { DeviceToken } from "../models/DeviceToken";
+import { NotificationDecision } from "../models/NotificationDecision";
 import { createNotification } from "../services/notifications";
 import { generateTempPassword } from "../lib/tempPassword";
 import { RpeMonitoring } from "../models/RpeMonitoring";
@@ -744,6 +746,50 @@ router.post(
       readerRole: "coach",
     });
     res.json({ marked });
+  }
+);
+
+/** GET /api/coach/athletes/:athleteId/notification-debug — sanitized push status for an assigned athlete. */
+router.get(
+  "/athletes/:athleteId/notification-debug",
+  requireAthleteAccess("athleteId"),
+  async (req: Request, res: Response) => {
+    const athleteId = new Types.ObjectId(req.params.athleteId);
+    const profile = await AthleteProfile.findById(athleteId).select("userId").lean();
+    if (!profile?.userId) {
+      res.status(404).json({ error: "athlete_not_found" });
+      return;
+    }
+
+    const userId = profile.userId as Types.ObjectId;
+    const rawLimit = Number(req.query.limit ?? 10);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), 20) : 10;
+    const [activePushTokenCount, recentDecisions] = await Promise.all([
+      DeviceToken.countDocuments({ userId, disabledAt: null }),
+      NotificationDecision.find({ userId })
+        .sort({ sentTime: -1, createdAt: -1 })
+        .limit(limit)
+        .lean(),
+    ]);
+
+    res.json({
+      athleteId: athleteId.toString(),
+      userId: userId.toString(),
+      activePushTokenCount,
+      recentDecisions: recentDecisions.map((decision) => ({
+        type: decision.type,
+        category: decision.category,
+        status: decision.status,
+        suppressReason: decision.suppressReason ?? null,
+        sentTime: (decision.sentTime as Date).toISOString(),
+        dedupKey: decision.dedupKey,
+        deliveryResult: {
+          attempted: Boolean(decision.deliveryResult?.attempted),
+          providerMessageCount: decision.deliveryResult?.providerMessageIds?.length ?? 0,
+          errors: decision.deliveryResult?.errors ?? [],
+        },
+      })),
+    });
   }
 );
 
