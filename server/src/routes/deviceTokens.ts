@@ -7,6 +7,12 @@ const router = Router();
 
 router.use(requireAuth);
 
+function optionalString(value: unknown, maxLength = 120): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, maxLength) : null;
+}
+
 /**
  * POST /api/device-tokens  body: { token, platform }
  * Registers (or reactivates/reassigns) a push token for the logged-in user.
@@ -35,6 +41,10 @@ router.post("/", writeRateLimit({ windowMs: 60_000, max: 20 }), async (req: Requ
       $set: {
         userId: req.actor.userId,
         platform,
+        appVersion: optionalString(req.body?.appVersion, 80),
+        deviceName: optionalString(req.body?.deviceName, 120),
+        osName: optionalString(req.body?.osName, 40),
+        osVersion: optionalString(req.body?.osVersion, 40),
         lastSeenAt: new Date(),
         disabledAt: null,
       },

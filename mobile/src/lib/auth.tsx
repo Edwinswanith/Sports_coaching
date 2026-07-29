@@ -9,7 +9,7 @@ import {
   deleteAccount as apiDeleteAccount,
   type StoredUser,
 } from "./api";
-import { registerPushToken, deregisterPushToken } from "./push";
+import { registerPushToken, deregisterPushToken, subscribeToPushTokenUpdates } from "./push";
 import type { Role } from "./roles";
 import { loadVoiceLanguagePreference, setCachedVoiceLanguage } from "./voiceLanguage";
 
@@ -60,6 +60,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       void loadVoiceLanguagePreference();
     }
   }, [user?.voiceLanguage]);
+
+  useEffect(() => {
+    if (status !== "authed") return undefined;
+    return subscribeToPushTokenUpdates();
+  }, [status]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     const result = await apiLogin(email, password);

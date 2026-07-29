@@ -83,6 +83,21 @@ const router = Router();
 // (keeps the assigned-only authorization story auditable).
 router.use(requireAuth, requireRole("coach"), loadScope);
 
+function maskPushToken(token: unknown): string | null {
+  if (typeof token !== "string" || !token) return null;
+  if (token.length <= 20) return `${token.slice(0, 4)}...${token.slice(-4)} (${token.length})`;
+  return `${token.slice(0, 10)}...${token.slice(-8)} (${token.length})`;
+}
+
+function isoOrNull(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+  return null;
+}
+
 function strictDate(input: unknown, res: Response): Date | null {
   if (input === undefined || input === null || input === "") {
     return dayRange(undefined).start;
@@ -765,19 +780,37 @@ router.get(
     const userId = profile.userId as Types.ObjectId;
     const rawLimit = Number(req.query.limit ?? 10);
     const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), 20) : 10;
-    const [activePushTokenCount, recentDecisions] = await Promise.all([
-      DeviceToken.countDocuments({ userId, disabledAt: null }),
+    const [deviceTokens, recentDecisions] = await Promise.all([
+      DeviceToken.find({ userId }).sort({ disabledAt: 1, updatedAt: -1 }).limit(10).lean(),
       NotificationDecision.find({ userId })
         .sort({ sentTime: -1, createdAt: -1 })
         .limit(limit)
         .lean(),
     ]);
+    const activePushTokenCount = deviceTokens.filter((token) => !token.disabledAt).length;
 
     res.json({
       athleteId: athleteId.toString(),
       userId: userId.toString(),
       fcm: getFcmConfigurationStatus(),
       activePushTokenCount,
+      deviceTokens: deviceTokens.map((token) => {
+        const stamped = token as typeof token & { createdAt?: Date; updatedAt?: Date };
+        return {
+          id: token._id.toString(),
+          platform: token.platform,
+          token: maskPushToken(token.token),
+          appVersion: token.appVersion ?? null,
+          deviceName: token.deviceName ?? null,
+          osName: token.osName ?? null,
+          osVersion: token.osVersion ?? null,
+          active: !token.disabledAt,
+          lastSeenAt: isoOrNull(token.lastSeenAt),
+          disabledAt: isoOrNull(token.disabledAt),
+          createdAt: isoOrNull(stamped.createdAt),
+          updatedAt: isoOrNull(stamped.updatedAt),
+        };
+      }),
       recentDecisions: recentDecisions.map((decision) => ({
         type: decision.type,
         category: decision.category,

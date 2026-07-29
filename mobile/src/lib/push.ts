@@ -1,4 +1,6 @@
 import * as Notifications from "expo-notifications";
+import * as Application from "expo-application";
+import * as Device from "expo-device";
 import { Platform } from "react-native";
 import { apiFetch } from "./api";
 
@@ -33,6 +35,26 @@ async function ensureChannel(): Promise<void> {
   }).catch(() => undefined);
 }
 
+function pushDeviceMetadata() {
+  const version = Application.nativeApplicationVersion ?? "unknown";
+  const build = Application.nativeBuildVersion ?? "unknown";
+  return {
+    appVersion: `${version} (${build})`,
+    deviceName: Device.modelName ?? Device.deviceName ?? null,
+    osName: Device.osName ?? Platform.OS,
+    osVersion: Device.osVersion ?? null,
+  };
+}
+
+async function submitPushToken(token: string): Promise<boolean> {
+  const res = await apiFetch("/api/device-tokens", {
+    method: "POST",
+    body: JSON.stringify({ token, platform: Platform.OS, ...pushDeviceMetadata() }),
+  });
+  if (res.ok) cachedToken = token;
+  return res.ok;
+}
+
 export async function registerPushToken(): Promise<void> {
   if (!supportsRemotePush()) return;
   try {
@@ -47,14 +69,20 @@ export async function registerPushToken(): Promise<void> {
     const result = await Notifications.getDevicePushTokenAsync();
     if (!result?.data) return;
 
-    const res = await apiFetch("/api/device-tokens", {
-      method: "POST",
-      body: JSON.stringify({ token: result.data, platform: Platform.OS }),
-    });
-    if (res.ok) cachedToken = result.data;
+    await submitPushToken(result.data);
   } catch {
     // Push setup is best-effort and must not block sign-in.
   }
+}
+
+export function subscribeToPushTokenUpdates(): () => void {
+  if (!supportsRemotePush()) return () => undefined;
+  const subscription = Notifications.addPushTokenListener((token) => {
+    if (typeof token.data === "string" && token.data) {
+      void submitPushToken(token.data);
+    }
+  });
+  return () => subscription.remove();
 }
 
 export async function deregisterPushToken(): Promise<void> {

@@ -42,11 +42,22 @@ describe("POST /api/device-tokens", () => {
     const res = await request(buildApp())
       .post("/api/device-tokens")
       .set("Authorization", `Bearer ${tokenFor(user._id)}`)
-      .send({ token: "tok-1", platform: "android" });
+      .send({
+        token: "tok-1",
+        platform: "android",
+        appVersion: "1.0.16 (17)",
+        deviceName: "Pixel 8",
+        osName: "Android",
+        osVersion: "15",
+      });
     expect(res.status).toBe(201);
     const rows = await DeviceToken.find({ userId: user._id }).lean();
     expect(rows).toHaveLength(1);
     expect(rows[0].platform).toBe("android");
+    expect(rows[0].appVersion).toBe("1.0.16 (17)");
+    expect(rows[0].deviceName).toBe("Pixel 8");
+    expect(rows[0].osName).toBe("Android");
+    expect(rows[0].osVersion).toBe("15");
     expect(rows[0].disabledAt).toBeNull();
   });
 
