@@ -7,6 +7,7 @@ import { serializeMedia, type MediaView } from "./media";
 import { createNotification } from "./notifications";
 import { evaluateAndDispatch } from "./notificationEligibility";
 import { resolveTimezoneForUser } from "./timezone";
+import { notificationPreview } from "./notificationCopy";
 
 /** Shape returned to the client for one message. `mine` is viewer-relative. */
 export type MessageView = {
@@ -123,7 +124,7 @@ export async function sendMessage(args: {
     mediaId: args.mediaId ?? null,
   });
 
-  const notifBody = body ? preview(body) : media ? "Sent you an image." : "";
+  const notifBody = body ? notificationPreview(body) : media ? "Sent an image. Tap to view it." : "";
 
   // Resolve the recipient user + a friendly sender name for the notification.
   if (args.senderRole === "coach") {
@@ -207,11 +208,6 @@ export async function sendMessage(args: {
   }
 
   return { message: created, media };
-}
-
-function preview(body: string): string {
-  const trimmed = body.trim();
-  return trimmed.length > 140 ? `${trimmed.slice(0, 137)}…` : trimmed;
 }
 
 /**

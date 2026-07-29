@@ -62,6 +62,7 @@ import { getVoiceIntentInterpreter, type VoicePendingIntent } from "../services/
 import { evaluateAndDispatch } from "../services/notificationEligibility";
 import { resolveTimezoneForUser } from "../services/timezone";
 import { buildReadinessRiskFlag } from "../services/notificationTemplates";
+import { notificationPreview } from "../services/notificationCopy";
 import multer from "multer";
 import fs from "fs";
 
@@ -73,13 +74,21 @@ const router = Router();
  * dashboard shows. Never awaited by callers so it can't slow down the
  * athlete's own response; failures are swallowed by notifyGuardiansOfAthleteUpdate.
  */
-function notifyGuardians(profileId: Types.ObjectId, actorUserId: Types.ObjectId, label: string) {
+function notifyGuardiansWithStandardCopy(
+  profileId: Types.ObjectId,
+  actorUserId: Types.ObjectId,
+  label: string
+) {
   User.findById(actorUserId)
     .select("name")
     .lean()
     .then((user) => {
       const name = (user?.name as string | undefined) || "Your athlete";
-      return notifyGuardiansOfAthleteUpdate(profileId, `${name} — ${label}`, `${name} just logged ${label.toLowerCase()}.`);
+      return notifyGuardiansOfAthleteUpdate(
+        profileId,
+        notificationPreview(`${name} logged ${label}`),
+        `Open Apex to review the latest ${label.toLowerCase()} update.`
+      );
     })
     .catch((err) => console.error("[guardian-notify] failed:", (err as Error).message));
 }
@@ -554,7 +563,7 @@ router.post("/wellness", async (req: Request, res: Response) => {
   );
   const saved = await Wellness.findOne({ athleteId: profileId, date }).lean();
   if (fields.sleepQuality !== undefined && req.actor) {
-    notifyGuardians(profileId, req.actor.userId, "Sleep check-in");
+    notifyGuardiansWithStandardCopy(profileId, req.actor.userId, "Sleep check-in");
   }
   res.json({ wellness: saved });
 });
@@ -660,7 +669,7 @@ router.post("/water", async (req: Request, res: Response) => {
   const date = parseDateStrict(req.body?.date, res);
   if (!date) return;
   await WaterIntake.create({ athleteId: profileId, date, amountMl: amount, loggedAt: new Date() });
-  if (req.actor) notifyGuardians(profileId, req.actor.userId, "Water intake");
+  if (req.actor) notifyGuardiansWithStandardCopy(profileId, req.actor.userId, "Water intake");
   res.status(201).json(await waterDayResponse(profileId, date));
 });
 
@@ -724,7 +733,7 @@ router.post("/attendance", async (req: Request, res: Response) => {
     { upsert: true, runValidators: true }
   );
   const saved = await Attendance.findOne({ athleteId: profileId, date }).lean();
-  notifyGuardians(profileId, req.actor.userId, "Attendance");
+  notifyGuardiansWithStandardCopy(profileId, req.actor.userId, "Attendance");
   res.json({ attendance: saved });
 });
 

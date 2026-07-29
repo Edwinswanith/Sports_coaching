@@ -174,8 +174,8 @@ describe("runSweep — missed_activity_reminder", () => {
       recipientUserId: user._id,
       type: "missed_activity_reminder",
     }).lean();
-    expect(notification?.title).toBe("Finish yesterday's activity log");
-    expect(notification?.body).toBe("You still have 1 planned session to mark completed or skipped.");
+    expect(notification?.title).toBe("Activity log reminder");
+    expect(notification?.body).toBe("You still have 1 planned session from yesterday to mark as completed or skipped.");
     const decision = await NotificationDecision.findOne({
       userId: user._id,
       type: "missed_activity_reminder",

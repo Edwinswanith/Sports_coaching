@@ -39,6 +39,7 @@ import { evaluateAndDispatch } from "../services/notificationEligibility";
 import { getFcmConfigurationStatus } from "../services/fcmDelivery";
 import { resolveTimezoneForUser } from "../services/timezone";
 import { buildCoachFeedback, buildInjuryAlert } from "../services/notificationTemplates";
+import { notificationPreview } from "../services/notificationCopy";
 import { buildTrendSeries, clampDays } from "../services/trends";
 import { buildActivityFeed, clampLimit } from "../services/activity";
 import {
@@ -167,13 +168,14 @@ router.post("/announcements", writeRateLimit({ windowMs: 60_000, max: 20 }), asy
   const coach = await User.findById(coachId).select("name").lean();
   const coachName = (coach?.name as string) || "Your coach";
   const announcementTitle = `Team update from ${coachName}`;
+  const announcementBody = notificationPreview(body);
   await Promise.all(
     recipientUserIds.map(async (uid) => {
       await createNotification({
         recipientUserId: uid,
         type: "announcement",
         title: announcementTitle,
-        body,
+        body: announcementBody,
         priority: "medium",
         link: "/athlete/dashboard",
         academyId,
@@ -187,7 +189,7 @@ router.post("/announcements", writeRateLimit({ windowMs: 60_000, max: 20 }), asy
           priorityTier: 2,
           dedupKey: `announcement:${announcement._id.toString()}:${uid.toString()}`,
           title: announcementTitle,
-          body,
+          body: announcementBody,
           link: "/athlete/dashboard",
           academyId,
           entityRef: { collection: "Announcement", id: announcement._id as Types.ObjectId },
@@ -906,7 +908,7 @@ router.post(
       const academyId = (profile.academyId as Types.ObjectId | undefined) ?? null;
       const { title, body: pushBody, link } = buildCoachFeedback({
         coachName: (coach?.name as string) || "your coach",
-        preview: body.length > 140 ? `${body.slice(0, 137)}...` : body,
+        preview: notificationPreview(body),
       });
       await createNotification({
         recipientUserId,

@@ -1,11 +1,13 @@
+import { notificationPreview } from "./notificationCopy";
+
 /**
- * Pure copy builders — one per sweep/event-driven notification type introduced
+ * Pure copy builders - one per sweep/event-driven notification type introduced
  * for push. No DB reads here; callers already queried whatever context they
  * need. `message`/`announcement` deliberately keep their existing inline copy
  * in services/messaging.ts / routes/coach.ts (not duplicated here) so the
  * in-app row and the push payload can never drift apart for those two.
  *
- * `link` is a best-effort default — callers that need an athlete-scoped path
+ * `link` is a best-effort default - callers that need an athlete-scoped path
  * (readiness_risk_flag, injury_alert) override it with the concrete path once
  * they know the athleteId.
  */
@@ -18,8 +20,8 @@ function slotLabel(slot: ReminderSlot): string {
 
 export function buildDailyCheckinReminder(): TemplateResult {
   return {
-    title: "Check-in reminder",
-    body: "Don't forget today's check-in — how are you feeling?",
+    title: "Daily check-in reminder",
+    body: "Please complete today's check-in so your coach can review your readiness.",
     link: "/athlete/dashboard",
   };
 }
@@ -27,8 +29,8 @@ export function buildDailyCheckinReminder(): TemplateResult {
 export function buildTrainingSessionReminder(input: { slot: ReminderSlot }): TemplateResult {
   const label = slotLabel(input.slot);
   return {
-    title: `Log your ${label} session`,
-    body: `Mark your ${label} session completed or skipped.`,
+    title: `${label} session reminder`,
+    body: `Please mark your ${label} session as completed or skipped.`,
     link: "/athlete/dashboard",
   };
 }
@@ -37,7 +39,7 @@ export function buildRpeMonitoringReminder(input: { slot: ReminderSlot }): Templ
   const label = slotLabel(input.slot);
   return {
     title: `${label} RPE reminder`,
-    body: `Log your ${label} RPE so your coach can see today's load.`,
+    body: `Please log your ${label} RPE so your coach can review today's load.`,
     link: "/athlete/dashboard",
   };
 }
@@ -45,8 +47,8 @@ export function buildRpeMonitoringReminder(input: { slot: ReminderSlot }): Templ
 export function buildMissedActivityReminder(input: { count: number }): TemplateResult {
   const sessionLabel = input.count === 1 ? "session" : "sessions";
   return {
-    title: "Finish yesterday's activity log",
-    body: `You still have ${input.count} planned ${sessionLabel} to mark completed or skipped.`,
+    title: "Activity log reminder",
+    body: `You still have ${input.count} planned ${sessionLabel} from yesterday to mark as completed or skipped.`,
     link: "/athlete/dashboard",
   };
 }
@@ -56,10 +58,10 @@ export function buildReadinessRiskFlag(input: {
   riskReasons: string[];
 }): TemplateResult {
   return {
-    title: `${input.athleteName}'s readiness flagged`,
+    title: `Readiness alert for ${input.athleteName}`,
     body: input.riskReasons.length
-      ? input.riskReasons.join("; ")
-      : "Check their latest RPE entry.",
+      ? notificationPreview(input.riskReasons.join("; "))
+      : "Please review their latest RPE entry.",
     link: null,
   };
 }
@@ -77,8 +79,8 @@ export function buildInjuryAlert(input: {
         ? "Injury"
         : "Minor injury";
   return {
-    title: `${label} logged: ${input.athleteName}`,
-    body: `${input.bodyPart}${input.restriction ? ` — ${input.restriction}` : ""}`,
+    title: `${label} alert for ${input.athleteName}`,
+    body: notificationPreview(`${input.bodyPart}${input.restriction ? ` - ${input.restriction}` : ""}`),
     link: null,
   };
 }
@@ -88,8 +90,8 @@ export function buildNoteNeedsReply(input: {
   hours: number;
 }): TemplateResult {
   return {
-    title: "A note is waiting for a reply",
-    body: `${input.athleteName} left a note ${input.hours}h ago — take a look.`,
+    title: "Athlete note needs a reply",
+    body: `${input.athleteName} left a note ${input.hours}h ago. Please review and respond.`,
     link: null,
   };
 }
@@ -101,8 +103,8 @@ export function buildAthleteWeeklySummary(input: {
 }): TemplateResult {
   const avg = input.readinessAvg == null ? "n/a" : `${input.readinessAvg}%`;
   return {
-    title: "Your week in review",
-    body: `Your week: ${input.checkins}/7 check-ins, ${input.sessions} sessions, readiness avg ${avg}.`,
+    title: "Weekly summary ready",
+    body: `This week: ${input.checkins}/7 check-ins, ${input.sessions} sessions, readiness average ${avg}.`,
     link: "/athlete/dashboard",
   };
 }
@@ -113,8 +115,8 @@ export function buildCoachSquadDigest(input: {
   flaggedCount: number;
 }): TemplateResult {
   return {
-    title: "Your squad this week",
-    body: `${input.presentCount}/${input.totalSlots} attendance, ${input.flaggedCount} readiness flags.`,
+    title: "Squad summary ready",
+    body: `This week: ${input.presentCount}/${input.totalSlots} attendance records, ${input.flaggedCount} readiness flags.`,
     link: "/coach/dashboard",
   };
 }
@@ -126,7 +128,7 @@ export function buildStreakMilestone(input: {
 }): TemplateResult {
   return {
     title: `${input.badgeLabel} unlocked`,
-    body: `${input.streakCount}-day ${input.goalTitle.toLowerCase()} — keep it going.`,
+    body: `${input.streakCount}-day ${input.goalTitle.toLowerCase()} streak. Keep it going.`,
     link: "/athlete/achievements",
   };
 }
@@ -134,7 +136,7 @@ export function buildStreakMilestone(input: {
 export function buildCoachFeedback(input: { coachName: string; preview: string }): TemplateResult {
   return {
     title: `Feedback from ${input.coachName}`,
-    body: input.preview,
+    body: notificationPreview(input.preview),
     link: "/athlete/dashboard",
   };
 }
