@@ -165,7 +165,7 @@ export class NoopPushDeliveryAdapter implements PushDeliveryAdapter {
     if (input.tokens.length > 0) {
       console.log(`[fcm:noop] would send "${input.data.type}" to ${input.tokens.length} token(s)`);
     }
-    return input.tokens.map((t) => ({ token: t.token, ok: true }));
+    return input.tokens.map((t) => ({ token: t.token, ok: false, error: "fcm_not_configured" }));
   }
 }
 

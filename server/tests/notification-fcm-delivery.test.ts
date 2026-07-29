@@ -14,7 +14,7 @@ describe("getPushDeliveryAdapter", () => {
     expect(adapter).toBeInstanceOf(NoopPushDeliveryAdapter);
   });
 
-  test("no-op adapter reports success for every token without any network call", async () => {
+  test("no-op adapter reports a configuration error for every token without any network call", async () => {
     const adapter = new NoopPushDeliveryAdapter();
     const results = await adapter.send({
       tokens: [
@@ -24,8 +24,8 @@ describe("getPushDeliveryAdapter", () => {
       data: { type: "daily_checkin_reminder", title: "t", body: "b", link: "" },
     });
     expect(results).toEqual([
-      { token: "a", ok: true },
-      { token: "b", ok: true },
+      { token: "a", ok: false, error: "fcm_not_configured" },
+      { token: "b", ok: false, error: "fcm_not_configured" },
     ]);
   });
 
