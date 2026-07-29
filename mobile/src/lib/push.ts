@@ -3,12 +3,13 @@ import { Platform } from "react-native";
 import { apiFetch } from "./api";
 
 let cachedToken: string | null = null;
+const PUSH_CHANNEL_ID = "apex_push_high";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowBanner: true,
     shouldShowList: true,
-    shouldPlaySound: false,
+    shouldPlaySound: true,
     shouldSetBadge: false,
   }),
 });
@@ -19,9 +20,12 @@ function supportsRemotePush(): boolean {
 
 async function ensureChannel(): Promise<void> {
   if (Platform.OS !== "android") return;
-  await Notifications.setNotificationChannelAsync("general", {
-    name: "General",
-    importance: Notifications.AndroidImportance.DEFAULT,
+  await Notifications.setNotificationChannelAsync(PUSH_CHANNEL_ID, {
+    name: "Apex alerts",
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: "default",
+    vibrationPattern: [0, 250, 250, 250],
+    enableVibrate: true,
   }).catch(() => undefined);
 }
 

@@ -35,6 +35,7 @@ export interface PushDeliveryAdapter {
 }
 
 type ServiceAccount = { client_email: string; private_key: string; project_id?: string };
+const PUSH_CHANNEL_ID = "apex_push_high";
 
 function parseServiceAccount(raw: string): ServiceAccount | null {
   if (!raw) return null;
@@ -138,7 +139,8 @@ export class FcmHttpV1Adapter implements PushDeliveryAdapter {
               android: {
                 priority: "HIGH",
                 notification: {
-                  channel_id: "general",
+                  channel_id: PUSH_CHANNEL_ID,
+                  sound: "default",
                 },
               },
               apns: {

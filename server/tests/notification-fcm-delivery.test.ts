@@ -92,7 +92,8 @@ describe("FcmHttpV1Adapter", () => {
       android: {
         priority: "HIGH",
         notification: {
-          channel_id: "general",
+          channel_id: "apex_push_high",
+          sound: "default",
         },
       },
     });
