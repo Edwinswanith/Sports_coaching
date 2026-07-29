@@ -34,14 +34,18 @@ export interface PushDeliveryAdapter {
   send(input: PushSendInput): Promise<PushSendResult[]>;
 }
 
-type ServiceAccount = { client_email: string; private_key: string };
+type ServiceAccount = { client_email: string; private_key: string; project_id?: string };
 
 function parseServiceAccount(raw: string): ServiceAccount | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<ServiceAccount>;
     if (typeof parsed.client_email === "string" && typeof parsed.private_key === "string") {
-      return { client_email: parsed.client_email, private_key: parsed.private_key };
+      return {
+        client_email: parsed.client_email,
+        private_key: parsed.private_key,
+        project_id: typeof parsed.project_id === "string" ? parsed.project_id : undefined,
+      };
     }
     console.warn("[fcm] FCM_SERVICE_ACCOUNT_JSON is missing client_email/private_key");
     return null;
@@ -49,6 +53,29 @@ function parseServiceAccount(raw: string): ServiceAccount | null {
     console.warn("[fcm] FCM_SERVICE_ACCOUNT_JSON is not valid JSON — running push in no-op mode");
     return null;
   }
+}
+
+export function getFcmConfigurationStatus(): {
+  ready: boolean;
+  hasProjectIdEnv: boolean;
+  hasServiceAccountJson: boolean;
+  parsedServiceAccount: boolean;
+  effectiveProjectIdSource: "env" | "service_account_json" | null;
+  projectIdMatchesServiceAccount: boolean | null;
+} {
+  const serviceAccount = parseServiceAccount(env.fcm.serviceAccountJson);
+  const envProjectId = env.fcm.projectId.trim();
+  const serviceAccountProjectId = serviceAccount?.project_id?.trim() ?? "";
+  const effectiveProjectId = envProjectId || serviceAccountProjectId;
+  return {
+    ready: Boolean(effectiveProjectId && serviceAccount),
+    hasProjectIdEnv: Boolean(envProjectId),
+    hasServiceAccountJson: Boolean(env.fcm.serviceAccountJson),
+    parsedServiceAccount: Boolean(serviceAccount),
+    effectiveProjectIdSource: envProjectId ? "env" : serviceAccountProjectId ? "service_account_json" : null,
+    projectIdMatchesServiceAccount:
+      envProjectId && serviceAccountProjectId ? envProjectId === serviceAccountProjectId : null,
+  };
 }
 
 export class FcmHttpV1Adapter implements PushDeliveryAdapter {
@@ -175,9 +202,10 @@ let adapter: PushDeliveryAdapter | null = null;
 export function getPushDeliveryAdapter(): PushDeliveryAdapter {
   if (!adapter) {
     const serviceAccount = parseServiceAccount(env.fcm.serviceAccountJson);
-    if (env.fcm.projectId && serviceAccount) {
-      console.log("[fcm] adapter=real", { projectId: env.fcm.projectId });
-      adapter = new FcmHttpV1Adapter(env.fcm.projectId, serviceAccount);
+    const projectId = env.fcm.projectId.trim() || serviceAccount?.project_id?.trim() || "";
+    if (projectId && serviceAccount) {
+      console.log("[fcm] adapter=real", { projectId });
+      adapter = new FcmHttpV1Adapter(projectId, serviceAccount);
     } else {
       console.warn("[fcm] adapter=noop", {
         hasProjectId: Boolean(env.fcm.projectId),

@@ -36,6 +36,7 @@ import {
   dayRange,
 } from "../services/dashboard";
 import { evaluateAndDispatch } from "../services/notificationEligibility";
+import { getFcmConfigurationStatus } from "../services/fcmDelivery";
 import { resolveTimezoneForUser } from "../services/timezone";
 import { buildCoachFeedback, buildInjuryAlert } from "../services/notificationTemplates";
 import { buildTrendSeries, clampDays } from "../services/trends";
@@ -775,6 +776,7 @@ router.get(
     res.json({
       athleteId: athleteId.toString(),
       userId: userId.toString(),
+      fcm: getFcmConfigurationStatus(),
       activePushTokenCount,
       recentDecisions: recentDecisions.map((decision) => ({
         type: decision.type,
