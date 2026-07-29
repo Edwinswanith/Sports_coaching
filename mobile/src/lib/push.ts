@@ -37,13 +37,13 @@ export async function registerPushToken(): Promise<void> {
     if (!granted) return;
 
     const result = await Notifications.getDevicePushTokenAsync();
-    if (!result?.data || result.data === cachedToken) return;
-    cachedToken = result.data;
+    if (!result?.data) return;
 
-    await apiFetch("/api/device-tokens", {
+    const res = await apiFetch("/api/device-tokens", {
       method: "POST",
       body: JSON.stringify({ token: result.data, platform: Platform.OS }),
     });
+    if (res.ok) cachedToken = result.data;
   } catch {
     // Push setup is best-effort and must not block sign-in.
   }
