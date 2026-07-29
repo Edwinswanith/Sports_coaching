@@ -147,7 +147,14 @@ export class FcmHttpV1Adapter implements PushDeliveryAdapter {
 
   async send(input: PushSendInput): Promise<PushSendResult[]> {
     if (input.tokens.length === 0) return [];
-    const accessToken = await this.getAccessToken();
+    let accessToken: string;
+    try {
+      accessToken = await this.getAccessToken();
+    } catch (err) {
+      const error = (err as Error).message;
+      console.warn("[fcm] access_token_failed", { error, tokenCount: input.tokens.length });
+      return input.tokens.map((t) => ({ token: t.token, ok: false, error }));
+    }
     // FCM v1 has no native multicast endpoint — one request per token, in parallel.
     return Promise.all(input.tokens.map((t) => this.sendOne(accessToken, t.token, input.data)));
   }
@@ -168,10 +175,17 @@ let adapter: PushDeliveryAdapter | null = null;
 export function getPushDeliveryAdapter(): PushDeliveryAdapter {
   if (!adapter) {
     const serviceAccount = parseServiceAccount(env.fcm.serviceAccountJson);
-    adapter =
-      env.fcm.projectId && serviceAccount
-        ? new FcmHttpV1Adapter(env.fcm.projectId, serviceAccount)
-        : new NoopPushDeliveryAdapter();
+    if (env.fcm.projectId && serviceAccount) {
+      console.log("[fcm] adapter=real", { projectId: env.fcm.projectId });
+      adapter = new FcmHttpV1Adapter(env.fcm.projectId, serviceAccount);
+    } else {
+      console.warn("[fcm] adapter=noop", {
+        hasProjectId: Boolean(env.fcm.projectId),
+        hasServiceAccountJson: Boolean(env.fcm.serviceAccountJson),
+        parsedServiceAccount: Boolean(serviceAccount),
+      });
+      adapter = new NoopPushDeliveryAdapter();
+    }
   }
   return adapter;
 }

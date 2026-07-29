@@ -30,6 +30,16 @@ export type SendBudget = { dailyCount: number; lastSentAt: Date | null };
 
 export type DispatchOutcome = "sent" | "suppressed" | "skipped";
 
+function pushLogPayload(candidate: NotificationCandidate, extra?: Record<string, unknown>) {
+  return {
+    type: candidate.type,
+    category: candidate.category,
+    dedupKey: candidate.dedupKey,
+    userId: candidate.userId.toString(),
+    ...(extra ?? {}),
+  };
+}
+
 /**
  * Which throttling gates a candidate skips.
  * - `messages` category (message/announcement/coach_feedback — user-initiated
@@ -137,7 +147,10 @@ export async function evaluateAndDispatch(
   const skip = resolveGateSkips(candidate);
 
   const hasToken = await DeviceToken.exists({ userId: candidate.userId, disabledAt: null });
-  if (!hasToken) return "skipped"; // transient — a device may register a token later today
+  if (!hasToken) {
+    console.warn("[push] skipped_no_active_token", pushLogPayload(candidate));
+    return "skipped"; // transient — a device may register a token later today
+  }
 
   if (!skip.quietHours && quietHours.enabled) {
     const minute = minuteOfDayInZone(now, candidate.timezone);
@@ -214,6 +227,7 @@ export async function evaluateAndDispatch(
 
   const tokens = await DeviceToken.find({ userId: candidate.userId, disabledAt: null }).lean();
   const adapter = getPushDeliveryAdapter();
+  console.log("[push] send_attempt", pushLogPayload(candidate, { tokenCount: tokens.length }));
   const results = await adapter.send({
     tokens: tokens.map((t) => ({
       token: t.token as string,
@@ -226,6 +240,19 @@ export async function evaluateAndDispatch(
       link: candidate.link ?? "",
     },
   });
+  const errors = results.filter((r) => !r.ok).map((r) => r.error ?? "unknown_error");
+  const resultPayload = pushLogPayload(candidate, {
+    tokenCount: results.length,
+    okCount: results.filter((r) => r.ok).length,
+    errorCount: errors.length,
+    invalidTokenCount: results.filter((r) => r.invalidToken).length,
+    errors: [...new Set(errors)].slice(0, 5),
+  });
+  if (errors.length > 0) {
+    console.warn("[push] send_result", resultPayload);
+  } else {
+    console.log("[push] send_result", resultPayload);
+  }
 
   const invalidTokens = results.filter((r) => r.invalidToken).map((r) => r.token);
   if (invalidTokens.length > 0) {
