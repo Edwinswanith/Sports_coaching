@@ -73,6 +73,85 @@ describe("POST /internal/notifications/sweep — auth", () => {
   });
 });
 
+describe("POST /internal/notifications/test", () => {
+  test("sends one Apex-owned test notification to the requested email", async () => {
+    const user = await User.create({
+      email: "push-target@t.io",
+      passwordHash: "x",
+      role: "athlete",
+      name: "Push Target",
+    });
+    await AthleteProfile.create({
+      userId: user._id,
+      sport: "athletics",
+      timezone: "Asia/Kolkata",
+    });
+    await DeviceToken.create({
+      userId: user._id,
+      platform: "android",
+      token: "tok-push-target",
+    });
+
+    const res = await request(buildApp())
+      .post("/internal/notifications/test")
+      .set("Authorization", `Bearer ${env.internalNotifications.sweepSecret}`)
+      .send({
+        email: "push-target@t.io",
+        title: "Hydration reminder",
+        body: "Please drink water and log your intake in Apex.",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      outcome: "sent",
+      email: "push-target@t.io",
+      userId: user._id.toString(),
+      title: "Hydration reminder",
+      body: "Please drink water and log your intake in Apex.",
+    });
+
+    const notification = await Notification.findOne({
+      recipientUserId: user._id,
+      type: "apex_test_notification",
+    }).lean();
+    expect(notification).toMatchObject({
+      title: "Hydration reminder",
+      body: "Please drink water and log your intake in Apex.",
+      priority: "medium",
+      link: "/notifications",
+    });
+
+    const decision = await NotificationDecision.findOne({
+      dedupKey: res.body.dedupKey,
+    }).lean();
+    expect(decision).toMatchObject({
+      userId: user._id,
+      type: "apex_test_notification",
+      category: "alerts",
+      status: "sent",
+      deliveryResult: {
+        attempted: true,
+        providerMessageIds: [],
+        errors: [],
+      },
+    });
+  });
+
+  test("requires a known target email", async () => {
+    const res = await request(buildApp())
+      .post("/internal/notifications/test")
+      .set("Authorization", `Bearer ${env.internalNotifications.sweepSecret}`)
+      .send({
+        email: "missing@t.io",
+        title: "Hydration reminder",
+        body: "Please drink water and log your intake in Apex.",
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "user_not_found" });
+  });
+});
+
 async function seedAthlete(timezone = "UTC") {
   const user = await User.create({ email: `ath${Date.now()}${Math.random()}@t.io`, passwordHash: "x", role: "athlete", name: "Arjun" });
   const profile = await AthleteProfile.create({ userId: user._id, sport: "athletics", timezone });
