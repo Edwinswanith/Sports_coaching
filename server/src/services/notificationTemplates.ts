@@ -44,6 +44,14 @@ export function buildRpeMonitoringReminder(input: { slot: ReminderSlot }): Templ
   };
 }
 
+export function buildHydrationReminder(): TemplateResult {
+  return {
+    title: "Hydration reminder",
+    body: "Please drink water and log your intake in Apex.",
+    link: "/athlete/dashboard",
+  };
+}
+
 export function buildMissedActivityReminder(input: { count: number }): TemplateResult {
   const sessionLabel = input.count === 1 ? "session" : "sessions";
   return {
@@ -89,9 +97,10 @@ export function buildNoteNeedsReply(input: {
   athleteName: string;
   hours: number;
 }): TemplateResult {
+  const hourLabel = input.hours === 1 ? "hour" : "hours";
   return {
     title: "Athlete note needs a reply",
-    body: `${input.athleteName} left a note ${input.hours}h ago. Please review and respond.`,
+    body: `${input.athleteName} left a note ${input.hours} ${hourLabel} ago. Please review and respond.`,
     link: null,
   };
 }
@@ -102,9 +111,10 @@ export function buildAthleteWeeklySummary(input: {
   readinessAvg: number | null;
 }): TemplateResult {
   const avg = input.readinessAvg == null ? "n/a" : `${input.readinessAvg}%`;
+  const sessionLabel = input.sessions === 1 ? "session" : "sessions";
   return {
     title: "Weekly summary ready",
-    body: `This week: ${input.checkins}/7 check-ins, ${input.sessions} sessions, readiness average ${avg}.`,
+    body: `This week: ${input.checkins}/7 check-ins, ${input.sessions} ${sessionLabel}, readiness average ${avg}.`,
     link: "/athlete/dashboard",
   };
 }
@@ -114,9 +124,11 @@ export function buildCoachSquadDigest(input: {
   totalSlots: number;
   flaggedCount: number;
 }): TemplateResult {
+  const attendanceLabel = input.totalSlots === 1 ? "attendance record" : "attendance records";
+  const flagLabel = input.flaggedCount === 1 ? "readiness flag" : "readiness flags";
   return {
     title: "Squad summary ready",
-    body: `This week: ${input.presentCount}/${input.totalSlots} attendance records, ${input.flaggedCount} readiness flags.`,
+    body: `This week: ${input.presentCount}/${input.totalSlots} ${attendanceLabel}, ${input.flaggedCount} ${flagLabel}.`,
     link: "/coach/dashboard",
   };
 }
@@ -126,9 +138,10 @@ export function buildStreakMilestone(input: {
   badgeLabel: string;
   streakCount: number;
 }): TemplateResult {
+  const goalLabel = input.goalTitle.toLowerCase().replace(/\s+streak$/, "");
   return {
     title: `${input.badgeLabel} unlocked`,
-    body: `${input.streakCount}-day ${input.goalTitle.toLowerCase()} streak. Keep it going.`,
+    body: `${input.streakCount}-day ${goalLabel} streak. Keep it going.`,
     link: "/athlete/achievements",
   };
 }

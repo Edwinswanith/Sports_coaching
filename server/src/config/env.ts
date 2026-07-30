@@ -145,6 +145,7 @@ export const env = {
     rpeMonitoringReminderAmMinute: minuteOfDay("RPE_MONITORING_REMINDER_AM_TIME", "07:00"),
     rpeMonitoringReminderAftMinute: minuteOfDay("RPE_MONITORING_REMINDER_AFT_TIME", "12:00"),
     rpeMonitoringReminderPmMinute: minuteOfDay("RPE_MONITORING_REMINDER_PM_TIME", "16:00"),
+    hydrationReminderMinute: minuteOfDay("HYDRATION_REMINDER_LOCAL_TIME", "14:00"),
     missedActivityReminderMinute: minuteOfDay("MISSED_ACTIVITY_REMINDER_LOCAL_TIME", "08:00"),
     noteNeedsReplyHours: Number(process.env.NOTE_NEEDS_REPLY_HOURS ?? 24),
     weeklySummaryMinute: minuteOfDay("WEEKLY_SUMMARY_LOCAL_TIME", "09:00"),

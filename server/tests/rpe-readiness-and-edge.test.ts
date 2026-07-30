@@ -170,7 +170,7 @@ describe("deriveLoadAndRisk → risk reasons", () => {
       moodMotivation: 4,
     });
     expect(r.riskFlag).toBe("red");
-    expect(r.riskReasons.some((s) => s.includes("RPM 8") && s.includes("fatigue 4"))).toBe(true);
+    expect(r.riskReasons.some((s) => s.includes("RPE 8") && s.includes("fatigue 4"))).toBe(true);
   });
 
   test("red via soreness+fatigue lists the rule", () => {

@@ -417,6 +417,22 @@ describe("notification scenario audit with dummy users", () => {
     );
 
     await clearDb();
+    const hydrationAthlete = await makeAthlete("Hydration Reminder Athlete");
+    await allowPush(hydrationAthlete.user._id);
+    await seedCompletedCheckIn(hydrationAthlete.profile!._id, day());
+    await seedAllRpeSlots(hydrationAthlete.profile!._id, day());
+    await runSweepScenario(new Date(`${isoDay()}T14:05:00.000Z`));
+    await capture(
+      "athlete-hydration-reminder",
+      hydrationAthlete.user,
+      "Athlete has not met today's hydration goal after the 14:00 local reminder time.",
+      `Date ${isoDay()}; hydrationGoalMl=3000; WaterIntake total=0ml; check-in and RPE already completed.`,
+      "hydration_reminder",
+      "runSweep at 2026-07-28T14:05:00.000Z",
+      "This is an Apex/system reminder, not a coach message."
+    );
+
+    await clearDb();
     const missedAthlete = await makeAthlete("Missed Activity Athlete");
     await allowPush(missedAthlete.user._id);
     await seedRpe(missedAthlete.profile!._id, day(), "AM");

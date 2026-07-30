@@ -7,6 +7,7 @@ import { Attendance } from "../models/Attendance";
 import { Wellness } from "../models/Wellness";
 import { TrainingSession, type SessionSlot } from "../models/TrainingSession";
 import { RpeMonitoring, type RpeSessionType } from "../models/RpeMonitoring";
+import { WaterIntake } from "../models/WaterIntake";
 import { AthleteNote } from "../models/AthleteNote";
 import { CoachComment } from "../models/CoachComment";
 import { dayRange } from "./dashboard";
@@ -53,7 +54,7 @@ export async function buildAthleteCandidates(
   now: Date
 ): Promise<NotificationCandidate[]> {
   const profile = await AthleteProfile.findOne({ userId: user._id })
-    .select("_id timezone academyId")
+    .select("_id timezone academyId hydrationGoalMl")
     .lean();
   if (!profile) return [];
 
@@ -142,11 +143,31 @@ export async function buildAthleteCandidates(
     });
   }
 
-  // Streak milestones — reuses the existing achievements.ts streak concept.
-  // Dedup is anchored to the streak's START date (today - (currentStreak-1)
-  // days): the key stays the same every day the streak continues (so no
-  // repeat notification while it's held), but changes once it breaks and a
-  // later run reaches the same target again.
+  // Hydration reminders are Apex/system-owned reminders, not coach messages.
+  if (minute >= env.notification.hydrationReminderMinute) {
+    candidates.push({
+      userId: user._id,
+      type: "hydration_reminder",
+      category: "reminders",
+      priorityTier: 2,
+      dedupKey: `hydration_reminder:${user._id.toString()}:${dateKey}`,
+      timezone: tz,
+      academyId,
+      ...templates.buildHydrationReminder(),
+      isActionAlreadyCompleted: async () => {
+        const entries = await WaterIntake.find({
+          athleteId: profile._id,
+          date: { $gte: today, $lt: todayEnd },
+        })
+          .select("amountMl")
+          .lean();
+        const totalMl = entries.reduce((sum, entry) => sum + (entry.amountMl as number), 0);
+        const goalMl = (profile.hydrationGoalMl as number | undefined) ?? 3000;
+        return totalMl >= goalMl;
+      },
+    });
+  }
+
   if (minute >= env.notification.missedActivityReminderMinute) {
     const missedSessionQuery = {
       athleteId: profile._id,
@@ -170,6 +191,11 @@ export async function buildAthleteCandidates(
     }
   }
 
+  // Streak milestones reuse the existing achievements.ts streak concept.
+  // Dedup is anchored to the streak's START date (today - (currentStreak-1)
+  // days): the key stays the same every day the streak continues (so no
+  // repeat notification while it's held), but changes once it breaks and a
+  // later run reaches the same target again.
   const achievements = await buildAthleteAchievements(profile._id, 60, today);
   for (const goal of achievements.goals) {
     if (goal.currentStreak >= goal.target && goal.currentStreak > 0) {

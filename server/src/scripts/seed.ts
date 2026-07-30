@@ -413,7 +413,7 @@ async function run() {
   await Notification.insertMany([
     // Coach Kumar
     { recipientUserId: coach._id, academyId: academy._id, type: "readiness_flag", priority: "high",
-      title: "Bala Iyer flagged red", body: "Low readiness 50 with high RPM load — review before today's session.",
+      title: "Bala Iyer flagged red", body: "Low readiness 50 with high RPE load — review before today's session.",
       link: `/coach/athletes/${athletes[1].profile._id}`, readAt: null, createdAt: minsAgo(25), updatedAt: minsAgo(25) },
     { recipientUserId: coach._id, academyId: academy._id, type: "note_needs_reply", priority: "medium",
       title: "Arjun Rao left a note", body: "Right calf felt tight during warm-up — manageable, will monitor.",

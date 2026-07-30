@@ -8,6 +8,7 @@ import { CoachAthleteAssignment } from "../src/models/CoachAthleteAssignment";
 import { Wellness } from "../src/models/Wellness";
 import { TrainingSession } from "../src/models/TrainingSession";
 import { RpeMonitoring } from "../src/models/RpeMonitoring";
+import { WaterIntake } from "../src/models/WaterIntake";
 import { AthleteNote } from "../src/models/AthleteNote";
 import { CoachComment } from "../src/models/CoachComment";
 import { DeviceToken } from "../src/models/DeviceToken";
@@ -79,12 +80,16 @@ async function seedAthlete(timezone = "UTC") {
   return { user, profile };
 }
 
-async function seedRpe(athleteId: Types.ObjectId, date: Date): Promise<void> {
+async function seedRpe(
+  athleteId: Types.ObjectId,
+  date: Date,
+  sessionType: "AM" | "AFT" | "PM" = "AM"
+): Promise<void> {
   await RpeMonitoring.create({
     athleteId,
     date,
     day: "Thursday",
-    sessionType: "AM",
+    sessionType,
     trainingCategory: "ENDURANCE",
     plannedIntensityPercent: 60,
     rpe: 4,
@@ -151,7 +156,77 @@ describe("runSweep — daily_checkin_reminder", () => {
   });
 });
 
-describe("runSweep — missed_activity_reminder", () => {
+describe("runSweep - hydration_reminder", () => {
+  const today = new Date(Date.UTC(2026, 0, 1));
+  const afterThreshold = new Date(Date.UTC(2026, 0, 1, 14, 30, 0));
+
+  async function seedHydrationReminderAthlete() {
+    const { user, profile } = await seedAthlete();
+    await seedRpe(profile._id, today, "AM");
+    await seedRpe(profile._id, today, "AFT");
+    return { user, profile };
+  }
+
+  test("fires after the hydration reminder time when the athlete has not met their water goal", async () => {
+    const { user } = await seedHydrationReminderAthlete();
+
+    const result = await runSweep({ limit: 200, pages: 5, cursor: null, now: afterThreshold });
+
+    expect(result.decisionsSent).toBeGreaterThanOrEqual(1);
+    const notification = await Notification.findOne({
+      recipientUserId: user._id,
+      type: "hydration_reminder",
+    }).lean();
+    expect(notification?.title).toBe("Hydration reminder");
+    expect(notification?.body).toBe("Please drink water and log your intake in Apex.");
+    const decision = await NotificationDecision.findOne({
+      userId: user._id,
+      type: "hydration_reminder",
+    }).lean();
+    expect(decision?.status).toBe("sent");
+    expect(decision?.sentTime?.toISOString()).toBe(afterThreshold.toISOString());
+  });
+
+  test("does not fire before the hydration reminder time", async () => {
+    const { user } = await seedHydrationReminderAthlete();
+
+    await runSweep({
+      limit: 200,
+      pages: 5,
+      cursor: null,
+      now: new Date(Date.UTC(2026, 0, 1, 13, 30, 0)),
+    });
+
+    expect(
+      await Notification.countDocuments({ recipientUserId: user._id, type: "hydration_reminder" })
+    ).toBe(0);
+    expect(await NotificationDecision.countDocuments({ userId: user._id, type: "hydration_reminder" })).toBe(0);
+  });
+
+  test("does not fire when today's water total already meets the hydration goal", async () => {
+    const { user, profile } = await seedHydrationReminderAthlete();
+    await WaterIntake.create({
+      athleteId: profile._id,
+      date: today,
+      amountMl: 3000,
+      loggedAt: new Date(Date.UTC(2026, 0, 1, 10, 0, 0)),
+    });
+
+    await runSweep({ limit: 200, pages: 5, cursor: null, now: afterThreshold });
+
+    expect(
+      await Notification.countDocuments({ recipientUserId: user._id, type: "hydration_reminder" })
+    ).toBe(0);
+    const decision = await NotificationDecision.findOne({
+      userId: user._id,
+      type: "hydration_reminder",
+    }).lean();
+    expect(decision?.status).toBe("suppressed");
+    expect(decision?.suppressReason).toBe("already_completed");
+  });
+});
+
+describe("runSweep - missed_activity_reminder", () => {
   const today = new Date(Date.UTC(2026, 0, 2));
   const yesterday = new Date(Date.UTC(2026, 0, 1));
   const afterThreshold = new Date(Date.UTC(2026, 0, 2, 8, 30, 0));
