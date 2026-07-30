@@ -1,5 +1,6 @@
 import { AudioModule, RecordingPresets, setAudioModeAsync } from "expo-audio";
 import type { AudioStreamBuffer } from "expo-audio";
+import { ExpoSpeechRecognitionModule, ExpoWebSpeechRecognition } from "expo-speech-recognition";
 import { Platform } from "react-native";
 import { speakAgentReply, stopAgentSpeech } from "./agentSpeech";
 import { API_BASE, apiFetch, getAccessToken } from "./api";
@@ -47,6 +48,7 @@ export type VoiceConversationHandle = {
  */
 export function startVoiceSession(handlers: VoiceSessionHandlers): VoiceSessionHandle {
   if (Platform.OS === "web") return startWebSpeechVoiceSession(handlers);
+  if (isNativeSpeechRecognitionAvailable()) return startNativeSpeechRecognitionVoiceSession(handlers);
   return startDeepgramStreamingVoiceSession(handlers);
 }
 
@@ -247,24 +249,14 @@ type SpeechRecognitionLike = {
   interimResults: boolean;
   onstart: (() => void) | null;
   onresult: ((event: { results?: ArrayLike<ArrayLike<{ transcript?: string }>> }) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event?: { error?: string }) => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
   abort?: () => void;
 };
 
-function startWebSpeechVoiceSession(handlers: VoiceSessionHandlers): VoiceSessionHandle {
-  if (typeof window === "undefined") {
-    handlers.onNeedsFallback();
-    return { stop: () => undefined };
-  }
-  const Ctor = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
-  if (!Ctor) {
-    handlers.onNeedsFallback();
-    return { stop: () => undefined };
-  }
-  const recognition = new Ctor() as SpeechRecognitionLike;
+function startSpeechRecognitionVoiceSession(handlers: VoiceSessionHandlers, recognition: SpeechRecognitionLike): VoiceSessionHandle {
   recognition.lang = getVoiceLanguage();
   recognition.continuous = false;
   recognition.interimResults = false;
@@ -308,9 +300,14 @@ function startWebSpeechVoiceSession(handlers: VoiceSessionHandlers): VoiceSessio
     cleanup();
     handlers.onResult(text);
   };
-  recognition.onerror = () => {
+  recognition.onerror = (event) => {
     if (stopped) return;
     cleanup();
+    const code = event?.error ?? "";
+    if (code === "not-allowed" || code === "permission-denied") {
+      handlers.onNeedsFallback();
+      return;
+    }
     handlers.onError();
   };
   recognition.onend = () => {
@@ -331,6 +328,35 @@ function startWebSpeechVoiceSession(handlers: VoiceSessionHandlers): VoiceSessio
     handlers.onNeedsFallback();
   }
   return { stop };
+}
+
+function startWebSpeechVoiceSession(handlers: VoiceSessionHandlers): VoiceSessionHandle {
+  if (typeof window === "undefined") {
+    handlers.onNeedsFallback();
+    return { stop: () => undefined };
+  }
+  const Ctor = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+  if (!Ctor) {
+    handlers.onNeedsFallback();
+    return { stop: () => undefined };
+  }
+  return startSpeechRecognitionVoiceSession(handlers, new Ctor() as SpeechRecognitionLike);
+}
+
+function isNativeSpeechRecognitionAvailable(): boolean {
+  try {
+    return ExpoSpeechRecognitionModule.isRecognitionAvailable();
+  } catch {
+    return false;
+  }
+}
+
+function startNativeSpeechRecognitionVoiceSession(handlers: VoiceSessionHandlers): VoiceSessionHandle {
+  try {
+    return startSpeechRecognitionVoiceSession(handlers, new ExpoWebSpeechRecognition() as unknown as SpeechRecognitionLike);
+  } catch {
+    return startDeepgramStreamingVoiceSession(handlers);
+  }
 }
 
 function voiceStreamUrl(): string | null {

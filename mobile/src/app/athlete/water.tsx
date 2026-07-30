@@ -449,7 +449,7 @@ export default function Water() {
 
             {/* Today's entries */}
             <Card>
-              <Text style={styles.cardTitle}>Today's entries</Text>
+              <Text style={styles.cardTitle}>Today&apos;s entries</Text>
               {day && day.entries.length > 0 ? (
                 <View style={styles.entryWrap}>
                   {[...day.entries].reverse().map((e) => (

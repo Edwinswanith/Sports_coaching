@@ -25,6 +25,7 @@ import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../lib/sessions";
 import { TRAINING_CATEGORIES } from "../../lib/trainingCategories";
 import { classifyReportQuery, isReportLikeQuery, requestedHistoryDays, type ReportDirection, type ReportMetric, type ReportSubject } from "../../lib/askAgentReportIntents";
+import { athleteNavigationReply, parseAthleteNavigationCommand, type AthleteNavigationCommand } from "../../lib/athleteAskNavigation";
 import { useAutoStartMobileTour, useTourAction, useTourHighlight, type TourHighlightStyle } from "../../lib/tour/MobileTourProvider";
 import {
   summarizeTrend,
@@ -580,25 +581,6 @@ function parseCommandSlot(text: string): SessionSlot | null {
 function isOpenEndedSessionUpdateCommand(text: string) {
   const lower = text.toLowerCase();
   return /\b(update|save|fill|complete)\b/.test(lower) && /\b(section|session|training|workout)\b/.test(lower);
-}
-
-function parseOpenSessionLogCommand(text: string): SessionSlot | null {
-  const lower = text.toLowerCase().trim().replace(/\b(?:kisan|kishan|section)\b/g, "session");
-  const slot = parseCommandSlot(lower);
-  if (!slot) return null;
-
-  const hasOpenIntent = /\b(open|show|go to|navigate|move|switch|change|edit|update)\b/.test(lower);
-  const hasSessionTarget = /\b(logs?|sessions?|training)\b/.test(lower);
-  if (hasOpenIntent && hasSessionTarget) return slot;
-
-  // Speech recognition sometimes returns only "PM section" or "PM Kisan"
-  // when the athlete said "PM session". Treat those short slot-target
-  // phrases as navigation, but don't steal write commands like
-  // "PM session note ..." or "PM training completed".
-  if (/^(?:the\s+)?(?:am|morning|aft|afternoon|pm|evening|night)\s+session\s*$/i.test(lower)) {
-    return slot;
-  }
-  return null;
 }
 
 function isAskAcknowledgement(text: string) {
@@ -1506,28 +1488,27 @@ export default function AthleteDashboard() {
     };
   }, [askConversationActive, askListening, askSpeaking, askBusy, askInputOpen, askLog.length]);
 
-  function handleAskNavigate(target: string) {
+  function applyAskNavigation(command: AthleteNavigationCommand) {
     setAskInfoResult(null);
-    if (target === "notification" || target === "notifications") return router.push("/notifications" as never);
-    if (target === "calendar" || target === "calender") {
+    if (command.kind === "notifications") {
+      router.push("/notifications" as never);
+      return;
+    }
+    if (command.kind === "calendar") {
       setCalendarOpenSignal((value) => value + 1);
       return;
     }
-    if (target === "messages" || target === "chat") return setSection("messages");
-    if (target === "water") {
-      setProgressTab("water");
-      return setSection("progress");
+    if (command.slot) {
+      openAskSessionSlot(command.slot);
+      return;
     }
-    if (target === "trends") {
-      setProgressTab("trends");
-      return setSection("progress");
-    }
-    if (target === "goals" || target === "achievements" || target === "progress") {
-      setProgressTab("goals");
-      return setSection("progress");
-    }
-    if (target === "training" || target === "recovery") return setSection("log");
-    if (target === "today" || target === "log" || target === "coach") return setSection(target);
+    setProgressTab(progressTabFromParam(command.section));
+    setSection(sectionFromParam(command.section));
+  }
+
+  function handleAskNavigate(target: string) {
+    const command = parseAthleteNavigationCommand(`open ${target}`);
+    if (command) applyAskNavigation(command);
   }
 
   function openAskSessionSlot(slot: SessionSlot) {
@@ -1752,8 +1733,7 @@ export default function AthleteDashboard() {
   }
 
   function shouldNavigateFromAsk(text: string) {
-    return /^(open|show|go to|navigate to|move to|switch to)\s+(today|status|readiness|progress|log|training|recovery|coach|messages|chat|water|goals|achievements|trends|notification|notifications|calendar|calender)\b/i.test(text) ||
-      Boolean(parseOpenSessionLogCommand(text));
+    return Boolean(parseAthleteNavigationCommand(text));
   }
 
   function isAskWriteCommand(text: string) {
@@ -2832,19 +2812,12 @@ export default function AthleteDashboard() {
         return;
       }
 
-      const openSessionSlot = parseOpenSessionLogCommand(transcript);
-      if (openSessionSlot) {
+      const navigation = parseAthleteNavigationCommand(transcript);
+      if (navigation) {
         askPendingIntentRef.current = null;
-        openAskSessionSlot(openSessionSlot);
-        sayInfo(`Opening ${SLOT_LABEL[openSessionSlot]} log.`);
-        return;
-      }
-
-      const localNav = transcript.toLowerCase().match(/^(open|show|go to|navigate to|move to|switch to)\s+(today|status|readiness|progress|log|training|recovery|coach|messages|chat|water|goals|achievements|trends|notification|notifications|calendar|calender)\b/);
-      if (localNav?.[2]) {
-        askPendingIntentRef.current = null;
-        handleAskNavigate(localNav[2] === "status" || localNav[2] === "readiness" ? "today" : localNav[2]);
-        sayInfo(`Opening ${localNav[2] === "calender" ? "calendar" : localNav[2]}.`);
+        askPendingGeminiRef.current = null;
+        applyAskNavigation(navigation);
+        sayInfo(athleteNavigationReply(navigation));
         return;
       }
 
@@ -3229,7 +3202,6 @@ export default function AthleteDashboard() {
       isReportLikeQuery(transcript) ||
       isDailyInfoQuery(transcript) ||
       isWaterWriteCommand(transcript) ||
-      Boolean(parseOpenSessionLogCommand(transcript)) ||
       /\b(open|show|go to|change|update|set|log|add|tell|ask|message|note|what|which|how|status|summary)\b/i.test(transcript);
   }
 

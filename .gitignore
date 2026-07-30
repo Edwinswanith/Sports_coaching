@@ -37,3 +37,5 @@ all_env.txt
 
 # Coach-uploaded media (local disk storage) — never committed, never publicly served
 /server/uploads/
+.vercel
+.env*

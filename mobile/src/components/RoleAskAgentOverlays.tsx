@@ -8,6 +8,7 @@ import { AskAgentControl } from "./AskAgentControl";
 import { apiFetch, apiJson } from "../lib/api";
 import { ROLE_THEMES, colors } from "../lib/theme";
 import { SESSION_SLOTS } from "../lib/sessions";
+import { athleteNavigationReply, parseAthleteNavigationCommand, type AthleteNavigationCommand } from "../lib/athleteAskNavigation";
 
 type AgentRow = {
   id: string;
@@ -104,15 +105,6 @@ function reportDateFromCommand(command: string) {
   if (/\byesterday\b/.test(lower)) return addDays(today(), -1);
   if (/\btomorrow\b/.test(lower)) return addDays(today(), 1);
   return today();
-}
-
-function parseAthleteSessionSlot(command: string): "AM" | "AFT" | "PM" | null {
-  const lower = command.toLowerCase().replace(/\b(?:kisan|kishan|section)\b/g, "session");
-  if (!/\b(logs?|sessions?|training|rpm|recovery)\b/.test(lower)) return null;
-  if (/\b(am|morning)\b/.test(lower)) return "AM";
-  if (/\b(aft|afternoon)\b/.test(lower)) return "AFT";
-  if (/\b(pm|evening|night)\b/.test(lower)) return "PM";
-  return null;
 }
 
 function toneColor(tone: AgentRow["tone"]) {
@@ -654,6 +646,18 @@ export function AthleteAskAgentOverlay() {
     router.push({ pathname: "/athlete/dashboard", params: { section, ...(slot ? { slot } : {}) } } as never);
   }
 
+  function applyNavigation(command: AthleteNavigationCommand) {
+    if (command.kind === "notifications") {
+      router.push("/notifications" as never);
+      return;
+    }
+    if (command.kind === "calendar") {
+      openDashboard("today");
+      return;
+    }
+    openDashboard(command.section, command.slot);
+  }
+
   async function sendCoachMessage(body: string): Promise<string> {
     const messageBody = cleanCoachMessageBody(body);
     if (!messageBody) {
@@ -681,38 +685,10 @@ export function AthleteAskAgentOverlay() {
     const lower = normalizeCommand(command);
     setResult(null);
     try {
-      if (/\b(notification|notifications|bell|alerts?)\b/.test(lower)) {
-        router.push("/notifications" as never);
-        return "Opening notifications.";
-      }
-      if (/\b(calendar|calender|today|readiness|status)\b/.test(lower) && /^(open|show|go to)/.test(lower)) {
-        openDashboard("today");
-        return "Opening today.";
-      }
-      if (/\b(water|hydrat|drink)\b/.test(lower) && /^(open|show|go to)/.test(lower)) {
-        openDashboard("water");
-        return "Opening water.";
-      }
-      if (/\b(trend|trends|report|progress|goal|goals|achievement|achievements)\b/.test(lower) && /^(open|show|go to)/.test(lower)) {
-        openDashboard(lower.includes("trend") ? "trends" : "progress");
-        return lower.includes("trend") ? "Opening trends." : "Opening progress.";
-      }
-      const sessionSlot = parseAthleteSessionSlot(command);
-      if (
-        sessionSlot &&
-        (/\b(open|show|go to|navigate|move|switch|change|edit|update)\b/.test(lower) ||
-          /^(?:the\s+)?(?:am|morning|aft|afternoon|pm|evening|night)\s+(?:session|section|kisan|kishan)\s*$/i.test(command.trim()))
-      ) {
-        openDashboard("log", sessionSlot);
-        return `Opening ${sessionSlot} log.`;
-      }
-      if (/\b(log|training|session|rpm|recovery)\b/.test(lower) && /^(open|show|go to)/.test(lower)) {
-        openDashboard("log");
-        return "Opening training log.";
-      }
-      if (/\b(coach|message|messages|chat)\b/.test(lower) && /^(open|show|go to)/.test(lower)) {
-        openDashboard("messages");
-        return "Opening messages.";
+      const navigation = parseAthleteNavigationCommand(command);
+      if (navigation) {
+        applyNavigation(navigation);
+        return athleteNavigationReply(navigation);
       }
       if (pendingCoachMessageRef.current) {
         const messageBody = cleanCoachMessageBody(command);

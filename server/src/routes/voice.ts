@@ -52,6 +52,12 @@ function requireDeepgram(): boolean {
   return Boolean(env.deepgram.apiKey);
 }
 
+function prerecordedSttModel(): string {
+  // Flux is a turn-based WebSocket model. The recorder fallback posts a complete
+  // audio file to /v1/listen, so keep that path on Nova while streaming can use Flux.
+  return env.deepgram.sttModel.startsWith("flux-") ? "nova-3" : env.deepgram.sttModel;
+}
+
 router.use(requireAuth);
 router.use(writeRateLimit({ windowMs: 60_000, max: 30 }));
 
@@ -67,11 +73,12 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
 
   const contentType = req.file.mimetype || "audio/mp4";
   const language = languageFromRequest(req.query.language);
+  const model = prerecordedSttModel();
   const params = new URLSearchParams({
-    model: env.deepgram.sttModel,
+    model,
     smart_format: "true",
   });
-  if (env.deepgram.sttModel.startsWith("flux-")) params.set("language_hint", language);
+  if (model.startsWith("flux-")) params.set("language_hint", language);
   else params.set("language", language);
   const response = await fetch(
     `https://api.deepgram.com/v1/listen?${params.toString()}`,
