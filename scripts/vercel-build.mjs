@@ -25,6 +25,7 @@ function removePath(path) {
 const mobileDir = resolve(root, "mobile");
 const exportDir = resolve(mobileDir, "dist");
 const publicDir = resolve(root, "public");
+const privacyPolicy = resolve(root, "legal/privacy.html");
 const pagesLink = resolve(root, "pages");
 const nextConfig = resolve(root, "next.config.js");
 
@@ -40,6 +41,7 @@ run("npx", ["expo", "export", "--platform", "web", "--output-dir", "dist"], {
 removePath(publicDir);
 mkdirSync(publicDir, { recursive: true });
 cpSync(exportDir, publicDir, { recursive: true });
+cpSync(privacyPolicy, resolve(publicDir, "privacy.html"));
 
 removePath(pagesLink);
 symlinkSync("backend/pages", pagesLink, "dir");
