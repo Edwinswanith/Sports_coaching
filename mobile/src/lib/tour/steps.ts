@@ -1,4 +1,6 @@
 import type { Role } from "../roles";
+import type { PexPose, PexTone } from "./mascotPoses";
+import type { SpotlightPadding } from "./tourConfig";
 
 export type MobileTourStepContext = {
   isAcademyOwner?: boolean;
@@ -15,6 +17,15 @@ export type MobileTourStep = {
   fallbackNote: string;
   /** Where the explanation card anchors — "bottom" (default) or "top" for targets near the screen bottom. */
   cardPosition?: "top" | "bottom";
+  /** Pex's expression while explaining this step — defaults to a neutral "guiding" pointing pose. */
+  mascotPose?: PexPose;
+  /** Ring color for this step's mascot — defaults to "ready". Pair with `mascotPose: "warning"` for risk-flagging steps. */
+  mascotTone?: PexTone;
+  /** Per-edge override of the spotlight's outer padding — merged over `DEFAULT_SPOTLIGHT_PADDING`. Use when a
+   * target's own visual bounds need more/less breathing room on a particular side (e.g. a wide banner). */
+  spotlightPadding?: Partial<SpotlightPadding>;
+  /** Overrides `SPOTLIGHT_RADIUS` for this step — match the target's own corner radius (e.g. a pill vs. a card). */
+  spotlightRadius?: number;
   /** When this returns true, skip the step entirely — and don't even navigate for it. */
   skipIf?: (ctx: MobileTourStepContext) => boolean;
 };
@@ -25,6 +36,7 @@ export const ATHLETE_TOUR_STEPS: MobileTourStep[] = [
     action: "athlete:section:today",
     title: "Your day header",
     fallbackNote: "Use the header for notifications, the calendar, and Ask Agent voice or text commands.",
+    mascotPose: "welcoming",
   },
   {
     id: "mobile-athlete-readiness",
@@ -47,18 +59,29 @@ export const ATHLETE_TOUR_STEPS: MobileTourStep[] = [
     action: "athlete:section:log",
     title: "Log",
     fallbackNote: "The Log tab is where you update session status, RPM, effort, mood, soreness, fatigue, and notes.",
+    mascotPose: "encouraging",
   },
   {
     id: "mobile-athlete-coach",
     action: "athlete:section:coach",
-    title: "Coach and chat",
-    fallbackNote: "Coach updates, feedback, and chat keep your training communication in one place.",
+    title: "Coach updates",
+    fallbackNote: "Announcements, feedback, and recent activity from your coach show up here.",
+    mascotPose: "welcoming",
+  },
+  {
+    id: "mobile-athlete-chat",
+    action: "athlete:section:messages",
+    title: "Chat",
+    fallbackNote: "Message your coach directly here, and see your full conversation history in one thread.",
+    mascotPose: "welcoming",
   },
   {
     id: "mobile-athlete-agent",
+    action: "athlete:section:today",
     title: "Ask Agent",
     fallbackNote: "Tap Ask Agent for voice commands, or hold it for two seconds to type a command.",
     cardPosition: "top",
+    mascotPose: "thinking",
   },
 ];
 
@@ -67,6 +90,7 @@ export const COACH_TOUR_STEPS: MobileTourStep[] = [
     id: "mobile-coach-header",
     title: "Squad controls",
     fallbackNote: "Use the top controls to change the day, add athletes, open notifications, and manage your profile.",
+    mascotPose: "welcoming",
   },
   {
     id: "mobile-coach-kpis",
@@ -77,6 +101,8 @@ export const COACH_TOUR_STEPS: MobileTourStep[] = [
     id: "mobile-coach-attention",
     title: "Needs attention",
     fallbackNote: "This section highlights athletes with injury, low readiness, or high training-risk signals.",
+    mascotPose: "warning",
+    mascotTone: "caution",
   },
   {
     id: "mobile-coach-notes",
@@ -87,6 +113,7 @@ export const COACH_TOUR_STEPS: MobileTourStep[] = [
     id: "mobile-coach-analytics",
     title: "Squad analytics",
     fallbackNote: "Trend cards summarize readiness, attendance, and load across assigned athletes.",
+    mascotPose: "thinking",
   },
   {
     id: "mobile-coach-roster",
@@ -105,6 +132,7 @@ export const COACH_TOUR_STEPS: MobileTourStep[] = [
     route: "/coach/announcements",
     title: "Announce",
     fallbackNote: "Broadcast one message to your whole squad at once.",
+    mascotPose: "encouraging",
   },
   {
     id: "mobile-coach-coaches",
@@ -119,6 +147,7 @@ export const COACH_TOUR_STEPS: MobileTourStep[] = [
     title: "Ask Agent",
     fallbackNote: "Ask Agent can open squad areas, filter attention lists, change date, or take voice and text commands.",
     cardPosition: "top",
+    mascotPose: "thinking",
   },
 ];
 
@@ -127,6 +156,7 @@ export const GUARDIAN_TOUR_STEPS: MobileTourStep[] = [
     id: "mobile-guardian-header",
     title: "Athlete summary",
     fallbackNote: "The header shows the selected athlete, date, notifications, and your account menu.",
+    mascotPose: "welcoming",
   },
   {
     id: "mobile-guardian-switcher",
@@ -142,6 +172,7 @@ export const GUARDIAN_TOUR_STEPS: MobileTourStep[] = [
     id: "mobile-guardian-water",
     title: "Water intake",
     fallbackNote: "Water intake compares logged hydration against the athlete's daily goal.",
+    mascotPose: "encouraging",
   },
   {
     id: "mobile-guardian-attendance",

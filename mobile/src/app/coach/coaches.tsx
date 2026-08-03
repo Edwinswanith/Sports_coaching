@@ -7,7 +7,8 @@ import { apiFetch, apiJson, isAuthFailure, ApiError } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { Banner, Card, Label, Muted, PrimaryButton, TextField } from "../../components/ui";
 import { ScreenHeader } from "../../components/ScreenHeader";
-import { useTourHighlight } from "../../lib/tour/MobileTourProvider";
+import { useTourHighlight, useTourScrollView } from "../../lib/tour/MobileTourProvider";
+import { useSpotlightRef } from "../../lib/tour/SpotlightTarget";
 
 type Coach = { userId: string; name: string; email: string; isAcademyOwner: boolean };
 type Response = { coaches: Coach[] };
@@ -15,6 +16,8 @@ const accent = ROLE_THEMES.coach.accent;
 
 export default function Coaches() {
   const { highlightStyle: coachesHighlight } = useTourHighlight("mobile-coach-coaches");
+  const tourScrollRef = useTourScrollView<ScrollView>();
+  const { ref: coachesSpotlightRef, onLayout: coachesSpotlightOnLayout } = useSpotlightRef("mobile-coach-coaches");
   const [coaches, setCoaches] = useState<Coach[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +84,7 @@ export default function Coaches() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
         <ScrollView
+          ref={tourScrollRef}
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={accent} />}
@@ -94,6 +98,8 @@ export default function Coaches() {
             headerActions={
               !forbidden ? (
                 <Pressable
+                  ref={coachesSpotlightRef}
+                  onLayout={coachesSpotlightOnLayout}
                   onPress={() => { setAdding((a) => !a); setCreated(null); }}
                   style={[styles.addBtn, { backgroundColor: accent }, coachesHighlight]}
                   hitSlop={8}

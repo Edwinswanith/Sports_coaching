@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Text } from "./AppText";
 import { colors } from "../lib/theme";
 import { useTourHighlight } from "../lib/tour/MobileTourProvider";
+import { useSpotlightRef } from "../lib/tour/SpotlightTarget";
 import { speakAgentReply } from "../lib/agentSpeech";
 import { startVoiceConversation, type VoiceConversationHandle } from "../lib/voiceSession";
 
@@ -25,6 +26,11 @@ export function AskAgentControl({
   onListeningChange?: (listening: boolean) => void;
 }) {
   const { highlightStyle } = useTourHighlight(tourTargetId);
+  // The FAB is already absolutely positioned, so its live rect is measured
+  // directly off this ref rather than adding a wrapping SpotlightTarget View
+  // that would disturb its own positioning. A never-matching sentinel id
+  // keeps this a no-op when the control isn't part of the current tour.
+  const { ref: spotlightRef, onLayout: spotlightOnLayout } = useSpotlightRef(tourTargetId ?? "__no-tour-target__");
   const [inputOpen, setInputOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [active, setActive] = useState(false);
@@ -189,6 +195,9 @@ export function AskAgentControl({
             </Pressable>
           </Animated.View>
           <Pressable
+            ref={spotlightRef}
+            onLayout={spotlightOnLayout}
+            collapsable={false}
             onPress={press}
             onPressIn={pressIn}
             onPressOut={pressOut}

@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { apiJson } from "../lib/api";
 import { ROLE_THEMES, colors, radius, type RoleTheme } from "../lib/theme";
 import type { Role } from "../lib/roles";
+import { useReportChrome } from "../lib/tour/MobileTourProvider";
 import { ProfileMenu } from "./ProfileMenu";
 
 export type NativeNavItem = {
@@ -42,6 +43,8 @@ export function AppFrame({
   const [unread, setUnread] = useState(0);
   const insets = useSafeAreaInsets();
   const openNotifications = () => router.push("/notifications" as never);
+  const topChrome = useReportChrome("top");
+  const bottomChrome = useReportChrome("bottom");
 
   useEffect(() => {
     let active = true;
@@ -56,9 +59,11 @@ export function AppFrame({
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       {renderHeader ? (
-        renderHeader({ theme, unread, openNotifications })
+        <View ref={topChrome.ref} onLayout={topChrome.onLayout} collapsable={false}>
+          {renderHeader({ theme, unread, openNotifications })}
+        </View>
       ) : (
-        <View style={styles.header}>
+        <View ref={topChrome.ref} onLayout={topChrome.onLayout} collapsable={false} style={styles.header}>
           <View style={styles.headerLeft}>
             <Text style={[styles.role, { color: theme.accentStrong }]}>{theme.label}</Text>
             <Text style={styles.title} numberOfLines={1}>{title}</Text>
@@ -74,7 +79,12 @@ export function AppFrame({
 
       <View style={styles.body}>{children}</View>
 
-      <View style={[styles.tabBar, { paddingBottom: Math.max(8, insets.bottom + 8) }]}>
+      <View
+        ref={bottomChrome.ref}
+        onLayout={bottomChrome.onLayout}
+        collapsable={false}
+        style={[styles.tabBar, { paddingBottom: Math.max(8, insets.bottom + 8) }]}
+      >
         {nav.map((item) => {
           const active = item.key === activeKey;
           return (

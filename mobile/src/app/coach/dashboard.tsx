@@ -10,7 +10,8 @@ import { SESSION_SLOTS, type SessionSlot } from "../../lib/sessions";
 import { Card, Muted } from "../../components/ui";
 import { ScreenHeader } from "../../components/ScreenHeader";
 import { DatePickerPill } from "../../components/DatePickerPill";
-import { useAutoStartMobileTour, useTourHighlight } from "../../lib/tour/MobileTourProvider";
+import { useAutoStartMobileTour, useTourHighlight, useTourScrollView } from "../../lib/tour/MobileTourProvider";
+import { SpotlightTarget } from "../../lib/tour/SpotlightTarget";
 
 type DailyCard = {
   athleteId: string;
@@ -145,6 +146,7 @@ export default function CoachDashboard() {
   const { highlightStyle: attentionHighlight } = useTourHighlight("mobile-coach-attention");
   const { highlightStyle: notesHighlight } = useTourHighlight("mobile-coach-notes");
   const { highlightStyle: analyticsHighlight } = useTourHighlight("mobile-coach-analytics");
+  const tourScrollRef = useTourScrollView<ScrollView>();
   const accent = ROLE_THEMES.coach.accent;
   const router = useRouter();
   const params = useLocalSearchParams<{ ask?: string; t?: string }>();
@@ -518,6 +520,7 @@ export default function CoachDashboard() {
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView
+        ref={tourScrollRef}
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={accent} />}
       >
@@ -529,7 +532,7 @@ export default function CoachDashboard() {
           dense
           inlineActions
           headerActions={
-            <View style={[styles.headerActionRow, headerHighlight]}>
+            <SpotlightTarget id="mobile-coach-header" style={[styles.headerActionRow, headerHighlight]}>
               <DatePickerPill value={date} onChange={setDate} accent={accent} accentInk="#fff" compact openSignal={calendarOpenSignal} />
               <Pressable
                 onPress={() => router.push("/coach/athletes/new" as never)}
@@ -538,7 +541,7 @@ export default function CoachDashboard() {
               >
                 <Text style={styles.addButtonText}>+ Add</Text>
               </Pressable>
-            </View>
+            </SpotlightTarget>
           }
         />
 
@@ -550,17 +553,17 @@ export default function CoachDashboard() {
           </Card>
         ) : (
           <>
-            <View style={[styles.statGrid, kpiHighlight]}>
+            <SpotlightTarget id="mobile-coach-kpis" style={[styles.statGrid, kpiHighlight]}>
               <Stat label="Athletes" value={String(data?.count ?? 0)} />
               <Stat label="Present" value={String(present)} />
               <Stat label="Sessions done" value={String(completed)} />
               <Stat label="Avg readiness" value={avg == null ? "-" : String(avg)} highlight={band(avg).color} />
-            </View>
+            </SpotlightTarget>
 
             {cards.length > 0 ? (
               <>
                 {attentionCards.length > 0 ? (
-                  <View style={attentionHighlight}>
+                  <SpotlightTarget id="mobile-coach-attention" style={attentionHighlight}>
                   <Card style={styles.attentionCard}>
                     <View style={styles.sectionRow}>
                       <Text style={[styles.sectionLabel, { color: colors.bad }]}>Needs attention</Text>
@@ -576,19 +579,19 @@ export default function CoachDashboard() {
                       ))}
                     </View>
                   </Card>
-                  </View>
+                  </SpotlightTarget>
                 ) : null}
 
-                <View style={notesHighlight}>
+                <SpotlightTarget id="mobile-coach-notes" style={notesHighlight}>
                 <CoachNotesInbox inbox={notesInbox} onOpen={(athleteId) => {
                   const card = cards.find((item) => item.athleteId === athleteId);
                   if (card) openAthlete(card);
                 }} />
-                </View>
+                </SpotlightTarget>
 
-                <View style={analyticsHighlight}>
+                <SpotlightTarget id="mobile-coach-analytics" style={analyticsHighlight}>
                 <SquadTrendCard series={squadSeries} />
-                </View>
+                </SpotlightTarget>
 
                 <View style={styles.rosterHeader}>
                   <Text style={styles.rosterTitle}>Full roster</Text>

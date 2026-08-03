@@ -1,16 +1,33 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Modal, Platform, Pressable, StyleSheet, View, type ViewStyle } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import { Platform, useWindowDimensions, type View, type ViewStyle } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { router, usePathname } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { Text } from "../../components/AppText";
 import { apiJson } from "../api";
 import { useAuth } from "../auth";
-import type { Role } from "../roles";
-import { ROLE_THEMES, colors, radius } from "../theme";
+import { dashboardPathForRole, type Role } from "../roles";
 import { MOBILE_TOUR_STEPS, type MobileTourStep, type MobileTourStepContext } from "./steps";
 import { speakTourStep, stopTourNarration } from "./tourNarration";
+import {
+  DEFAULT_TOUR_PREFS,
+  getStoredJson,
+  setStoredJson,
+  tourCompletedKey,
+  tourPrefsKey,
+  tourSkippedKey,
+  type TourPrefs,
+} from "./tourStorage";
+import { fireMascotReaction } from "./reactions";
+import { LANDING_DURATION_MS, SCROLL_INTO_VIEW_MARGIN, SCROLL_INTO_VIEW_RETRY_MS } from "./tourConfig";
 
 // Single switch for the guided tour's trigger behavior.
 //   false (default) — shows once per new user, then stays dismissed.
@@ -41,6 +58,27 @@ const SAME_SCREEN_TIMEOUT_MS = 5000;
 const CROSS_SCREEN_TIMEOUT_MS = 7000;
 const POLL_INTERVAL_MS = 100;
 
+/** A target's live on-screen rect in window coordinates, as reported by
+ * `SpotlightTarget`/`useSpotlightRef` via `measureInWindow`. */
+export type TourRect = { x: number; y: number; width: number; height: number };
+
+/** The screen's fixed, non-scrolling chrome (header above / tab bar below the
+ * scrollable body), as measured live by `useReportChrome` in `AppFrame`. Used
+ * as a fallback safe-visible-band signal when no scroll view is registered
+ * (e.g. a screen mode with no `useTourScrollView`, like the athlete chat
+ * panel) — the registered scroll view's own measured bounds (`scrollViewport`)
+ * are preferred when available, since a `ScrollView` sized by flexbox between
+ * a screen's own header/tab-bar (or a navigator's own tab bar it never
+ * extends behind) already reports exactly the true visible band by
+ * construction, with no assumptions about surrounding chrome at all. */
+type ChromeRects = { top: TourRect | null; bottom: TourRect | null };
+
+function rectsEqual(a: TourRect | null, b: TourRect | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
 type TourState = {
   active: boolean;
   role: Role | null;
@@ -48,6 +86,10 @@ type TourState = {
   index: number;
   /** True once the current step's target has confirmed it mounted on screen. */
   ready: boolean;
+  /** Current step target's live rect, or null before it's been measured. */
+  activeRect: TourRect | null;
+  /** True only during the brief post-completion flight to the header badge — see `finish`. */
+  landing: boolean;
   note: string | null;
   noteLoading: boolean;
   audioEnabled: boolean;
@@ -59,12 +101,56 @@ export type TourHighlightStyle = ViewStyle;
 type TourContextValue = {
   state: TourState;
   startTour: (role: Role) => void;
+  /** Starts a short, scoped tour over an arbitrary subset of steps (e.g. from a `ContextualHelp` icon), reusing existing step ids/targets. */
+  startMiniTour: (steps: MobileTourStep[]) => void;
+  /** Clears this role's "seen" flag and restarts the tour from step 0 — used by the "Replay guided tour" settings action. */
+  replayTour: (role: Role) => Promise<void>;
   next: () => void;
   back: () => void;
   skip: () => void;
   reportTargetMounted: (id: string) => void;
   reportTargetUnmounted: (id: string) => void;
+  reportTargetRect: (id: string, rect: TourRect) => void;
+  /** Reports the header profile badge's live position — read once, at completion, to fly Pex there. */
+  reportHomeRect: (rect: TourRect) => void;
+  /** The screen's currently-measured fixed header/tab-bar bounds — see `ChromeRects`. */
+  chrome: ChromeRects;
+  reportChromeRect: (edge: "top" | "bottom", rect: TourRect | null) => void;
+  /** The registered scroll view's own live on-screen bounds — the preferred
+   * "what's actually visible" signal (see `ChromeRects` doc comment). */
+  scrollViewport: TourRect | null;
+  reportScrollViewport: (rect: TourRect | null) => void;
+  /** The screen currently on-stage registers its main scrollable container so a
+   * step whose target isn't fully visible can be scrolled into view automatically. */
+  registerScrollView: (ref: RefObject<{ scrollTo: (opts: { x?: number; y?: number; animated?: boolean }) => void } | null>) => () => void;
+  /** Asks the registered scroll view to bring `targetNode` fully into the safe
+   * (non-chrome-obscured) viewport band, throttled per target id. No-ops if no
+   * scroll view is registered (e.g. a non-scrolling screen) or already visible. */
+  requestScrollIntoView: (id: string, targetNode: View | null) => void;
+  /** Registers the single top-level View (mounted once in the root layout,
+   * see `useTourRootView`) that every tour measurement is computed relative
+   * to — see `measureRelativeToRoot` for why this replaces `measureInWindow`. */
+  registerRootView: (ref: RefObject<View | null>) => () => void;
+  /**
+   * Measures `node`'s position relative to the shared root view via
+   * `measureLayout`, instead of `measureInWindow`'s device-window-relative
+   * coordinates. On this app's RN/Fabric + expo-router setup the two are
+   * *not* interchangeable: screen content lives inside the router's
+   * navigator, which turns out to report `measureInWindow` coordinates from
+   * a different effective origin than `TourOverlay`'s own absolutely-
+   * positioned root (off by exactly the top safe-area inset in testing —
+   * likely a Fabric multi-surface quirk, not something to work around with a
+   * hardcoded offset). Measuring both the target *and* the overlay relative
+   * to one shared ancestor sidesteps the discrepancy entirely, whatever its
+   * native-side cause.
+   */
+  measureRelativeToRoot: (node: View | null, onResult: (x: number, y: number, width: number, height: number) => void) => void;
   registerAction: (id: string, fn: () => void) => () => void;
+  playAudio: () => void;
+  pauseAudio: () => void;
+  replayAudio: () => void;
+  prefs: TourPrefs;
+  updatePrefs: (partial: Partial<TourPrefs>) => void;
 };
 
 const INITIAL_STATE: TourState = {
@@ -73,6 +159,8 @@ const INITIAL_STATE: TourState = {
   steps: [],
   index: 0,
   ready: false,
+  activeRect: null,
+  landing: false,
   note: null,
   noteLoading: false,
   audioEnabled: false,
@@ -98,6 +186,14 @@ async function setStoredFlag(key: string): Promise<void> {
   await SecureStore.setItemAsync(key, "1");
 }
 
+async function removeStoredFlag(key: string): Promise<void> {
+  if (Platform.OS === "web") {
+    globalThis.localStorage?.removeItem(key);
+    return;
+  }
+  await SecureStore.deleteItemAsync(key);
+}
+
 export function useMobileTour(): TourContextValue {
   const ctx = useContext(TourContext);
   if (!ctx) throw new Error("useMobileTour must be used within MobileTourProvider");
@@ -105,19 +201,15 @@ export function useMobileTour(): TourContextValue {
 }
 
 /**
- * Marks a component as the on-screen target for a tour step, WITHOUT any
- * cross-layer position measurement. The component applies `highlightStyle`
- * to itself (a border/background, spread into its own style array) when
- * `isActive` is true — since the highlight is rendered as part of the
- * target's own normal layout, it can never be misaligned the way a
- * separately-measured overlay (Modal vs. status bar vs. absolutely
- * positioned elements — different coordinate spaces) can be.
- *
- * When the tour is running but this id is a *different* step (both are
- * simultaneously visible on the same screen, e.g. the header and the
- * readiness card), it self-dims instead — same reasoning: a component
- * dimming itself in the main tree can't wash out the active target the way
- * a Modal-level scrim (a separate native layer on Android) did.
+ * Marks a component as the on-screen target for a tour step. The component
+ * applies `highlightStyle` to itself (spread into its own style array) when
+ * a *different* step is simultaneously visible on the same screen (e.g. the
+ * header and the readiness card), dimming itself slightly so the active
+ * target reads clearly — the active target's own glow now lives in
+ * `TourOverlay`'s spotlight ring instead (drawn above the real content, not
+ * as a border the target draws on itself), since the ring also needs the
+ * target's live measured rect, which this hook doesn't track (see
+ * `SpotlightTarget`/`useSpotlightRef` for that).
  *
  * Still tells the provider "I'm mounted" so its poll/timeout/auto-skip logic
  * (owner-only steps, empty-state steps, etc.) keeps working.
@@ -136,26 +228,10 @@ export function useTourHighlight(id: string | undefined | null): {
 
   const isActive = Boolean(id) && state.active && state.steps[state.index]?.id === id;
   const isOtherStep = Boolean(id) && state.active && !isActive && state.steps.some((step) => step.id === id);
-  const theme = state.role ? ROLE_THEMES[state.role] : ROLE_THEMES.athlete;
 
-  let highlightStyle: TourHighlightStyle | undefined;
-  if (isActive) {
-    highlightStyle = {
-      borderWidth: 4,
-      borderColor: theme.accent,
-      borderRadius: 16,
-      backgroundColor: theme.accentStrong + "33",
-      shadowColor: theme.accent,
-      shadowOpacity: 1,
-      shadowRadius: 24,
-      shadowOffset: { width: 0, height: 0 },
-      elevation: 24,
-    };
-  } else if (isOtherStep) {
-    // Gentle dim only — a heavier cut (e.g. 0.32) visually compounds with
-    // cards' own existing thin borders and reads as a hard dark outline.
-    highlightStyle = { opacity: 0.62 };
-  }
+  // Gentle dim only — a heavier cut (e.g. 0.32) visually compounds with
+  // cards' own existing thin borders and reads as a hard dark outline.
+  const highlightStyle: TourHighlightStyle | undefined = isOtherStep ? { opacity: 0.62 } : undefined;
 
   return { isActive, highlightStyle };
 }
@@ -164,6 +240,106 @@ export function useTourHighlight(id: string | undefined | null): {
 export function useTourAction(id: string, fn: () => void): void {
   const { registerAction } = useMobileTour();
   useEffect(() => registerAction(id, fn), [registerAction, id, fn]);
+}
+
+/**
+ * Marks a `View` as one edge of the screen's fixed (non-scrolling) chrome —
+ * attach to `AppFrame`'s header and tab-bar wrappers. Reports its live
+ * measured bounds so `SpotlightTarget` can tell whether a step's target is
+ * actually visible (not hidden behind the header/nav) without hardcoding
+ * their heights, which drift with font scale, safe-area insets, and content
+ * (e.g. a wrapping subtitle).
+ */
+export function useReportChrome(edge: "top" | "bottom"): { ref: RefObject<View | null>; onLayout: () => void } {
+  const viewRef = useRef<View>(null);
+  const { reportChromeRect, measureRelativeToRoot } = useMobileTour();
+  const { width, height } = useWindowDimensions();
+
+  const measure = useCallback(() => {
+    const node = viewRef.current;
+    if (!node) return;
+    measureRelativeToRoot(node, (x, y, w, h) => {
+      if (w > 0 && h > 0) reportChromeRect(edge, { x, y, width: w, height: h });
+    });
+  }, [edge, reportChromeRect, measureRelativeToRoot]);
+
+  useEffect(() => {
+    measure();
+    return () => reportChromeRect(edge, null);
+  }, [measure, reportChromeRect, edge, width, height]);
+
+  return { ref: viewRef, onLayout: measure };
+}
+
+/**
+ * Registers the currently-focused screen's main scrollable container so the
+ * active tour step can be auto-scrolled into view. Attach the returned ref to
+ * that screen's `ScrollView` (or anything exposing an RN-compatible
+ * `scrollTo`). Only one screen is ever on-stage at a time, so the last
+ * mounted registration wins; unmounting clears it.
+ *
+ * Also reports the scroll view's own live window bounds as `scrollViewport` —
+ * by construction (flexbox, or a tab navigator that never renders a screen
+ * behind its own tab bar) this is exactly the true visible scrollable area,
+ * with no need to separately track or hardcode a header/tab-bar height.
+ */
+export function useTourScrollView<T extends { scrollTo: (opts: { x?: number; y?: number; animated?: boolean }) => void }>(): (
+  node: T | null
+) => void {
+  const { registerScrollView, reportScrollViewport, measureRelativeToRoot } = useMobileTour();
+  const holderRef = useRef<RefObject<T | null>>({ current: null });
+  const unregisterRef = useRef<(() => void) | null>(null);
+
+  const measure = useCallback(() => {
+    const node = holderRef.current.current;
+    if (!node) return;
+    measureRelativeToRoot(node as unknown as View, (x, y, w, h) => {
+      if (w > 0 && h > 0) reportScrollViewport({ x, y, width: w, height: h });
+    });
+  }, [reportScrollViewport, measureRelativeToRoot]);
+
+  // Re-measure whenever the window size changes (rotation/resize) — the
+  // scroll view rarely moves otherwise, so a continuous poll isn't needed.
+  const { width, height } = useWindowDimensions();
+  useEffect(() => {
+    if (holderRef.current.current) measure();
+  }, [measure, width, height]);
+
+  // A callback ref (not a plain object ref) so mount/unmount — e.g. a screen
+  // swapping its whole body between a scrolling section and a non-scrolling
+  // one, like the athlete dashboard's chat panel — is caught immediately:
+  // a plain ref changing value doesn't re-run effects, so a stale viewport
+  // from the previous mode would otherwise linger until the next resize.
+  return useCallback(
+    (node: T | null) => {
+      holderRef.current.current = node;
+      unregisterRef.current?.();
+      unregisterRef.current = null;
+      if (node) {
+        unregisterRef.current = registerScrollView(holderRef.current);
+        requestAnimationFrame(measure);
+      } else {
+        reportScrollViewport(null);
+      }
+    },
+    [registerScrollView, reportScrollViewport, measure]
+  );
+}
+
+/**
+ * Attach the returned ref to a single `View` mounted once near the root of
+ * the app (see `_layout.tsx`) — an ancestor of both the actual screen
+ * content (inside the router's navigator) and `TourOverlay` itself. Every
+ * tour measurement is computed relative to this shared node via
+ * `measureRelativeToRoot` instead of `measureInWindow`, so the overlay and
+ * its targets are guaranteed to agree on where "the top of the screen" is,
+ * regardless of any navigator-specific surface/window quirks.
+ */
+export function useTourRootView(): RefObject<View | null> {
+  const ref = useRef<View>(null);
+  const { registerRootView } = useMobileTour();
+  useEffect(() => registerRootView(ref), [registerRootView]);
+  return ref;
 }
 
 export function useAutoStartMobileTour(role: Role): void {
@@ -187,17 +363,52 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const pathname = usePathname();
   const pathnameRef = useRef(pathname);
-  const insets = useSafeAreaInsets();
   const [state, setState] = useState<TourState>(INITIAL_STATE);
+  const [prefs, setPrefs] = useState<TourPrefs>(DEFAULT_TOUR_PREFS);
   const mountedTargetsRef = useRef(new Set<string>());
   const actionsRef = useRef(new Map<string, () => void>());
   const noteCacheRef = useRef(new Map<string, string>());
   const runIdRef = useRef(0);
   const spokenStepRef = useRef<string | null>(null);
+  const homeRectRef = useRef<TourRect | null>(null);
+  const [chrome, setChrome] = useState<ChromeRects>({ top: null, bottom: null });
+  const [scrollViewport, setScrollViewport] = useState<TourRect | null>(null);
+  const scrollViewRefHolder = useRef<RefObject<{ scrollTo: (opts: { x?: number; y?: number; animated?: boolean }) => void } | null> | null>(
+    null
+  );
+  const scrollAttemptsRef = useRef(new Map<string, number>());
+  const rootViewRefHolder = useRef<RefObject<View | null> | null>(null);
 
   useEffect(() => {
     pathnameRef.current = pathname;
   }, [pathname]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setPrefs(DEFAULT_TOUR_PREFS);
+      return;
+    }
+    let active = true;
+    getStoredJson<TourPrefs>(tourPrefsKey(user.id))
+      .then((stored) => {
+        if (active) setPrefs(stored ?? DEFAULT_TOUR_PREFS);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
+
+  const updatePrefs = useCallback(
+    (partial: Partial<TourPrefs>) => {
+      setPrefs((prev) => {
+        const next = { ...prev, ...partial };
+        if (user?.id) void setStoredJson(tourPrefsKey(user.id), next);
+        return next;
+      });
+    },
+    [user]
+  );
 
   const reportTargetMounted = useCallback((id: string) => {
     mountedTargetsRef.current.add(id);
@@ -207,6 +418,76 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
     mountedTargetsRef.current.delete(id);
   }, []);
 
+  const reportTargetRect = useCallback((id: string, rect: TourRect) => {
+    // `!prev.landing` matters: the just-finished step's own SpotlightTarget
+    // keeps polling for a beat after `finish()` starts the landing flight
+    // (its rect-tracking effect only stops once `state.index`/`active`
+    // change), and would otherwise stomp the landing target back to the old
+    // step's rect every ~250ms, fighting the tween to the header badge.
+    setState((prev) => (prev.active && !prev.landing && prev.steps[prev.index]?.id === id ? { ...prev, activeRect: rect } : prev));
+  }, []);
+
+  const reportHomeRect = useCallback((rect: TourRect) => {
+    homeRectRef.current = rect;
+  }, []);
+
+  const reportChromeRect = useCallback((edge: "top" | "bottom", rect: TourRect | null) => {
+    setChrome((prev) => (rectsEqual(prev[edge], rect) ? prev : { ...prev, [edge]: rect }));
+  }, []);
+
+  const reportScrollViewport = useCallback((rect: TourRect | null) => {
+    setScrollViewport((prev) => (rectsEqual(prev, rect) ? prev : rect));
+  }, []);
+
+  const registerScrollView = useCallback(
+    (ref: RefObject<{ scrollTo: (opts: { x?: number; y?: number; animated?: boolean }) => void } | null>) => {
+      scrollViewRefHolder.current = ref;
+      return () => {
+        if (scrollViewRefHolder.current === ref) scrollViewRefHolder.current = null;
+      };
+    },
+    []
+  );
+
+  const registerRootView = useCallback((ref: RefObject<View | null>) => {
+    rootViewRefHolder.current = ref;
+    return () => {
+      if (rootViewRefHolder.current === ref) rootViewRefHolder.current = null;
+    };
+  }, []);
+
+  const measureRelativeToRoot = useCallback((node: View | null, onResult: (x: number, y: number, width: number, height: number) => void) => {
+    const rootNode = rootViewRefHolder.current?.current;
+    if (!rootNode || !node) return;
+    (node as unknown as { measureLayout: (relativeTo: unknown, ok: (x: number, y: number, w: number, h: number) => void, fail?: () => void) => void }).measureLayout(
+      rootNode,
+      (x: number, y: number, w: number, h: number) => onResult(x, y, w, h),
+      () => undefined
+    );
+  }, []);
+
+  const requestScrollIntoView = useCallback((id: string, targetNode: View | null) => {
+    const scrollView = scrollViewRefHolder.current?.current;
+    if (!scrollView || !targetNode) return;
+
+    const now = Date.now();
+    const lastAttempt = scrollAttemptsRef.current.get(id) ?? 0;
+    if (now - lastAttempt < SCROLL_INTO_VIEW_RETRY_MS) return;
+
+    // Pass the scroll view's own ref value directly as the "relative to" node
+    // — on the New Architecture, a host ref *is* the native element instance
+    // `measureLayout` expects, and translating it through the legacy
+    // `findNodeHandle` (a plain numeric tag) makes Fabric reject it.
+    (targetNode as unknown as { measureLayout: (relativeTo: unknown, ok: (x: number, y: number) => void, fail?: () => void) => void }).measureLayout(
+      scrollView,
+      (_x: number, y: number) => {
+        scrollAttemptsRef.current.set(id, Date.now());
+        scrollView.scrollTo({ y: Math.max(0, y - SCROLL_INTO_VIEW_MARGIN), animated: true });
+      },
+      () => undefined
+    );
+  }, []);
+
   const registerAction = useCallback((id: string, fn: () => void) => {
     actionsRef.current.set(id, fn);
     return () => {
@@ -214,21 +495,54 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const finish = useCallback(() => {
-    void stopTourNarration();
-    setState((prev) => {
-      if (prev.role && user?.id) {
-        setStoredFlag(seenKey(user.id, prev.role)).catch(() => undefined);
+  const persistFinishFlags = useCallback(
+    (role: Role, reason: "completed" | "skipped") => {
+      if (!user?.id) return;
+      const uid = user.id;
+      setStoredFlag(seenKey(uid, role)).catch(() => undefined);
+      const listKey = reason === "completed" ? tourCompletedKey(uid) : tourSkippedKey(uid);
+      getStoredJson<string[]>(listKey)
+        .then((list) => setStoredJson(listKey, Array.from(new Set([...(list ?? []), role]))))
+        .catch(() => undefined);
+    },
+    [user]
+  );
+
+  const finish = useCallback(
+    (reason: "completed" | "skipped" = "completed") => {
+      void stopTourNarration();
+
+      // A natural walk-through-to-the-end earns a send-off: Pex flies from
+      // wherever it was to the header profile badge and settles there,
+      // handing off to the persistent `PexHeaderBadge` sitting at that same
+      // spot. Skipping out early doesn't get the flight or the celebration.
+      const landingTarget = reason === "completed" ? homeRectRef.current : null;
+      if (landingTarget) {
+        setState((prev) => {
+          if (prev.role) persistFinishFlags(prev.role, reason);
+          return { ...prev, ready: false, note: null, noteLoading: false, audioSpeaking: false, landing: true, activeRect: landingTarget };
+        });
+        setTimeout(() => {
+          setState(INITIAL_STATE);
+          fireMascotReaction("tour.completed");
+        }, LANDING_DURATION_MS);
+        return;
       }
-      return INITIAL_STATE;
-    });
-  }, [user]);
+
+      setState((prev) => {
+        if (prev.role) persistFinishFlags(prev.role, reason);
+        return INITIAL_STATE;
+      });
+      if (reason === "completed") fireMascotReaction("tour.completed");
+    },
+    [persistFinishFlags]
+  );
 
   const advanceToRef = useRef<(steps: MobileTourStep[], index: number, myRun: number) => void>(() => undefined);
   const advanceTo = useCallback(
     (steps: MobileTourStep[], index: number, myRun: number) => {
       if (index >= steps.length) {
-        finish();
+        finish("completed");
         return;
       }
       const step = steps[index];
@@ -240,7 +554,7 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
 
       void stopTourNarration();
       spokenStepRef.current = null;
-      setState((prev) => ({ ...prev, index, ready: false, note: null, noteLoading: false, audioSpeaking: false }));
+      setState((prev) => ({ ...prev, index, ready: false, note: null, noteLoading: false, audioSpeaking: false, activeRect: null }));
 
       const cameFromNav = Boolean(step.route) && pathnameRef.current !== step.route;
       if (cameFromNav && step.route) {
@@ -278,10 +592,36 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
     (role: Role) => {
       const steps = MOBILE_TOUR_STEPS[role];
       const myRun = ++runIdRef.current;
+      // Auto-start (and mini-tours) only ever fire from the role's own
+      // dashboard, so this was always a same-screen no-op there — but
+      // "Replay guided tour" in Settings can invoke this from elsewhere, and
+      // step 0 has no `route` of its own to navigate by (it's a same-screen
+      // step once you're on the dashboard).
+      const dashPath = dashboardPathForRole(role);
+      if (dashPath && pathnameRef.current !== dashPath) {
+        router.push(dashPath as never);
+      }
       setState({ ...INITIAL_STATE, active: true, role, steps });
       advanceTo(steps, 0, myRun);
     },
     [advanceTo]
+  );
+
+  const startMiniTour = useCallback(
+    (steps: MobileTourStep[]) => {
+      const myRun = ++runIdRef.current;
+      setState((prev) => ({ ...INITIAL_STATE, active: true, role: prev.role, steps }));
+      advanceTo(steps, 0, myRun);
+    },
+    [advanceTo]
+  );
+
+  const replayTour = useCallback(
+    async (role: Role) => {
+      if (user?.id) await removeStoredFlag(seenKey(user.id, role));
+      startTour(role);
+    },
+    [user, startTour]
   );
 
   const next = useCallback(() => {
@@ -297,7 +637,7 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
   const skip = useCallback(() => {
     runIdRef.current++;
     void stopTourNarration();
-    finish();
+    finish("skipped");
   }, [finish]);
 
   const speakCurrentStep = useCallback(
@@ -379,200 +719,62 @@ export function MobileTourProvider({ children }: { children: ReactNode }) {
     void stopTourNarration();
   }, []);
 
-  const currentStep = state.steps[state.index] ?? null;
-  const isLast = state.index >= state.steps.length - 1;
-  const theme = state.role ? ROLE_THEMES[state.role] : ROLE_THEMES.athlete;
-  const cardAtTop = currentStep?.cardPosition === "top";
-
   const value = useMemo(
-    () => ({ state, startTour, next, back, skip, reportTargetMounted, reportTargetUnmounted, registerAction }),
-    [back, next, skip, startTour, state, reportTargetMounted, reportTargetUnmounted, registerAction]
+    () => ({
+      state,
+      startTour,
+      startMiniTour,
+      replayTour,
+      next,
+      back,
+      skip,
+      reportTargetMounted,
+      reportTargetUnmounted,
+      reportTargetRect,
+      reportHomeRect,
+      chrome,
+      reportChromeRect,
+      scrollViewport,
+      reportScrollViewport,
+      registerScrollView,
+      requestScrollIntoView,
+      registerRootView,
+      measureRelativeToRoot,
+      registerAction,
+      playAudio,
+      pauseAudio,
+      replayAudio,
+      prefs,
+      updatePrefs,
+    }),
+    [
+      state,
+      startTour,
+      startMiniTour,
+      replayTour,
+      next,
+      back,
+      skip,
+      reportTargetMounted,
+      reportTargetUnmounted,
+      reportTargetRect,
+      reportHomeRect,
+      chrome,
+      reportChromeRect,
+      scrollViewport,
+      reportScrollViewport,
+      registerScrollView,
+      requestScrollIntoView,
+      registerRootView,
+      measureRelativeToRoot,
+      registerAction,
+      playAudio,
+      pauseAudio,
+      replayAudio,
+      prefs,
+      updatePrefs,
+    ]
   );
 
-  return (
-    <TourContext.Provider value={value}>
-      {children}
-      <Modal visible={state.active} transparent animationType="fade" onRequestClose={skip}>
-        {/* No screen-wide dim: on Android the Modal renders in its own native
-            layer, always compositing above the real screen — so any dim here
-            would wash out the highlighted target too (it's real content,
-            drawn behind this Modal, not inside it). Instead the target
-            itself carries a bright glowing border (see useTourHighlight),
-            which stays fully lit since nothing darkens it. */}
-        <View
-          style={[
-            cardAtTop ? styles.backdropWrapTop : styles.backdropWrapBottom,
-            cardAtTop ? { paddingTop: 18 + insets.top } : { paddingBottom: 18 + insets.bottom },
-          ]}
-          pointerEvents="box-none"
-        >
-          <View style={styles.card}>
-            <View style={styles.topRow}>
-              <View style={[styles.agentMark, { backgroundColor: theme.accentSoft }]}>
-                <Ionicons name="sparkles-outline" size={14} color={theme.accentStrong} />
-              </View>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={[styles.title, { color: colors.ink }]} numberOfLines={1}>{currentStep?.title ?? "Tour"}</Text>
-                <Text style={styles.count}>Step {state.index + 1} of {state.steps.length}</Text>
-              </View>
-              <Pressable onPress={skip} hitSlop={10} style={styles.close} accessibilityRole="button" accessibilityLabel="Skip tour">
-                <Ionicons name="close" size={16} color={colors.inkMuted} />
-              </Pressable>
-            </View>
-
-            <View style={styles.noteBox}>
-              <Text style={styles.note} numberOfLines={4}>{state.note ?? currentStep?.fallbackNote ?? ""}</Text>
-            </View>
-
-            <View style={styles.audioRow}>
-              <Pressable
-                onPress={state.audioSpeaking ? pauseAudio : playAudio}
-                style={[styles.audioPrimary, { borderColor: theme.accent, backgroundColor: theme.accentSoft }]}
-                accessibilityRole="button"
-                accessibilityLabel={state.audioSpeaking ? "Pause tour audio" : "Play tour audio"}
-              >
-                <Ionicons name={state.audioSpeaking ? "pause" : "volume-high-outline"} size={15} color={theme.accentStrong} />
-                <Text style={[styles.audioPrimaryText, { color: theme.accentStrong }]}>
-                  {state.audioSpeaking ? "Pause" : state.audioEnabled ? "Audio on" : "Play audio"}
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={replayAudio}
-                style={styles.audioIcon}
-                accessibilityRole="button"
-                accessibilityLabel="Replay tour audio"
-              >
-                <Ionicons name="refresh" size={15} color={colors.inkMuted} />
-              </Pressable>
-            </View>
-
-            <View style={styles.progressTrack}>
-              <View
-                style={[
-                  styles.progressFill,
-                  {
-                    width: `${state.steps.length ? ((state.index + 1) / state.steps.length) * 100 : 0}%`,
-                    backgroundColor: theme.accent,
-                  },
-                ]}
-              />
-            </View>
-
-            <View style={styles.actions}>
-              <Pressable onPress={skip} hitSlop={10} accessibilityRole="button" accessibilityLabel="Skip tour">
-                <Text style={styles.skipText}>Skip</Text>
-              </Pressable>
-              <View style={styles.actionsRight}>
-                <Pressable
-                  onPress={back}
-                  disabled={state.index === 0}
-                  style={[styles.secondary, state.index === 0 ? styles.disabled : null]}
-                >
-                  <Text style={styles.secondaryText}>Back</Text>
-                </Pressable>
-                <Pressable
-                  onPress={isLast ? finish : next}
-                  style={[styles.primary, { backgroundColor: theme.accent }]}
-                >
-                  <Text style={[styles.primaryText, { color: theme.accentInk }]}>{isLast ? "Done" : "Next"}</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        </View>
-      </Modal>
-    </TourContext.Provider>
-  );
+  return <TourContext.Provider value={value}>{children}</TourContext.Provider>;
 }
-
-const styles = StyleSheet.create({
-  backdropWrapBottom: {
-    flex: 1,
-    justifyContent: "flex-end",
-    paddingHorizontal: 16,
-  },
-  backdropWrapTop: {
-    flex: 1,
-    justifyContent: "flex-start",
-    paddingHorizontal: 16,
-  },
-  card: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surfaceRaised,
-    padding: 12,
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 24,
-  },
-  topRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  agentMark: { width: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center" },
-  count: { marginTop: 1, color: colors.inkFaint, fontSize: 10, fontWeight: "700" },
-  close: {
-    width: 26,
-    height: 26,
-    borderRadius: radius.sm,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.surfaceInset,
-  },
-  title: { fontSize: 14, fontWeight: "800", color: colors.ink },
-  noteBox: {
-    marginTop: 8,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surfaceInset,
-    padding: 10,
-  },
-  note: { color: colors.inkMuted, fontSize: 12, lineHeight: 17, fontWeight: "500" },
-  audioRow: { marginTop: 8, flexDirection: "row", alignItems: "center", gap: 8 },
-  audioPrimary: {
-    height: 32,
-    paddingHorizontal: 10,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  audioPrimaryText: { fontSize: 12, fontWeight: "800" },
-  audioIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.surfaceRaised,
-  },
-  progressTrack: {
-    marginTop: 10,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: colors.surfaceInset,
-    overflow: "hidden",
-  },
-  progressFill: { height: "100%", borderRadius: 999 },
-  actions: { marginTop: 10, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  skipText: { color: colors.inkFaint, fontSize: 12, fontWeight: "700" },
-  actionsRight: { flexDirection: "row", gap: 8 },
-  secondary: {
-    height: 36,
-    paddingHorizontal: 16,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: colors.lineStrong,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.surfaceRaised,
-  },
-  secondaryText: { color: colors.inkMuted, fontSize: 13, fontWeight: "800" },
-  primary: { height: 36, paddingHorizontal: 18, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
-  primaryText: { fontSize: 13, fontWeight: "800" },
-  disabled: { opacity: 0.45 },
-});

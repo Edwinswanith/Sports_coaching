@@ -1,6 +1,6 @@
 import * as Speech from "expo-speech";
 import { localizeAgentSpeech } from "../voiceTranslation";
-import { getVoiceLanguage } from "../voiceLanguage";
+import { getVoiceSpeechLanguage } from "../voiceLanguage";
 
 let narrationRun = 0;
 
@@ -24,7 +24,7 @@ export async function speakTourStep(text: string): Promise<void> {
       resolve();
     };
     Speech.speak(message, {
-      language: getVoiceLanguage(),
+      language: getVoiceSpeechLanguage(),
       rate: 0.9,
       pitch: 1,
       onDone: done,

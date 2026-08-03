@@ -12,6 +12,8 @@ import { DEFAULT_VOICE_LANGUAGE, VOICE_LANGUAGES, setVoiceLanguagePreference } f
 import { Banner, Card, Label, Muted, PrimaryButton, TextField } from "../components/ui";
 import { Avatar, AvatarBadgePicker } from "../components/Avatar";
 import { useNotificationPreferences, type NotificationCategories } from "../lib/notificationPreferences";
+import { useMobileTour } from "../lib/tour/MobileTourProvider";
+import { isKnownRole, type Role } from "../lib/roles";
 
 const CATEGORY_LABELS: Record<keyof NotificationCategories, string> = {
   reminders: "Reminders",
@@ -57,10 +59,52 @@ function NotificationsCard({ accent }: { accent: string }) {
   );
 }
 
+function GuidedTourCard({ accent, role }: { accent: string; role: Role }) {
+  const { prefs, updatePrefs, replayTour } = useMobileTour();
+  const [replaying, setReplaying] = useState(false);
+
+  async function onReplay() {
+    setReplaying(true);
+    await replayTour(role);
+    setReplaying(false);
+  }
+
+  return (
+    <Card style={{ gap: 4 }}>
+      <View style={rowStyles.row}>
+        <View style={rowStyles.textCol}>
+          <Text style={rowStyles.label}>Show mascot animations</Text>
+          <Muted>Pex walks, points, and reacts through the app.</Muted>
+        </View>
+        <Switch
+          value={prefs.mascotAnimationsEnabled}
+          onValueChange={(value) => updatePrefs({ mascotAnimationsEnabled: value })}
+          trackColor={{ true: accent }}
+        />
+      </View>
+      <View style={rowStyles.divider} />
+      <View style={rowStyles.row}>
+        <View style={rowStyles.textCol}>
+          <Text style={rowStyles.label}>Sound effects</Text>
+          <Muted>Optional chimes for tour steps and reactions. No sound files are bundled yet.</Muted>
+        </View>
+        <Switch
+          value={prefs.soundEnabled}
+          onValueChange={(value) => updatePrefs({ soundEnabled: value })}
+          trackColor={{ true: accent }}
+        />
+      </View>
+      <View style={rowStyles.divider} />
+      <PrimaryButton label="Replay guided tour" onPress={onReplay} loading={replaying} accent={accent} accentInk="#fff" />
+    </Card>
+  );
+}
+
 export default function Account() {
   const router = useRouter();
   const { user, setUser, signOut, deleteAccount } = useAuth();
   const theme: RoleTheme = ROLE_THEMES[(user?.role as keyof typeof ROLE_THEMES) ?? "coach"] ?? ROLE_THEMES.coach;
+  const tourRole: Role | null = user && isKnownRole(user.role) ? user.role : null;
 
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -333,6 +377,13 @@ export default function Account() {
 
           <Text style={styles.section}>Notifications</Text>
           <NotificationsCard accent={theme.accentStrong} />
+
+          {tourRole ? (
+            <>
+              <Text style={styles.section}>Guided tour</Text>
+              <GuidedTourCard accent={theme.accentStrong} role={tourRole} />
+            </>
+          ) : null}
 
           <Text style={styles.section}>Change password</Text>
           <Card style={{ gap: 14 }}>

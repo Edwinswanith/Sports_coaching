@@ -5,7 +5,7 @@ import { Platform } from "react-native";
 import { speakAgentReply, stopAgentSpeech } from "./agentSpeech";
 import { API_BASE, apiFetch, getAccessToken } from "./api";
 import { normalizeVoiceCommandForAgent } from "./voiceTranslation";
-import { getDeepgramLanguageHint, getVoiceLanguage } from "./voiceLanguage";
+import { getDeepgramLanguageHint, getVoiceRecognitionLanguage } from "./voiceLanguage";
 
 export type VoiceSessionHandlers = {
   onListeningChange: (listening: boolean) => void;
@@ -257,7 +257,7 @@ type SpeechRecognitionLike = {
 };
 
 function startSpeechRecognitionVoiceSession(handlers: VoiceSessionHandlers, recognition: SpeechRecognitionLike): VoiceSessionHandle {
-  recognition.lang = getVoiceLanguage();
+  recognition.lang = getVoiceRecognitionLanguage();
   recognition.continuous = false;
   recognition.interimResults = false;
   let stopped = false;

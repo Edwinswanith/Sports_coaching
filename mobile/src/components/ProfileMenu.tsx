@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../lib/auth";
 import { colors, radius, type RoleTheme } from "../lib/theme";
 import { Avatar } from "./Avatar";
+import { PexHeaderBadge } from "./mascot/PexHeaderBadge";
 
 export function ProfileMenu({
   theme,
@@ -57,13 +58,7 @@ export function ProfileMenu({
         accessibilityRole="button"
         accessibilityLabel="Profile and account"
       >
-        <Avatar
-          avatar={user?.avatar}
-          name={name}
-          size={size}
-          accentSoft={theme.accentSoft}
-          accentStrong={theme.accentStrong}
-        />
+        <PexHeaderBadge size={size} />
       </Pressable>
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>

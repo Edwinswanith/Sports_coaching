@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { Text } from "../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -9,6 +9,7 @@ import { ROLE_THEMES, colors, type RoleTheme } from "../lib/theme";
 import { dashboardPathForRole } from "../lib/roles";
 import { Card, Muted } from "../components/ui";
 import { ScreenHeader } from "../components/ScreenHeader";
+import { fireMascotReaction } from "../lib/tour/reactions";
 
 // Routes that actually exist in the mobile app. Notification `link`s are
 // authored for the web app, so we only follow ones with a mobile screen and
@@ -60,6 +61,19 @@ export default function Notifications() {
 
   const [data, setData] = useState<Response | null>(null);
   const [loading, setLoading] = useState(true);
+  const firedEmptyReaction = useRef(false);
+
+  useEffect(() => {
+    if (!data || user?.role !== "athlete") return;
+    if (data.notifications.length === 0) {
+      if (!firedEmptyReaction.current) {
+        firedEmptyReaction.current = true;
+        fireMascotReaction("notifications.empty");
+      }
+    } else {
+      firedEmptyReaction.current = false;
+    }
+  }, [data, user?.role]);
 
   const load = useCallback(async () => {
     try {

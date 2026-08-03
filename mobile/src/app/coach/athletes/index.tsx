@@ -9,7 +9,8 @@ import { ROLE_THEMES, colors, radius } from "../../../lib/theme";
 import { Card, Muted } from "../../../components/ui";
 import { ScreenHeader } from "../../../components/ScreenHeader";
 import { Avatar, type AvatarInfo } from "../../../components/Avatar";
-import { useTourHighlight } from "../../../lib/tour/MobileTourProvider";
+import { useTourHighlight, useTourScrollView } from "../../../lib/tour/MobileTourProvider";
+import { SpotlightTarget } from "../../../lib/tour/SpotlightTarget";
 
 type Athlete = {
   athleteId: string;
@@ -65,6 +66,7 @@ function attentionRank(summary: SummaryCard | undefined): number {
 
 export default function Roster() {
   const { highlightStyle: rosterHighlight } = useTourHighlight("mobile-coach-roster");
+  const tourScrollRef = useTourScrollView<ScrollView>();
   const accent = ROLE_THEMES.coach.accent;
   const router = useRouter();
   const [athletes, setAthletes] = useState<Athlete[] | null>(null);
@@ -136,6 +138,7 @@ export default function Roster() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
+        ref={tourScrollRef}
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={accent} />}
       >
@@ -154,7 +157,7 @@ export default function Roster() {
           </Card>
         ) : athletes && athletes.length > 0 ? (
           <View style={{ gap: 10 }}>
-            <View style={[styles.searchBlock, rosterHighlight]}>
+            <SpotlightTarget id="mobile-coach-roster" style={[styles.searchBlock, rosterHighlight]}>
               <View style={styles.searchRow}>
                 <View style={styles.searchWrap}>
                   <Ionicons name="search-outline" size={17} color={colors.inkFaint} />
@@ -212,7 +215,7 @@ export default function Roster() {
                   {filtered.length} of {athletes.length}
                 </Text>
               </View>
-            </View>
+            </SpotlightTarget>
 
             {filtered.length > 0 ? (
               filtered.map((athlete) => (

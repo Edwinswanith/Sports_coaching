@@ -10,7 +10,8 @@ import { AskAgentControl } from "../../components/AskAgentControl";
 import { Gauge } from "../../components/Gauge";
 import { apiJson } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
-import { useAutoStartMobileTour, useTourHighlight } from "../../lib/tour/MobileTourProvider";
+import { useAutoStartMobileTour, useTourHighlight, useTourScrollView } from "../../lib/tour/MobileTourProvider";
+import { SpotlightTarget } from "../../lib/tour/SpotlightTarget";
 
 type LinkedAthlete = { athleteId: string; name: string; sport: string; position: string | null };
 type AthletesResponse = { athletes: LinkedAthlete[] };
@@ -107,6 +108,7 @@ export default function GuardianDashboard() {
   const { highlightStyle: sleepHighlight } = useTourHighlight("mobile-guardian-sleep");
   const { highlightStyle: waterHighlight } = useTourHighlight("mobile-guardian-water");
   const { highlightStyle: attendanceHighlight } = useTourHighlight("mobile-guardian-attendance");
+  const tourScrollRef = useTourScrollView<ScrollView>();
   const [date, setDate] = useState(today());
   const [athletes, setAthletes] = useState<LinkedAthlete[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -200,19 +202,20 @@ export default function GuardianDashboard() {
       activeKey="today"
       onNavigate={() => undefined}
       headerAction={
-        <View style={headerHighlight}>
+        <SpotlightTarget id="mobile-guardian-header" style={headerHighlight}>
           <DatePickerPill value={date} onChange={setDate} openSignal={calendarOpenSignal} />
-        </View>
+        </SpotlightTarget>
       }
     >
       <ScrollView
+        ref={tourScrollRef}
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={loading} onRefresh={loadAthletes} tintColor={theme.accent} />}
       >
         {error ? <Notice text={error} /> : null}
 
         {athletes.length > 1 ? (
-          <View style={switcherHighlight}>
+          <SpotlightTarget id="mobile-guardian-switcher" style={switcherHighlight}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.athleteSwitch}>
             {athletes.map((athlete) => {
               const active = athlete.athleteId === selectedId;
@@ -232,7 +235,7 @@ export default function GuardianDashboard() {
               );
             })}
           </ScrollView>
-          </View>
+          </SpotlightTarget>
         ) : null}
 
         {loading && athletes.length === 0 ? (
@@ -248,15 +251,15 @@ export default function GuardianDashboard() {
           </Card>
         ) : (
           <View style={styles.stack}>
-            <View style={sleepHighlight}>
+            <SpotlightTarget id="mobile-guardian-sleep" style={sleepHighlight}>
               <SleepCard quality={summary.sleep.quality} hours={summary.sleep.hours} />
-            </View>
-            <View style={waterHighlight}>
+            </SpotlightTarget>
+            <SpotlightTarget id="mobile-guardian-water" style={waterHighlight}>
               <WaterCard totalMl={summary.water.totalMl} goalMl={summary.water.goalMl} pct={waterPct} hasGoal={hasGoal} />
-            </View>
-            <View style={attendanceHighlight}>
+            </SpotlightTarget>
+            <SpotlightTarget id="mobile-guardian-attendance" style={attendanceHighlight}>
               <AttendanceCard status={summary.attendance.status} note={summary.attendance.note} />
-            </View>
+            </SpotlightTarget>
           </View>
         )}
       </ScrollView>

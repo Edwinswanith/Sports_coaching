@@ -3,7 +3,7 @@
     "name": "Apex",
     "slug": "sports-coaching-platform",
     "owner": "edwinswanith",
-    "version": "1.0.16",
+    "version": "1.0.19",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "apex",
@@ -11,7 +11,7 @@
     "ios": {
       "icon": "./assets/images/icon.png",
       "bundleIdentifier": "app.apex.coaching",
-      "buildNumber": "17",
+      "buildNumber": "20",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
@@ -28,7 +28,7 @@
         "foregroundImage": "./assets/images/adaptive-icon.png"
       },
       "package": "app.apex.coaching",
-      "versionCode": 17,
+      "versionCode": 20,
       "predictiveBackGestureEnabled": false,
       "googleServicesFile": "./google-services.json",
       "permissions": [

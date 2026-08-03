@@ -21,7 +21,8 @@ import { Banner, Card, Muted } from "../../components/ui";
 import { ChatMediaBubble, type ChatMedia, type WorkoutTableRow } from "../../components/ChatMediaBubble";
 import type { MessageView } from "../../components/MessageCenter";
 import { ScreenHeader } from "../../components/ScreenHeader";
-import { useTourHighlight } from "../../lib/tour/MobileTourProvider";
+import { useTourHighlight, useTourScrollView } from "../../lib/tour/MobileTourProvider";
+import { SpotlightTarget } from "../../lib/tour/SpotlightTarget";
 
 const theme = ROLE_THEMES.coach;
 
@@ -83,6 +84,7 @@ function dayLabel(iso: string): string {
 
 export default function CoachMessages() {
   const { highlightStyle: messagesHighlight } = useTourHighlight("mobile-coach-messages");
+  const tourScrollRef = useTourScrollView<ScrollView>();
   const accent = theme.accent;
   const params = useLocalSearchParams<{ athleteId?: string }>();
   const requestedId = typeof params.athleteId === "string" ? params.athleteId : null;
@@ -472,6 +474,7 @@ export default function CoachMessages() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
+        ref={tourScrollRef}
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={accent} />}
       >
@@ -497,7 +500,7 @@ export default function CoachMessages() {
             ) : null}
             <View style={{ height: unreadTotal > 0 ? 12 : 0 }} />
 
-            <View style={messagesHighlight}>
+            <SpotlightTarget id="mobile-coach-messages" style={messagesHighlight}>
             <MessagesHome
               threads={threads}
               starters={starters}
@@ -505,7 +508,7 @@ export default function CoachMessages() {
               onToggleStarters={() => setShowStarters((value) => !value)}
               onSelect={setSelectedId}
             />
-            </View>
+            </SpotlightTarget>
           </>
         )}
       </ScrollView>

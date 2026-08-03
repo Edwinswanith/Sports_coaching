@@ -3,7 +3,7 @@ import * as Speech from "expo-speech";
 import { Platform } from "react-native";
 import { API_BASE, getAccessToken } from "./api";
 import { localizeAgentSpeech } from "./voiceTranslation";
-import { getVoiceLanguage, isEnglishVoiceLanguage } from "./voiceLanguage";
+import { getVoiceSpeechLanguage, isEnglishVoiceLanguage } from "./voiceLanguage";
 
 let currentPlayer: AudioPlayer | null = null;
 
@@ -71,7 +71,7 @@ async function speakWithExpo(message: string): Promise<void> {
       resolve();
     };
     Speech.speak(message, {
-      language: getVoiceLanguage(),
+      language: getVoiceSpeechLanguage(),
       rate: 0.92,
       pitch: 1,
       onDone: done,

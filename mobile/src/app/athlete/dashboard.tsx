@@ -26,7 +26,17 @@ import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../lib/sessions"
 import { TRAINING_CATEGORIES } from "../../lib/trainingCategories";
 import { classifyReportQuery, isReportLikeQuery, requestedHistoryDays, type ReportDirection, type ReportMetric, type ReportSubject } from "../../lib/askAgentReportIntents";
 import { athleteNavigationReply, parseAthleteNavigationCommand, type AthleteNavigationCommand } from "../../lib/athleteAskNavigation";
-import { useAutoStartMobileTour, useTourAction, useTourHighlight, type TourHighlightStyle } from "../../lib/tour/MobileTourProvider";
+import {
+  useAutoStartMobileTour,
+  useTourAction,
+  useTourHighlight,
+  useTourScrollView,
+  type TourHighlightStyle,
+} from "../../lib/tour/MobileTourProvider";
+import { SpotlightTarget, useSpotlightRef } from "../../lib/tour/SpotlightTarget";
+import { fireMascotReaction } from "../../lib/tour/reactions";
+import { ContextualHelp } from "../../components/mascot/ContextualHelp";
+import { ATHLETE_TOUR_STEPS } from "../../lib/tour/steps";
 import {
   summarizeTrend,
   fmtValue,
@@ -236,6 +246,9 @@ type WellnessForm = {
 type MessageHeader = { title: string; subtitle?: string };
 
 const theme = ROLE_THEMES.athlete;
+const ATHLETE_QUICK_HELP_STEPS = ATHLETE_TOUR_STEPS.filter((step) =>
+  ["mobile-athlete-readiness", "mobile-athlete-training", "mobile-athlete-agent"].includes(step.id)
+);
 const today = () => new Date().toISOString().slice(0, 10);
 const emptyWellness: WellnessForm = {
   sleepHours: "",
@@ -465,13 +478,17 @@ function wellnessTenToFive(raw: unknown): number {
  * the 10->5 formula on every voice check-in).
  */
 function resolveWellnessField(spoken: unknown, stored: string): number | undefined {
-  if (typeof spoken === "number") return wellnessTenToFive(spoken);
+  if (typeof spoken === "number") {
+    return Number.isFinite(spoken) && spoken >= 1 && spoken <= 10 ? wellnessTenToFive(spoken) : undefined;
+  }
   const n = Number(stored);
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 function resolveSessionWellnessField(spoken: unknown, displayed: number | string | undefined): number | undefined {
-  if (typeof spoken === "number") return wellnessTenToFive(spoken);
+  if (typeof spoken === "number") {
+    return Number.isFinite(spoken) && spoken >= 1 && spoken <= 10 ? wellnessTenToFive(spoken) : undefined;
+  }
   const n = Number(displayed);
   return Number.isFinite(n) ? wellnessStoredFromTen(n) : undefined;
 }
@@ -687,9 +704,9 @@ function sleepDurationValue(text: string): number | null {
   const lower = text.toLowerCase();
   const numberToken = "(\\d+(?:\\.\\d+)?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen)\\s+(?:point|dot)\\s+(?:zero|one|two|three|four|five|six|seven|eight|nine|\\d))";
   const patterns = [
-    new RegExp(`\\b(?:my\\s+|your\\s+)?sleep(?:\\s+(?:duration|hours?|score|quality))?\\s*(?:to|as|is|=|:)?\\s*${numberToken}(?:\\s*(?:hours?|hrs?))?\\b`, "i"),
-    new RegExp(`${numberToken}\\s*(?:hours?|hrs?)\\s+(?:of\\s+)?sleep\\b`, "i"),
-    new RegExp(`\\bslept\\s*(?:for\\s*)?${numberToken}(?:\\s*(?:hours?|hrs?))?\\b`, "i"),
+    new RegExp(`\\b(?:my\\s+|your\\s+)?sleep\\s+(?:duration|hours?)\\s*(?:to|as|is|=|:)?\\s*${numberToken}(?:\\s*(?:hours?|hrs?|mani|neram))?\\b`, "i"),
+    new RegExp(`${numberToken}\\s*(?:hours?|hrs?|mani|neram)\\s+(?:of\\s+)?(?:sleep|thookam|tookam|urakkam)\\b`, "i"),
+    new RegExp(`\\b(?:slept|thoongi\\w*|thoonginen)\\s*(?:for\\s*)?${numberToken}(?:\\s*(?:hours?|hrs?|mani|neram))?\\b`, "i"),
   ];
   for (const pattern of patterns) {
     const match = lower.match(pattern);
@@ -699,12 +716,12 @@ function sleepDurationValue(text: string): number | null {
   return null;
 }
 
-// Sleep is tracked as one field: duration in hours. Any sleep-related update —
-// however it's phrased ("sleep", "sleep score", "sleep quality", "sleep duration")
-// — always resolves to that same duration value; there is no separate score input.
+// Only duration phrases land here. Sleep score/quality phrases fall through to
+// parseWellnessCommand so they update sleepQuality instead of sleepHours.
 function parseSleepUpdateCommand(text: string): SleepUpdateCommand | null {
   const lower = text.toLowerCase();
-  if (!/\bsleep\b/.test(lower)) return null;
+  if (!/\b(?:sleep|slept|thoongi\w*|thoonginen)\b/.test(lower)) return null;
+  if (/\bsleep\s+(?:score|quality|rating)\b|\bquality\b|\bscore\b/.test(lower)) return null;
   const isUpdate = /\b(change|update|set|save|log|record)\b/.test(lower);
   if (!isUpdate && !/\bslept\b/.test(lower)) return null;
   const value = sleepDurationValue(lower);
@@ -783,7 +800,7 @@ function parseWellnessCommand(text: string): WellnessCommandFields | null {
   const hasSessionContext =
     parseCommandSlot(lower) !== null || /\brpe\b|\brpm\b|\bintensity\b|\beffort\b|\bresting\s+(?:heart\s+)?rate\b/.test(lower);
   const isCheckIn = /\bcheck.?in\b/.test(lower);
-  const mentionsWellnessField = /\b(sleep|mood|stress|soreness|sore|fatigue|tired)\b/.test(lower);
+  const mentionsWellnessField = /\b(sleep|slept|thookam|tookam|urakkam|thoongi|thoonginen|mood|stress|soreness|sore|fatigue|tired|sorvu|vali|azhutham)\b/.test(lower);
   if (hasSessionContext || (!isCheckIn && !mentionsWellnessField)) return null;
 
   const fields: WellnessCommandFields = {};
@@ -794,13 +811,17 @@ function parseWellnessCommand(text: string): WellnessCommandFields | null {
   // but hours stay "--": their phrasing just happened to put the number
   // after the word "hours". Kept as its own regex (not valueNear) so the
   // decimal point in values like "7.5 hours" isn't lost.
-  const hoursBefore = lower.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b/);
-  const hoursAfter = lower.match(/(?:hours?|hrs?)[^0-9]{0,20}(\d+(?:\.\d+)?)/);
+  const hoursBefore = lower.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|mani|neram)\b/);
+  const hoursAfter = lower.match(/(?:hours?|hrs?|mani|neram)[^0-9]{0,20}(\d+(?:\.\d+)?)/);
   const hoursValue = Number(hoursBefore?.[1] ?? hoursAfter?.[1]);
   if (hoursBefore || hoursAfter) {
     if (Number.isFinite(hoursValue) && hoursValue >= 0 && hoursValue <= 14) fields.sleepHours = hoursValue;
   }
-  const quality = valueInRange(valueNear(lower, /\bsleep\s+quality\b|\bsleep\s+score\b|\bquality\b/), 1, 10);
+  const quality = valueInRange(
+    valueNear(lower, /\bsleep\s+quality\b|\bsleep\s+score\b|\bsleep\s+rating\b|\bthookam\s+quality\b|\bthookam\s+score\b|\btookam\s+quality\b|\btookam\s+score\b|\burakkam\s+quality\b|\burakkam\s+score\b|\bquality\b/),
+    1,
+    10
+  );
   if (quality !== undefined) fields.sleepQuality = quality;
   const mood = valueInRange(valueNear(lower, /\bmood\b/), 1, 10);
   if (mood !== undefined) fields.mood = mood;
@@ -1198,6 +1219,7 @@ export default function AthleteDashboard() {
   const { highlightStyle: progressHighlight } = useTourHighlight("mobile-athlete-progress");
   const { highlightStyle: logHighlight } = useTourHighlight("mobile-athlete-log");
   const { highlightStyle: coachHighlight } = useTourHighlight("mobile-athlete-coach");
+  const { highlightStyle: chatHighlight } = useTourHighlight("mobile-athlete-chat");
   const { highlightStyle: agentHighlight } = useTourHighlight("mobile-athlete-agent");
   const router = useRouter();
   const params = useLocalSearchParams<{ section?: string; coachId?: string; slot?: string }>();
@@ -1208,6 +1230,7 @@ export default function AthleteDashboard() {
   useTourAction("athlete:section:progress", useCallback(() => setSection("progress"), []));
   useTourAction("athlete:section:log", useCallback(() => setSection("log"), []));
   useTourAction("athlete:section:coach", useCallback(() => setSection("coach"), []));
+  useTourAction("athlete:section:messages", useCallback(() => setSection("messages"), []));
   const [date, setDate] = useState(today());
   const [card, setCard] = useState<DailyCard | null>(null);
   const [coachComments, setCoachComments] = useState<CoachComment[]>([]);
@@ -1332,7 +1355,7 @@ export default function AthleteDashboard() {
   }
 
   async function submitWellness() {
-    return postJson(
+    const result = await postJson(
       "/api/athlete/wellness",
       {
         date,
@@ -1345,6 +1368,8 @@ export default function AthleteDashboard() {
       },
       "Check-in saved."
     );
+    fireMascotReaction(result.ok ? "athlete.checkin.success" : "athlete.checkin.error");
+    return result;
   }
 
   async function submitHeartRate() {
@@ -1391,6 +1416,7 @@ export default function AthleteDashboard() {
   const [askInfoResult, setAskInfoResult] = useState<AskInfoResult | null>(null);
   const [calendarOpenSignal, setCalendarOpenSignal] = useState(0);
   const blurTargetRef = useRef<View | null>(null);
+  const tourScrollRef = useTourScrollView<ScrollView>();
   const askHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const askLongPressRef = useRef(false);
   const askPendingIntentRef = useRef<VoiceIntentName | null>(null);
@@ -3118,6 +3144,12 @@ export default function AthleteDashboard() {
         askPendingGeminiRef.current = null;
         const slot = SESSION_SLOTS.includes(fields.slot as SessionSlot) ? (fields.slot as SessionSlot) : currentLogSlot;
         const form = card ? makeSessionForms(card)[slot] : null;
+        const rpeValue =
+          typeof fields.effortRating === "number"
+            ? fields.effortRating
+            : typeof fields.rpe === "number"
+              ? fields.rpe
+              : undefined;
         openAskSessionSlot(slot);
         await runAsk(
           "/api/athlete/rpe-monitoring",
@@ -3128,7 +3160,7 @@ export default function AthleteDashboard() {
               typeof fields.trainingCategory === "string" ? fields.trainingCategory : (form?.trainingCategory ?? form?.workoutType)
             ),
             plannedIntensityPercent: typeof fields.plannedIntensityPercent === "number" ? fields.plannedIntensityPercent : form?.plannedIntensityPercent,
-            rpe: typeof fields.effortRating === "number" ? fields.effortRating : form?.rpe,
+            rpe: rpeValue ?? form?.rpe,
             sleepQuality: resolveSessionWellnessField(fields.sleepQuality, form?.sleepQuality),
             muscleSoreness: resolveSessionWellnessField(fields.soreness, form?.soreness),
             fatigue: resolveSessionWellnessField(fields.fatigue, form?.fatigue),
@@ -3137,7 +3169,7 @@ export default function AthleteDashboard() {
             ...(typeof fields.bodyConditionFeedback === "string" ? { bodyConditionFeedback: fields.bodyConditionFeedback } : {}),
           },
           sessionRpeUpdateMessage(slot, {
-            rpe: typeof fields.effortRating === "number" ? fields.effortRating : undefined,
+            rpe: rpeValue,
             plannedIntensityPercent: typeof fields.plannedIntensityPercent === "number" ? fields.plannedIntensityPercent : undefined,
             sleepQuality: typeof fields.sleepQuality === "number" ? fields.sleepQuality : undefined,
             muscleSoreness: typeof fields.soreness === "number" ? fields.soreness : undefined,
@@ -3365,7 +3397,7 @@ export default function AthleteDashboard() {
         isMessages
           ? undefined
           : ({ unread, openNotifications }) => (
-              <View style={headerHighlight}>
+              <SpotlightTarget id="mobile-athlete-header" style={headerHighlight}>
               <AthleteHomeHeader
                 card={card}
                 date={date}
@@ -3374,14 +3406,17 @@ export default function AthleteDashboard() {
                 onNotifications={openNotifications}
                 calendarOpenSignal={calendarOpenSignal}
               />
-            </View>
+            </SpotlightTarget>
             )
       }
     >
       {isMessages ? (
-        <AthleteMessagesPanel initialCoachId={requestedCoachId} onHeaderChange={setMessageHeader} />
+        <SpotlightTarget id="mobile-athlete-chat" style={[{ flex: 1 }, chatHighlight]}>
+          <AthleteMessagesPanel initialCoachId={requestedCoachId} onHeaderChange={setMessageHeader} />
+        </SpotlightTarget>
       ) : (
         <ScrollView
+          ref={tourScrollRef}
           key={section}
           contentContainerStyle={styles.content}
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={theme.accent} />}
@@ -3413,7 +3448,7 @@ export default function AthleteDashboard() {
           ) : null}
 
           {!loading && section === "progress" ? (
-            <View style={progressHighlight}>
+            <SpotlightTarget id="mobile-athlete-progress" style={progressHighlight}>
             <ProgressSection
               date={date}
               tab={progressTab}
@@ -3424,11 +3459,11 @@ export default function AthleteDashboard() {
               onOpenLog={() => setSection("log")}
               onOpenReward={setRewardGoal}
             />
-            </View>
+            </SpotlightTarget>
           ) : null}
 
           {!loading && section === "log" && card ? (
-            <View style={logHighlight}>
+            <SpotlightTarget id="mobile-athlete-log" style={logHighlight}>
             <SessionLogSection
               card={card}
               wellness={wellness}
@@ -3442,18 +3477,18 @@ export default function AthleteDashboard() {
               onActiveSlotChange={setCurrentLogSlot}
               registerAskAction={registerAskAction}
             />
-            </View>
+            </SpotlightTarget>
           ) : null}
 
           {!loading && section === "coach" ? (
-            <View style={coachHighlight}>
+            <SpotlightTarget id="mobile-athlete-coach" style={coachHighlight}>
             <CoachSection
               announcements={announcements}
               coachComments={coachComments}
               coachCount={coachCount}
               activity={activity}
             />
-            </View>
+            </SpotlightTarget>
           ) : null}
         </ScrollView>
       )}
@@ -3547,6 +3582,7 @@ function AthleteHomeHeader({
           <Text style={styles.todayGreetingName}>{initials} 👋</Text>
         </View>
         <View style={styles.todayHeaderActions}>
+          <ContextualHelp steps={ATHLETE_QUICK_HELP_STEPS} accent={theme.accentStrong} />
           <HeaderIconButton icon="notifications-outline" onPress={onNotifications} badge={unread} />
           <DatePickerPill value={date} onChange={onDateChange} iconOnly openSignal={calendarOpenSignal} />
         </View>
@@ -3663,6 +3699,9 @@ function AskAgentFloatingButton({
   /** Guided-tour highlight to apply to this button when it's the active step (see useTourHighlight). */
   highlightStyle?: TourHighlightStyle;
 }) {
+  // Already absolutely positioned, so measure this ref directly rather than
+  // adding a wrapping SpotlightTarget View that would disturb its own layout.
+  const { ref: spotlightRef, onLayout: spotlightOnLayout } = useSpotlightRef("mobile-athlete-agent");
   const glowStyle = useAnimatedStyle(() => ({
     transform: [{ scale: 1 + glow.value * 0.7 }],
     opacity: glow.value * 0.55,
@@ -3693,6 +3732,8 @@ function AskAgentFloatingButton({
       </Animated.View>
       {active || listening || speaking ? <Animated.View pointerEvents="none" style={[styles.askFabGlow, { backgroundColor: stateColor }, glowStyle]} /> : null}
       <Pressable
+        ref={spotlightRef}
+        onLayout={spotlightOnLayout}
         onPress={onPress}
         onPressIn={onPressIn}
         onPressOut={onPressOut}
@@ -4441,7 +4482,7 @@ function TodaySection({
         </View>
       ) : null}
 
-      <View style={readinessHighlight}>
+      <SpotlightTarget id="mobile-athlete-readiness" style={readinessHighlight}>
       <LinearGradient
         colors={["rgba(239,169,78,0.10)", "#ffffff", "rgba(255,126,26,0.06)"]}
         start={{ x: 0, y: 0 }}
@@ -4460,7 +4501,7 @@ function TodaySection({
           </Pressable>
         </View>
       </LinearGradient>
-      </View>
+      </SpotlightTarget>
 
       <BandLegend />
 
@@ -4470,7 +4511,7 @@ function TodaySection({
         <StatTile label="Load" value={displayDash(latestRpe?.calculatedTrainingLoad)} sub={latestRpe ? `RPM ${latestRpe.rpe}` : "--"} icon="bag-outline" onPress={onGoLog} />
       </View>
 
-      <View style={trainingHighlight}>
+      <SpotlightTarget id="mobile-athlete-training" style={trainingHighlight}>
       <Card>
         <CardTitle>Training summary</CardTitle>
         <View style={styles.trainingSummaryList}>
@@ -4486,7 +4527,7 @@ function TodaySection({
           ))}
         </View>
       </Card>
-      </View>
+      </SpotlightTarget>
 
       <Card>
         <View style={styles.cardTitleRow}>
@@ -7443,9 +7484,14 @@ const styles = StyleSheet.create({
     elevation: 0,
   },
   todayGreeting: { flex: 1, minWidth: 0 },
-  todayRole: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 2 },
-  todayGreetingLine: { marginTop: 2, color: colors.ink, fontSize: 18, lineHeight: 22, fontWeight: "500" },
-  todayGreetingName: { color: colors.ink, fontSize: 20, lineHeight: 24, fontWeight: "900" },
+  todayRole: { fontSize: 10, lineHeight: 14, fontWeight: "900", textTransform: "uppercase", letterSpacing: 2 },
+  // lineHeight has extra headroom over fontSize (not the usual ~1.2x) because
+  // the emoji glyph on todayGreetingName renders taller than Latin text at the
+  // same fontSize on Android — too little headroom let it visually overflow
+  // below this row's own measured layout box, which the tour spotlight (sized
+  // from that same measured box) then appeared to cut off.
+  todayGreetingLine: { marginTop: 2, color: colors.ink, fontSize: 18, lineHeight: 24, fontWeight: "500" },
+  todayGreetingName: { color: colors.ink, fontSize: 20, lineHeight: 28, fontWeight: "900" },
   todayHeaderActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   askWave: { width: 18, height: 18, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 2 },
   askWaveBar: { width: 3, borderRadius: 999 },
@@ -7742,7 +7788,9 @@ const styles = StyleSheet.create({
   },
   todayHeaderBadgeText: { color: "#fff", fontSize: 10, fontWeight: "900" },
   todayDatePillRow: { marginTop: 8, alignItems: "flex-start" },
-  dateHistoryCard: { marginBottom: 7, padding: 6, borderRadius: 18 },
+  // marginBottom must clear SPOTLIGHT_PADDING (tourConfig.ts) so the "Readiness"
+  // tour step's highlight ring doesn't visually bleed into this card above it.
+  dateHistoryCard: { marginBottom: 14, padding: 6, borderRadius: 18 },
   dateHistoryTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
   todayChip: {
     height: 24,

@@ -28,6 +28,8 @@ const LANGUAGE_NAMES: Record<string, string> = {
   hi: "Hindi",
   "ta-IN": "Tamil",
   ta: "Tamil",
+  "ta-Latn-IN": "Tamil / Tanglish",
+  tanglish: "Tamil / Tanglish",
   "te-IN": "Telugu",
   te: "Telugu",
   "kn-IN": "Kannada",
@@ -122,9 +124,13 @@ router.post("/translate", async (req, res) => {
 
   const targetName = LANGUAGE_NAMES[targetLanguage] ?? "English";
   const sourceName = LANGUAGE_NAMES[sourceLanguage] ?? "the source language";
+  const commandInstruction =
+    sourceLanguage === "ta-Latn-IN" || sourceLanguage === "tanglish"
+      ? "Translate this sports coaching app voice command to simple English. The input may be Tamil script, Roman Tamil/Tanglish, or mixed Tamil-English. Preserve names, dates, numbers, AM/PM session words, and metrics. Map 'sleep score', 'sleep quality', 'thookam score', and similar Tamil/Tanglish phrases to sleep quality, not sleep hours. Only treat a sleep value as hours when the user says hours, hrs, mani, or neram. Return only the translated command."
+      : `Translate this sports coaching app voice command from ${sourceName} to English. Preserve names, dates, numbers, AM/PM session words, metrics, and intent. Map sleep score or sleep quality to sleep quality, not sleep hours. Return only the translated command.`;
   const instruction =
     mode === "command"
-      ? `Translate this sports coaching app voice command from ${sourceName} to English. Preserve names, dates, numbers, AM/PM session words, metrics, and intent. Return only the translated command.`
+      ? commandInstruction
       : `Translate this short sports coaching app assistant reply from ${sourceName} to ${targetName}. Preserve numbers, dates, names, and metric labels. Return only the translated reply.`;
 
   try {

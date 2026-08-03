@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, type ReactNode } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -16,7 +16,9 @@ import {
 import { AuthProvider, useAuth } from "../lib/auth";
 import { dashboardPathForRole } from "../lib/roles";
 import { colors } from "../lib/theme";
-import { MobileTourProvider } from "../lib/tour/MobileTourProvider";
+import { MobileTourProvider, useTourRootView } from "../lib/tour/MobileTourProvider";
+import { TourOverlay } from "../components/mascot/TourOverlay";
+import { MascotReactionOverlay } from "../components/mascot/MascotReactionOverlay";
 import { subscribeToPushMessages } from "../lib/push";
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
@@ -69,6 +71,25 @@ function Gate() {
   );
 }
 
+/**
+ * A single `View`, mounted once here, that both the router's screen content
+ * (`Gate`/`Stack`) and `TourOverlay` share as an ancestor — see
+ * `measureRelativeToRoot`'s doc comment for why every tour measurement is
+ * computed relative to this node instead of via `measureInWindow`: on this
+ * RN/Fabric + expo-router setup, `measureInWindow` for a view inside the
+ * router's navigator was observed to disagree with `TourOverlay`'s own
+ * absolutely-positioned frame by exactly the top safe-area inset, which
+ * this sidesteps entirely.
+ */
+function TourRootBoundary({ children }: { children: ReactNode }) {
+  const rootRef = useTourRootView();
+  return (
+    <View ref={rootRef} collapsable={false} style={{ flex: 1 }}>
+      {children}
+    </View>
+  );
+}
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     Inter_400Regular,
@@ -89,8 +110,12 @@ export default function RootLayout() {
     <SafeAreaProvider onLayout={onLayoutRootView}>
       <AuthProvider>
         <MobileTourProvider>
-          <StatusBar style="dark" />
-          <Gate />
+          <TourRootBoundary>
+            <StatusBar style="dark" />
+            <Gate />
+            <TourOverlay />
+            <MascotReactionOverlay />
+          </TourRootBoundary>
         </MobileTourProvider>
       </AuthProvider>
     </SafeAreaProvider>

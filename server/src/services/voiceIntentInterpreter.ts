@@ -21,8 +21,11 @@ export const VOICE_INTENTS = [
   "fill_wellness",
   "fill_attendance",
   "fill_training",
+  "fill_rpe",
+  "fill_heart_rate",
   "fill_recovery",
   "add_water",
+  "add_note",
   "send_coach_message",
   "query_status",
   "unsupported",
@@ -58,8 +61,11 @@ const WRITE_INTENTS: VoiceIntentName[] = [
   "fill_wellness",
   "fill_attendance",
   "fill_training",
+  "fill_rpe",
+  "fill_heart_rate",
   "fill_recovery",
   "add_water",
+  "add_note",
   "send_coach_message",
 ];
 
@@ -67,6 +73,40 @@ const WRITE_INTENTS: VoiceIntentName[] = [
 function requiresConfirmationFor(intent: VoiceIntentName): boolean {
   return WRITE_INTENTS.includes(intent);
 }
+
+const NUMERIC_FIELD_RANGES: Record<string, [number, number]> = {
+  sleepHours: [0, 14],
+  sleepQuality: [1, 10],
+  mood: [1, 10],
+  stress: [1, 10],
+  soreness: [1, 10],
+  fatigue: [1, 10],
+  amountMl: [1, 4000],
+  sets: [0, 200],
+  actualDurationMin: [0, 600],
+  effortRating: [1, 10],
+  rpe: [0, 10],
+  plannedIntensityPercent: [0, 100],
+  restingHeartRate: [20, 220],
+  wakeHr: [25, 220],
+  bedHr: [25, 220],
+};
+
+const FIELD_FOLLOW_UP_QUESTIONS: Record<string, string> = {
+  sleepHours: "Sleep hours should be between 0 and 14. How many hours should I save?",
+  sleepQuality: "Sleep quality should be from 1 to 10. What score should I save?",
+  mood: "Mood should be from 1 to 10. What score should I save?",
+  stress: "Stress should be from 1 to 10. What score should I save?",
+  soreness: "Soreness should be from 1 to 10. What score should I save?",
+  fatigue: "Fatigue should be from 1 to 10. What score should I save?",
+  amountMl: "Water amount should be between 1 and 4000 ml. How much should I log?",
+  effortRating: "Effort should be from 1 to 10. What score should I save?",
+  rpe: "RPE should be from 0 to 10. What score should I save?",
+  plannedIntensityPercent: "Planned intensity should be between 0 and 100 percent. What percent should I save?",
+  restingHeartRate: "Resting heart rate should be between 20 and 220 bpm. What value should I save?",
+  wakeHr: "Wake heart rate should be between 25 and 220 bpm. What value should I save?",
+  bedHr: "Bed heart rate should be between 25 and 220 bpm. What value should I save?",
+};
 
 const RESPONSE_SCHEMA = {
   type: "OBJECT",
@@ -94,13 +134,20 @@ const RESPONSE_SCHEMA = {
           enum: ["present", "absent", "late", "excused", "rest", "planned", "in_progress", "completed", "skipped"],
           description: "fill_attendance: present/absent/late/excused/rest. fill_training: planned/in_progress/completed/skipped/rest.",
         },
-        slot: { type: "STRING", enum: ["AM", "AFT", "PM"], description: "fill_training: which session slot." },
+        slot: { type: "STRING", enum: ["AM", "AFT", "PM"], description: "fill_training/fill_rpe: which session slot." },
         attended: { type: "BOOLEAN", description: "fill_training: whether the athlete attended/completed the session." },
         workoutType: { type: "STRING", description: "fill_training: short workout/drill label, e.g. 'Sprints'." },
+        trainingCategory: { type: "STRING", description: "fill_rpe: RPE monitoring training category, e.g. endurance, strength, skill, mobility." },
         sets: { type: "NUMBER", description: "fill_training: number of sets." },
         reps: { type: "STRING", description: "fill_training: reps or distance per set, e.g. '100m'." },
         actualDurationMin: { type: "NUMBER", description: "fill_training: minutes trained, 0-600." },
         effortRating: { type: "NUMBER", description: "fill_training: effort/RPE, spoken 1-10 scale." },
+        rpe: { type: "NUMBER", description: "fill_rpe: session RPE, spoken 0-10 scale." },
+        plannedIntensityPercent: { type: "NUMBER", description: "fill_rpe: planned intensity percent, 0-100." },
+        restingHeartRate: { type: "NUMBER", description: "fill_rpe: resting heart rate in bpm, 20-220." },
+        bodyConditionFeedback: { type: "STRING", description: "fill_rpe: free-text body condition feedback." },
+        wakeHr: { type: "NUMBER", description: "fill_heart_rate: wake/morning heart rate in bpm, 25-220." },
+        bedHr: { type: "NUMBER", description: "fill_heart_rate: bed/night heart rate in bpm, 25-220." },
         notes: { type: "STRING", description: "fill_training: free-text notes, e.g. workout description or soreness callout." },
         modalities: {
           type: "ARRAY",
@@ -108,7 +155,7 @@ const RESPONSE_SCHEMA = {
           description: "fill_recovery: recovery modalities completed today.",
         },
         amountMl: { type: "NUMBER", description: "add_water: amount in millilitres, 1-4000." },
-        body: { type: "STRING", description: "send_coach_message: the message to send to the coach." },
+        body: { type: "STRING", description: "send_coach_message/add_note: the message or private note body." },
         topic: {
           type: "STRING",
           enum: ["readiness", "hydration", "training_plan", "coach_feedback", "general"],
@@ -140,8 +187,17 @@ const SYSTEM_PROMPT =
   "coaching app. Classify the athlete's spoken transcript into exactly one of these intents: " +
   `${VOICE_INTENTS.join(", ")}. Extract only fields that were explicitly said or unambiguously implied — ` +
   "never invent numbers or facts. Wellness/effort fields are on a spoken 1-10 scale (not the app's " +
-  "internal 1-5 scale — do not convert). For fill_training, map natural workout descriptions like " +
-  "'four by one hundred sprint repeats' to sets=4, reps='100m', workoutType='Sprints'. For " +
+  "internal 1-5 scale - do not convert). " +
+  "Treat sleep score, sleep quality, and sleep rating as sleepQuality, not sleepHours. Only extract " +
+  "sleepHours when the user clearly says hours, hrs, mani, neram, sleep duration, or slept for a " +
+  "duration. Tamil, Tanglish, and mixed Tamil-English commands may appear; for example 'sleep score " +
+  "8' means sleepQuality=8, and 'naan 7 mani neram thoonginen sleep score 6' means sleepHours=7 and " +
+  "sleepQuality=6. Use fill_heart_rate for wake/morning or bed/night heart rate. Use fill_rpe for " +
+  "RPE/RPM monitoring values like training category, planned intensity, session RPE, soreness, " +
+  "fatigue, mood, resting heart rate, or body condition feedback. Use add_note for private athlete " +
+  "notes; use send_coach_message only when the athlete explicitly asks to send/tell/message the " +
+  "coach. Use fill_recovery for stretching, ice bath, mobility, physio, or hydration recovery. For " +
+  "fill_training, map natural workout descriptions like 'four by one hundred sprint repeats' to sets=4, reps='100m', workoutType='Sprints'. For " +
   "query_status, classify the topic only — never state a readiness score, water total, or any other " +
   "number yourself, since you do not have access to real data. If a follow-up conversation turn is " +
   "provided (pendingIntent), merge newly-stated fields with the ones already collected and only ask " +
@@ -212,17 +268,57 @@ export class GeminiVoiceIntentInterpreter implements VoiceIntentInterpreter {
 }
 
 /** Trims/validates a raw model response into a safe, well-typed result. */
-function sanitizeVoiceIntentResult(raw: unknown): VoiceIntentResult {
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function addMissingField(missingFields: string[], field: string): void {
+  if (!missingFields.includes(field)) missingFields.push(field);
+}
+
+function sanitizeNumericFields(fields: Record<string, unknown>, missingFields: string[]): void {
+  for (const [field, [min, max]] of Object.entries(NUMERIC_FIELD_RANGES)) {
+    if (!(field in fields)) continue;
+    const value = finiteNumber(fields[field]);
+    if (value === undefined || value < min || value > max) {
+      delete fields[field];
+      addMissingField(missingFields, field);
+      continue;
+    }
+    fields[field] = field === "amountMl" || field === "sets" || field === "actualDurationMin" ? Math.round(value) : value;
+  }
+}
+
+function normalizeRpeFields(intent: VoiceIntentName, fields: Record<string, unknown>): void {
+  if (intent !== "fill_rpe") return;
+  if (typeof fields.rpe === "number" && typeof fields.effortRating !== "number") {
+    fields.effortRating = fields.rpe;
+  }
+  if (typeof fields.effortRating === "number" && typeof fields.rpe !== "number") {
+    fields.rpe = fields.effortRating;
+  }
+}
+
+export function sanitizeVoiceIntentResult(raw: unknown): VoiceIntentResult {
   const r = (raw ?? {}) as Record<string, unknown>;
   const intent = VOICE_INTENTS.includes(r.intent as VoiceIntentName) ? (r.intent as VoiceIntentName) : "unsupported";
   const fields = r.fields && typeof r.fields === "object" ? (r.fields as Record<string, unknown>) : {};
+  const missingFields = Array.isArray(r.missingFields) ? r.missingFields.filter((f): f is string => typeof f === "string") : [];
+  sanitizeNumericFields(fields, missingFields);
+  normalizeRpeFields(intent, fields);
   if (Array.isArray(fields.modalities)) {
     fields.modalities = fields.modalities.filter(
       (m): m is string => typeof m === "string" && ["stretching", "ice_bath", "mobility", "physio", "hydration"].includes(m)
     );
   }
-  const missingFields = Array.isArray(r.missingFields) ? r.missingFields.filter((f): f is string => typeof f === "string") : [];
-  const followUpQuestion = typeof r.followUpQuestion === "string" ? r.followUpQuestion : undefined;
+  const invalidField = missingFields.find((field) => FIELD_FOLLOW_UP_QUESTIONS[field]);
+  const followUpQuestion =
+    typeof r.followUpQuestion === "string" ? r.followUpQuestion : invalidField ? FIELD_FOLLOW_UP_QUESTIONS[invalidField] : undefined;
   const spokenResponse = typeof r.spokenResponse === "string" ? r.spokenResponse : "Okay.";
   return {
     intent,
@@ -284,6 +380,22 @@ export class MockVoiceIntentInterpreter implements VoiceIntentInterpreter {
       };
     }
 
+    if (/\brecovery\b|\bstretch(?:ing)?\b|\bice\s*bath\b|\bmobility\b|\bphysio\b/.test(t)) {
+      const modalities: string[] = [];
+      if (/\bstretch(?:ing)?\b/.test(t)) modalities.push("stretching");
+      if (/\bice\s*bath\b/.test(t)) modalities.push("ice_bath");
+      if (/\bmobility\b/.test(t)) modalities.push("mobility");
+      if (/\bphysio\b/.test(t)) modalities.push("physio");
+      if (/\bhydrat(?:ion|e)?\b/.test(t)) modalities.push("hydration");
+      return {
+        intent: "fill_recovery",
+        fields: { modalities },
+        missingFields: [],
+        requiresConfirmation: true,
+        spokenResponse: "Save recovery?",
+      };
+    }
+
     if (t.includes("water") || t.includes("drink") || t.includes("hydrat")) {
       const amountMatch = t.match(/(\d+)\s*ml/);
       const litreMatch = t.match(/(\d+(?:\.\d+)?)\s*l(?:itre|iter)?/);
@@ -321,6 +433,19 @@ export class MockVoiceIntentInterpreter implements VoiceIntentInterpreter {
       };
     }
 
+    if (/\b(?:add|save|write|create|log)\s+(?:a\s+)?note\b|\bnote\s+(?:to\s+myself|for\s+myself)\b/.test(t)) {
+      const body =
+        input.transcript.match(/(?:add|save|write|create|log)\s+(?:a\s+)?note\s*(?:to\s+myself|for\s+myself)?\s*(?:that|saying|:|-)?\s*(.+)$/i)?.[1]?.trim() ??
+        input.transcript;
+      return {
+        intent: "add_note",
+        fields: { body },
+        missingFields: [],
+        requiresConfirmation: true,
+        spokenResponse: "Save this note?",
+      };
+    }
+
     if (/\bpresent\b|\battendance\b/.test(t)) {
       const status = t.includes("late") ? "late" : t.includes("absent") ? "absent" : "present";
       return {
@@ -332,21 +457,91 @@ export class MockVoiceIntentInterpreter implements VoiceIntentInterpreter {
       };
     }
 
-    if (/sleep|mood|stress|soreness|fatigue/.test(t)) {
+    if (/\bheart\s*rate\b|\bheartbeat\b|\bpulse\b|\bwake\s*hr\b|\bbed\s*hr\b/.test(t)) {
+      const value = Number(t.match(/\b(\d{2,3})\b/)?.[1] ?? NaN);
       const fields: Record<string, unknown> = {};
-      const numFor = (label: string) => {
-        const m = t.match(new RegExp(`${label}[^0-9]{0,15}(\\d{1,2})`));
-        return m ? Number(m[1]) : undefined;
-      };
-      for (const key of ["sleepQuality", "mood", "stress", "soreness", "fatigue"] as const) {
-        const label = key.toLowerCase();
-        const value = numFor(label);
-        if (value !== undefined) fields[key] = value;
+      if (Number.isFinite(value)) {
+        if (/\bbed|night|sleeping\b/.test(t)) fields.bedHr = value;
+        else fields.wakeHr = value;
       }
+      return {
+        intent: "fill_heart_rate",
+        fields,
+        missingFields: Object.keys(fields).length ? [] : ["wakeHr"],
+        followUpQuestion: Object.keys(fields).length ? undefined : "What heart rate value should I save?",
+        requiresConfirmation: true,
+        spokenResponse: "Save heart rate?",
+      };
+    }
+
+    if (/\brpe\b|\brpm\b|\bplanned\s+intensity\b|\bbody\s*condition\b|\bresting\s+(?:heart\s*)?rate\b/.test(t)) {
+      const fields: Record<string, unknown> = {};
+      const slot = t.includes("afternoon") || /\baft\b/.test(t) ? "AFT" : /\bpm\b|\bevening\b|\bnight\b/.test(t) ? "PM" : /\bam\b|\bmorning\b/.test(t) ? "AM" : undefined;
+      if (slot) fields.slot = slot;
+      const valueNear = (label: string) => {
+        const match = t.match(new RegExp(`(?:${label})[^0-9]{0,24}(\\d{1,3}(?:\\.\\d+)?)`));
+        return match ? Number(match[1]) : undefined;
+      };
+      const rpe = valueNear("rpe|rpm|effort");
+      if (rpe !== undefined) {
+        fields.rpe = rpe;
+        fields.effortRating = rpe;
+      }
+      const plannedIntensityPercent = valueNear("planned\\s+intensity|intensity|percent");
+      if (plannedIntensityPercent !== undefined) fields.plannedIntensityPercent = plannedIntensityPercent;
+      const soreness = valueNear("soreness|sore");
+      if (soreness !== undefined) fields.soreness = soreness;
+      const fatigue = valueNear("fatigue|tired");
+      if (fatigue !== undefined) fields.fatigue = fatigue;
+      const mood = valueNear("mood");
+      if (mood !== undefined) fields.mood = mood;
+      const restingHeartRate = valueNear("resting\\s+(?:heart\\s*)?rate|resting\\s*hr");
+      if (restingHeartRate !== undefined) fields.restingHeartRate = restingHeartRate;
+      const category = t.match(/\b(?:category|training category)\s*(?:is|as|:|-)?\s*([a-z /&]+?)(?:\s+\d|\s+rpe|\s+rpm|\s+planned|\s+intensity|$)/)?.[1]?.trim();
+      if (category) fields.trainingCategory = category;
+      const bodyConditionFeedback = input.transcript.match(/\bbody\s*(?:condition|feeling|feedback)\s*(?:is|was|:|-)?\s*(.+)$/i)?.[1]?.trim();
+      if (bodyConditionFeedback) fields.bodyConditionFeedback = bodyConditionFeedback;
+      return {
+        intent: "fill_rpe",
+        fields,
+        missingFields: fields.rpe === undefined && fields.effortRating === undefined ? ["rpe"] : [],
+        followUpQuestion: fields.rpe === undefined && fields.effortRating === undefined ? "What was your session RPE from 1 to 10?" : undefined,
+        requiresConfirmation: true,
+        spokenResponse: "Save session RPE?",
+      };
+    }
+
+    if (/sleep|slept|thookam|tookam|urakkam|thoongi|thoonginen|mood|stress|soreness|sore|fatigue|tired|sorvu|vali|azhutham/.test(t)) {
+      const fields: Record<string, unknown> = {};
+      const numNear = (label: string) => {
+        const after = t.match(new RegExp(`(?:${label})[^0-9]{0,24}(\\d{1,3}(?:\\.\\d+)?)`));
+        if (after) return Number(after[1]);
+        const before = t.match(new RegExp(`(\\d{1,3}(?:\\.\\d+)?)[^a-z0-9]{0,16}(?:${label})`));
+        return before ? Number(before[1]) : undefined;
+      };
+      const sleepHoursBefore = t.match(/(\d{1,2}(?:\.\d+)?)\s*(?:hours?|hrs?|mani|neram)\b/);
+      const sleepHoursAfter = t.match(/\b(?:sleep\s+(?:hours?|duration)|hours?|hrs?|mani|neram|slept|thoongi\w*|thoonginen)[^0-9]{0,24}(\d{1,2}(?:\.\d+)?)/);
+      const sleepHours = sleepHoursBefore ? Number(sleepHoursBefore[1]) : sleepHoursAfter ? Number(sleepHoursAfter[1]) : undefined;
+      if (sleepHours !== undefined) fields.sleepHours = sleepHours;
+
+      const sleepQuality = numNear(
+        "sleep\\s+(?:quality|score|rating)|thookam\\s+(?:quality|score)|tookam\\s+(?:quality|score)|urakkam\\s+(?:quality|score)"
+      );
+      if (sleepQuality !== undefined) fields.sleepQuality = sleepQuality;
+
+      const mood = numNear("mood");
+      if (mood !== undefined) fields.mood = mood;
+      const stress = numNear("stress|azhutham");
+      if (stress !== undefined) fields.stress = stress;
+      const soreness = numNear("soreness|sore|vali");
+      if (soreness !== undefined) fields.soreness = soreness;
+      const fatigue = numNear("fatigue|tired|sorvu");
+      if (fatigue !== undefined) fields.fatigue = fatigue;
       return {
         intent: "fill_wellness",
         fields,
-        missingFields: [],
+        missingFields: Object.keys(fields).length ? [] : ["sleepQuality"],
+        followUpQuestion: Object.keys(fields).length ? undefined : "What sleep quality score or sleep hours should I save?",
         requiresConfirmation: true,
         spokenResponse: "Save this check-in?",
       };
