@@ -317,7 +317,7 @@ function wellnessTenToFive(raw: unknown): number | undefined {
 function normalizeTrainingCategory(value: string | undefined): string {
   if (value && (TRAINING_CATEGORIES as readonly string[]).includes(value)) return value;
   const lower = (value ?? "").toLowerCase();
-  if (lower.includes("strength")) return "GENERAL STRENGTH & MOBILITY";
+  if (lower.includes("strength") || lower.includes("general")) return "GENERAL STRENGTH & MOBILITY";
   if (lower.includes("conditioning") || lower.includes("endurance")) return "ENDURANCE";
   if (lower.includes("skill") || lower.includes("technique")) return "TECHNIQUE / COORDINATION DRILLS";
   if (lower.includes("mobility")) return "GENERAL STRENGTH & MOBILITY";
@@ -819,9 +819,7 @@ export function AthleteAskAgentOverlay() {
       method: "POST",
       body: JSON.stringify({
         transcript: command,
-        pendingIntent: pending?.intent,
-        collectedFields: pending?.collected,
-        missingFields: pending?.missingFields,
+        pendingIntent: pending ?? undefined,
       }),
     });
     if (!response.ok) throw new Error(await readAgentApiError(response));

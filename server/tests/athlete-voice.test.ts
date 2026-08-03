@@ -220,6 +220,20 @@ describe("POST /api/athlete/voice/interpret — contract", () => {
         },
       },
       {
+        transcript: "PM RPE seven planned intensity eighty fatigue four soreness three mood eight",
+        intent: "fill_rpe",
+        assert: (body) => {
+          expect(body.fields.slot).toBe("PM");
+          expect(body.fields.rpe).toBe(7);
+          expect(body.fields.effortRating).toBe(7);
+          expect(body.fields.plannedIntensityPercent).toBe(80);
+          expect(body.fields.soreness).toBe(3);
+          expect(body.fields.fatigue).toBe(4);
+          expect(body.fields.mood).toBe(8);
+          expect(body.missingFields).toEqual([]);
+        },
+      },
+      {
         transcript: "send message to coach I will be late",
         intent: "send_coach_message",
         assert: (body) => expect(body.fields.body).toContain("I will be late"),

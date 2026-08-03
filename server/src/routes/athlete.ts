@@ -58,7 +58,7 @@ import {
 import { WorkoutMedia, type WorkoutMediaDoc } from "../models/WorkoutMedia";
 import { mediaUpload, mediaFilePath, serializeMedia } from "../services/media";
 import { notifyGuardiansOfAthleteUpdate } from "../services/notifications";
-import { getVoiceIntentInterpreter, type VoicePendingIntent } from "../services/voiceIntentInterpreter";
+import { enrichVoiceIntentResult, getVoiceIntentInterpreter, type VoicePendingIntent } from "../services/voiceIntentInterpreter";
 import { evaluateAndDispatch } from "../services/notificationEligibility";
 import { resolveTimezoneForUser } from "../services/timezone";
 import { buildReadinessRiskFlag } from "../services/notificationTemplates";
@@ -115,7 +115,8 @@ router.post(
     const today = new Date().toISOString().slice(0, 10);
 
     try {
-      const result = await getVoiceIntentInterpreter().interpret({ transcript, today, pendingIntent });
+      const interpreted = await getVoiceIntentInterpreter().interpret({ transcript, today, pendingIntent });
+      const result = enrichVoiceIntentResult(interpreted, transcript);
       res.json(result);
     } catch {
       res.json({

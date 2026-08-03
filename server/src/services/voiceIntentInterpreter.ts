@@ -304,6 +304,185 @@ function normalizeRpeFields(intent: VoiceIntentName, fields: Record<string, unkn
   }
 }
 
+const SPOKEN_SMALL_NUMBERS: Record<string, number> = {
+  zero: 0,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+  onnu: 1,
+  rendu: 2,
+  moonu: 3,
+  moonru: 3,
+  naalu: 4,
+  anju: 5,
+  aaru: 6,
+  ezhu: 7,
+  elu: 7,
+  ettu: 8,
+  yettu: 8,
+  onbadhu: 9,
+  pathu: 10,
+};
+const SPOKEN_TENS: Record<string, number> = {
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+};
+const SMALL_NUMBER_WORD_PATTERN = Object.keys(SPOKEN_SMALL_NUMBERS).join("|");
+const TENS_NUMBER_WORD_PATTERN = Object.keys(SPOKEN_TENS).join("|");
+
+function normalizeSpokenNumberWords(text: string): string {
+  let normalized = text.toLowerCase().replace(/-/g, " ");
+  normalized = normalized.replace(
+    new RegExp(`\\b(${SMALL_NUMBER_WORD_PATTERN})\\s+hundred\\b`, "g"),
+    (_match, word: string) => String((SPOKEN_SMALL_NUMBERS[word] ?? 0) * 100)
+  );
+  normalized = normalized.replace(
+    new RegExp(`\\b(${TENS_NUMBER_WORD_PATTERN})\\s+(${SMALL_NUMBER_WORD_PATTERN})\\b`, "g"),
+    (_match, ten: string, unit: string) => String((SPOKEN_TENS[ten] ?? 0) + (SPOKEN_SMALL_NUMBERS[unit] ?? 0))
+  );
+  normalized = normalized.replace(
+    new RegExp(`\\b(${TENS_NUMBER_WORD_PATTERN}|${SMALL_NUMBER_WORD_PATTERN})\\b`, "g"),
+    (word) => String(SPOKEN_TENS[word] ?? SPOKEN_SMALL_NUMBERS[word] ?? word)
+  );
+  return normalized;
+}
+
+function numberNear(text: string, label: string): number | undefined {
+  const after = text.match(new RegExp(`(?:${label})[^0-9]{0,32}(\\d{1,3}(?:\\.\\d+)?)`));
+  if (after) return Number(after[1]);
+  const before = text.match(new RegExp(`(\\d{1,3}(?:\\.\\d+)?)[^a-z0-9]{0,20}(?:${label})`));
+  return before ? Number(before[1]) : undefined;
+}
+
+function extractRpeFieldsFromTranscript(fields: Record<string, unknown>, transcript: string): void {
+  const t = normalizeSpokenNumberWords(transcript);
+  if (!("slot" in fields)) {
+    const slot = t.includes("afternoon") || /\baft\b/.test(t) ? "AFT" : /\bpm\b|\bevening\b|\bnight\b/.test(t) ? "PM" : /\bam\b|\bmorning\b/.test(t) ? "AM" : undefined;
+    if (slot) fields.slot = slot;
+  }
+  const rpe = numberNear(t, "rpe|rpm|effort");
+  if (rpe !== undefined) {
+    fields.rpe = rpe;
+    fields.effortRating = rpe;
+  }
+  const plannedIntensityPercent = numberNear(t, "planned\\s+intensity|intensity|percent|percentage");
+  if (plannedIntensityPercent !== undefined) fields.plannedIntensityPercent = plannedIntensityPercent;
+  const soreness = numberNear(t, "soreness|sore|vali");
+  if (soreness !== undefined) fields.soreness = soreness;
+  const fatigue = numberNear(t, "fatigue|tired|sorvu");
+  if (fatigue !== undefined) fields.fatigue = fatigue;
+  const mood = numberNear(t, "mood");
+  if (mood !== undefined) fields.mood = mood;
+  const sleepQuality = numberNear(t, "sleep\\s+(?:quality|score|rating)");
+  if (sleepQuality !== undefined) fields.sleepQuality = sleepQuality;
+  const restingHeartRate = numberNear(t, "resting\\s+(?:heart\\s*)?rate|resting\\s*hr");
+  if (restingHeartRate !== undefined) fields.restingHeartRate = restingHeartRate;
+}
+
+function extractWellnessFieldsFromTranscript(fields: Record<string, unknown>, transcript: string): void {
+  const t = normalizeSpokenNumberWords(transcript);
+  const sleepHoursBefore = t.match(/(\d{1,2}(?:\.\d+)?)\s*(?:hours?|hrs?|mani|neram)\b/);
+  const sleepHoursAfter = t.match(/\b(?:sleep\s+(?:hours?|duration)|hours?|hrs?|mani|neram|slept|thoongi\w*|thoonginen)[^0-9]{0,24}(\d{1,2}(?:\.\d+)?)/);
+  const sleepHours = sleepHoursBefore ? Number(sleepHoursBefore[1]) : sleepHoursAfter ? Number(sleepHoursAfter[1]) : undefined;
+  if (sleepHours !== undefined) fields.sleepHours = sleepHours;
+  const sleepQuality = numberNear(t, "sleep\\s+(?:quality|score|rating)|thookam\\s+(?:quality|score)|tookam\\s+(?:quality|score)|urakkam\\s+(?:quality|score)");
+  if (sleepQuality !== undefined) fields.sleepQuality = sleepQuality;
+  const mood = numberNear(t, "mood");
+  if (mood !== undefined) fields.mood = mood;
+  const stress = numberNear(t, "stress|azhutham");
+  if (stress !== undefined) fields.stress = stress;
+  const soreness = numberNear(t, "soreness|sore|vali");
+  if (soreness !== undefined) fields.soreness = soreness;
+  const fatigue = numberNear(t, "fatigue|tired|sorvu");
+  if (fatigue !== undefined) fields.fatigue = fatigue;
+}
+
+function extractWaterFieldsFromTranscript(fields: Record<string, unknown>, transcript: string): void {
+  const t = normalizeSpokenNumberWords(transcript);
+  const ml = t.match(/(\d{1,4})\s*(?:ml|millilitre|milliliter|millilitres|milliliters)\b/);
+  if (ml) {
+    fields.amountMl = Number(ml[1]);
+    return;
+  }
+  const litre = t.match(/(\d+(?:\.\d+)?)\s*(?:l|litre|liter|litres|liters)\b/);
+  if (litre) fields.amountMl = Math.round(Number(litre[1]) * 1000);
+}
+
+function normalizeMissingFieldsForIntent(intent: VoiceIntentName, fields: Record<string, unknown>, missingFields: string[]): string[] {
+  if (intent === "fill_rpe") {
+    return typeof fields.rpe === "number" || typeof fields.effortRating === "number" ? [] : ["rpe"];
+  }
+  if (intent === "add_water") {
+    return typeof fields.amountMl === "number" ? [] : ["amountMl"];
+  }
+  if (intent === "fill_heart_rate") {
+    return typeof fields.wakeHr === "number" || typeof fields.bedHr === "number" ? [] : ["wakeHr"];
+  }
+  if (intent === "fill_wellness") {
+    return ["sleepHours", "sleepQuality", "mood", "stress", "soreness", "fatigue"].some((field) => typeof fields[field] === "number") ? [] : ["sleepQuality"];
+  }
+  if (intent === "fill_attendance") {
+    return typeof fields.status === "string" ? [] : ["status"];
+  }
+  if (intent === "send_coach_message" || intent === "add_note") {
+    return typeof fields.body === "string" && fields.body.trim() ? [] : ["body"];
+  }
+  return missingFields;
+}
+
+export function enrichVoiceIntentResult(result: VoiceIntentResult, transcript: string): VoiceIntentResult {
+  const normalizedTranscript = normalizeSpokenNumberWords(transcript);
+  const fields = { ...result.fields };
+  let intent = result.intent;
+  const looksLikeRpe = /\brpe\b|\brpm\b|\bplanned\s+intensity\b|\bbody\s*condition\b|\bresting\s+(?:heart\s*)?rate\b/.test(normalizedTranscript);
+  const looksLikeWellness = /sleep|slept|thookam|tookam|urakkam|thoongi|thoonginen|mood|stress|soreness|sore|fatigue|tired|sorvu|vali|azhutham/.test(normalizedTranscript);
+  const looksLikeWater = /\bwater\b|\bdrink\b|\bdrank\b|\bhydrat/.test(normalizedTranscript);
+
+  if (looksLikeRpe) {
+    intent = "fill_rpe";
+    extractRpeFieldsFromTranscript(fields, normalizedTranscript);
+  } else if (intent === "fill_wellness" || looksLikeWellness) {
+    if (intent === "unsupported" && looksLikeWellness) intent = "fill_wellness";
+    extractWellnessFieldsFromTranscript(fields, normalizedTranscript);
+  } else if (intent === "add_water" || looksLikeWater) {
+    if (intent === "unsupported" && looksLikeWater) intent = "add_water";
+    extractWaterFieldsFromTranscript(fields, normalizedTranscript);
+  }
+
+  const sanitized = sanitizeVoiceIntentResult({
+    ...result,
+    intent,
+    fields,
+    missingFields: normalizeMissingFieldsForIntent(intent, fields, result.missingFields),
+  });
+  return {
+    ...sanitized,
+    missingFields: normalizeMissingFieldsForIntent(sanitized.intent, sanitized.fields, sanitized.missingFields),
+  };
+}
+
 export function sanitizeVoiceIntentResult(raw: unknown): VoiceIntentResult {
   const r = (raw ?? {}) as Record<string, unknown>;
   const intent = VOICE_INTENTS.includes(r.intent as VoiceIntentName) ? (r.intent as VoiceIntentName) : "unsupported";
