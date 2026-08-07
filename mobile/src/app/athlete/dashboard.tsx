@@ -8465,7 +8465,7 @@ const styles = StyleSheet.create({
   readinessMaxCompact: { fontSize: 11 },
   heroRingLabel: { color: colors.inkMuted, fontSize: 11, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1.1, marginBottom: 8 },
   heroRingLabelCompact: { fontSize: 8.5, letterSpacing: 0.35 },
-  heroStatusPill: { marginTop: -1, maxWidth: 118, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
+  heroStatusPill: { marginTop: 8, maxWidth: 118, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
   heroStatusPillCompact: { maxWidth: 106, gap: 5, paddingHorizontal: 8, paddingVertical: 4 },
   heroStatusDot: { width: 6, height: 6, borderRadius: 3 },
   heroStatusText: { fontSize: 10, fontWeight: "900", textTransform: "uppercase" },
