@@ -5,6 +5,7 @@ import { env } from "./config/env";
 import coachRouter from "./routes/coach";
 import authRouter from "./routes/auth";
 import athleteRouter from "./routes/athlete";
+import athleteVoiceV2Router from "./routes/athleteVoiceV2";
 import guardianRouter from "./routes/guardian";
 import notificationsRouter from "./routes/notifications";
 import avatarRouter from "./routes/avatar";
@@ -71,6 +72,10 @@ export function createApp(): express.Express {
   app.use("/api/auth", authRouter);
   app.use("/api/coach", coachRouter);
   app.use("/api/athlete", athleteRouter);
+  // V2 voice assistant pipeline — additive, mounted separately so V1's
+  // /api/athlete/voice/interpret (inside athleteRouter) stays untouched
+  // while the mobile client's feature flag decides which it calls (plan §13).
+  app.use("/api/athlete/voice", athleteVoiceV2Router);
   app.use("/api/guardian", guardianRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/device-tokens", deviceTokensRouter);

@@ -59,6 +59,7 @@ import { WorkoutMedia, type WorkoutMediaDoc } from "../models/WorkoutMedia";
 import { mediaUpload, mediaFilePath, serializeMedia } from "../services/media";
 import { notifyGuardiansOfAthleteUpdate } from "../services/notifications";
 import { enrichVoiceIntentResult, getVoiceIntentInterpreter, type VoicePendingIntent } from "../services/voiceIntentInterpreter";
+import { withIdempotency } from "../lib/voiceIdempotency";
 import { evaluateAndDispatch } from "../services/notificationEligibility";
 import { resolveTimezoneForUser } from "../services/timezone";
 import { buildReadinessRiskFlag } from "../services/notificationTemplates";
@@ -655,10 +656,15 @@ router.get("/water", async (req: Request, res: Response) => {
   res.json(await waterDayResponse(profileId, date));
 });
 
-/** POST /api/athlete/water  body: { date?, amountMl } — append one intake entry. */
+/**
+ * POST /api/athlete/water  body: { date?, amountMl, clientActionId? } — append
+ * one intake entry. clientActionId is optional (manual-UI callers don't send
+ * one, unaffected) but idempotency-guarded when present — this is an
+ * append-only write a voice-triggered retry must never double-apply.
+ */
 router.post("/water", async (req: Request, res: Response) => {
   const profileId = selfAthleteId(req);
-  if (!profileId) {
+  if (!profileId || !req.actor) {
     res.status(404).json({ error: "athlete_profile_not_found" });
     return;
   }
@@ -669,9 +675,24 @@ router.post("/water", async (req: Request, res: Response) => {
   }
   const date = parseDateStrict(req.body?.date, res);
   if (!date) return;
-  await WaterIntake.create({ athleteId: profileId, date, amountMl: amount, loggedAt: new Date() });
-  if (req.actor) notifyGuardiansWithStandardCopy(profileId, req.actor.userId, "Water intake");
-  res.status(201).json(await waterDayResponse(profileId, date));
+
+  const perform = async () => {
+    await WaterIntake.create({ athleteId: profileId, date, amountMl: amount, loggedAt: new Date() });
+    notifyGuardiansWithStandardCopy(profileId, req.actor!.userId, "Water intake");
+    return waterDayResponse(profileId, date);
+  };
+
+  const clientActionId = typeof req.body?.clientActionId === "string" ? req.body.clientActionId.trim() : "";
+  if (!clientActionId) {
+    res.status(201).json(await perform());
+    return;
+  }
+  const outcome = await withIdempotency(req.actor.userId, clientActionId, "athlete/water", perform);
+  if (!outcome.result) {
+    res.status(202).json({ pending: true });
+    return;
+  }
+  res.status(201).json(outcome.result);
 });
 
 /** DELETE /api/athlete/water/:id — remove one of the athlete's own entries (undo). */
@@ -1050,12 +1071,13 @@ router.post("/recovery", async (req: Request, res: Response) => {
 
 /**
  * POST /api/athlete/notes
- * body: { date?, body }
- * Append-only.
+ * body: { date?, body, clientActionId? }
+ * Append-only. clientActionId is optional (manual-UI callers don't send one)
+ * but idempotency-guarded when present, for the same reason as /water above.
  */
 router.post("/notes", async (req: Request, res: Response) => {
   const profileId = selfAthleteId(req);
-  if (!profileId) {
+  if (!profileId || !req.actor) {
     res.status(404).json({ error: "athlete_profile_not_found" });
     return;
   }
@@ -1066,12 +1088,23 @@ router.post("/notes", async (req: Request, res: Response) => {
   }
   const date = parseDateStrict(req.body?.date, res);
   if (!date) return;
-  const created = await AthleteNote.create({
-    athleteId: profileId,
-    date,
-    body,
-  });
-  res.status(201).json({ note: created.toObject() });
+
+  const perform = async () => {
+    const created = await AthleteNote.create({ athleteId: profileId, date, body });
+    return { note: created.toObject() };
+  };
+
+  const clientActionId = typeof req.body?.clientActionId === "string" ? req.body.clientActionId.trim() : "";
+  if (!clientActionId) {
+    res.status(201).json(await perform());
+    return;
+  }
+  const outcome = await withIdempotency(req.actor.userId, clientActionId, "athlete/notes", perform);
+  if (!outcome.result) {
+    res.status(202).json({ pending: true });
+    return;
+  }
+  res.status(201).json(outcome.result);
 });
 
 /**
@@ -1479,10 +1512,14 @@ router.get("/messages/:coachId", async (req: Request, res: Response) => {
   res.json({ messages, hasMore });
 });
 
-/** POST /api/athlete/messages/:coachId  body: { body } — send a message. */
+/**
+ * POST /api/athlete/messages/:coachId  body: { body, clientActionId? } — send
+ * a message. clientActionId is optional (manual-UI callers don't send one)
+ * but idempotency-guarded when present, for the same reason as /water above.
+ */
 router.post("/messages/:coachId", async (req: Request, res: Response) => {
   const profileId = selfAthleteId(req);
-  if (!profileId) {
+  if (!profileId || !req.actor) {
     res.status(404).json({ error: "athlete_profile_not_found" });
     return;
   }
@@ -1497,13 +1534,23 @@ router.post("/messages/:coachId", async (req: Request, res: Response) => {
     res.status(400).json({ error: "message_too_long" });
     return;
   }
-  const { message: created } = await sendMessage({
-    coachId,
-    athleteId: profileId,
-    senderRole: "athlete",
-    body,
-  });
-  res.status(201).json({ message: messageView(created, "athlete", null) });
+
+  const perform = async () => {
+    const { message: created } = await sendMessage({ coachId, athleteId: profileId, senderRole: "athlete", body });
+    return { message: messageView(created, "athlete", null) };
+  };
+
+  const clientActionId = typeof req.body?.clientActionId === "string" ? req.body.clientActionId.trim() : "";
+  if (!clientActionId) {
+    res.status(201).json(await perform());
+    return;
+  }
+  const outcome = await withIdempotency(req.actor.userId, clientActionId, "athlete/messages", perform);
+  if (!outcome.result) {
+    res.status(202).json({ pending: true });
+    return;
+  }
+  res.status(201).json(outcome.result);
 });
 
 /** POST /api/athlete/messages/:coachId/read — mark coach msgs read. */

@@ -158,4 +158,18 @@ export const env = {
     streamEndpointingMs: Number(process.env.DEEPGRAM_STREAM_ENDPOINTING_MS ?? 400),
     streamUtteranceEndMs: Number(process.env.DEEPGRAM_STREAM_UTTERANCE_END_MS ?? 1000),
   },
+  // V2 voice assistant pipeline (voiceIntentPolicy.ts, VoicePendingState,
+  // VoiceActionReceipt). Additive/inert unless the V2 routes are called —
+  // see EXPO_PUBLIC_VOICE_ASSISTANT_V2 on the mobile client for the flag
+  // that gates whether they ever are.
+  voiceAssistant: {
+    // Server-persisted pending-workflow TTL — upper bound of the requested
+    // 10-15 minute window (plan §8.1). A stale in-progress voice command is
+    // simply gone, never lingering past its purpose.
+    pendingStateTtlSeconds: Number(process.env.VOICE_PENDING_STATE_TTL_SECONDS ?? 900),
+    // Idempotency-receipt retention for clientActionId dedup (plan §6) — long
+    // enough to dedupe retries/double-taps, short enough not to be a durable
+    // audit log substitute.
+    actionReceiptTtlSeconds: Number(process.env.VOICE_ACTION_RECEIPT_TTL_SECONDS ?? 86400),
+  },
 };

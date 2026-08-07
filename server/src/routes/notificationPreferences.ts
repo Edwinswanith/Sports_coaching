@@ -39,6 +39,18 @@ function isMinuteOfDay(v: unknown): v is number {
 }
 
 /**
+ * 15-720 minutes: the minimum gap the sweep enforces between any two
+ * reminder-category notifications for this user (services/notificationEligibility.ts
+ * already reads this field at evaluation time — this is the missing write path).
+ * This is a minimum-spacing value, not a fixed-cadence "every N minutes" timer,
+ * and it applies to all reminder-type notifications, not a specific one (e.g.
+ * hydration) — callers must not describe it as more specific than it is.
+ */
+function isMinIntervalMinutes(v: unknown): v is number {
+  return Number.isInteger(v) && (v as number) >= 15 && (v as number) <= 720;
+}
+
+/**
  * PATCH /api/notification-preferences
  * body: { enabled?, categories?: {reminders?,alerts?,...}, quietHours?: {enabled?, startMinute?, endMinute?} }
  * Whitelisted partial update — never a raw client-object merge.
@@ -65,6 +77,17 @@ router.patch("/", async (req: Request, res: Response) => {
     if (typeof b.quietHours.enabled === "boolean") $set["quietHours.enabled"] = b.quietHours.enabled;
     if (isMinuteOfDay(b.quietHours.startMinute)) $set["quietHours.startMinute"] = b.quietHours.startMinute;
     if (isMinuteOfDay(b.quietHours.endMinute)) $set["quietHours.endMinute"] = b.quietHours.endMinute;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(b, "minIntervalMinutes")) {
+    if (b.minIntervalMinutes === null) {
+      $set.minIntervalMinutes = null; // explicit reset to the global default
+    } else if (isMinIntervalMinutes(b.minIntervalMinutes)) {
+      $set.minIntervalMinutes = b.minIntervalMinutes;
+    } else {
+      res.status(400).json({ error: "invalid_minIntervalMinutes" });
+      return;
+    }
   }
 
   const pref = await NotificationPreference.findOneAndUpdate(

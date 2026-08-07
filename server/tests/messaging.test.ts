@@ -234,4 +234,19 @@ describe("Coach⇄athlete direct messaging", () => {
     expect(older.body.hasMore).toBe(false);
     expect(older.body.messages.map((m: { body: string }) => m.body)).toEqual(["m0", "m1"]);
   });
+
+  test("repeating an athlete message POST with the same clientActionId does not double-send", async () => {
+    const app = buildApp();
+    const { coach, athleteUser, profile } = await seedPair();
+    const aTok = athleteToken(athleteUser._id);
+    const body = { body: "Thanks coach!", clientActionId: "msg-voice-1" };
+
+    const first = await request(app).post(`/api/athlete/messages/${coach._id}`).set("Authorization", `Bearer ${aTok}`).send(body);
+    expect(first.status).toBe(201);
+
+    const second = await request(app).post(`/api/athlete/messages/${coach._id}`).set("Authorization", `Bearer ${aTok}`).send(body);
+    expect(second.status).toBe(201);
+    expect(second.body.message.id).toBe(first.body.message.id);
+    expect(await Message.countDocuments({ athleteId: profile._id })).toBe(1);
+  });
 });

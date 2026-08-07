@@ -307,6 +307,22 @@ describe("Athlete water and heart-rate tracking", () => {
     expect(analytics.body.series.find((p: { date: string }) => p.date === TODAY_STR)?.totalMl).toBe(250);
   });
 
+  test("repeating a water POST with the same clientActionId does not double-log", async () => {
+    const { user, profile } = await makeAthlete("water-idem");
+    const app = buildApp();
+    const auth = `Bearer ${tokenFor(user._id, "athlete")}`;
+    const body = { date: TODAY_STR, amountMl: 500, clientActionId: "water-voice-1" };
+
+    const first = await request(app).post("/api/athlete/water").set("Authorization", auth).send(body);
+    expect(first.status).toBe(201);
+    expect(first.body.totalMl).toBe(500);
+
+    const second = await request(app).post("/api/athlete/water").set("Authorization", auth).send(body);
+    expect(second.status).toBe(201);
+    expect(second.body).toEqual(first.body);
+    expect(await WaterIntake.countDocuments({ athleteId: profile._id })).toBe(1);
+  });
+
   test("heart-rate logs upsert only the athlete's own wellness row", async () => {
     const { user: ua, profile: pa } = await makeAthlete("hr-a");
     const { profile: pb } = await makeAthlete("hr-b");
@@ -705,6 +721,21 @@ describe("Athlete notes ↔ coach comments", () => {
       .set("Authorization", `Bearer ${ta}`);
     expect(feedback.body.comments).toHaveLength(1);
     expect(feedback.body.comments[0].body).toBe("Drop intensity 10%; ice after.");
+  });
+
+  test("repeating a notes POST with the same clientActionId does not double-append", async () => {
+    const { user, profile } = await makeAthlete("notes-idem");
+    const app = buildApp();
+    const auth = `Bearer ${tokenFor(user._id, "athlete")}`;
+    const body = { date: TODAY_STR, body: "Calf feels tight", clientActionId: "notes-voice-1" };
+
+    const first = await request(app).post("/api/athlete/notes").set("Authorization", auth).send(body);
+    expect(first.status).toBe(201);
+
+    const second = await request(app).post("/api/athlete/notes").set("Authorization", auth).send(body);
+    expect(second.status).toBe(201);
+    expect(second.body.note._id).toBe(first.body.note._id);
+    expect(await AthleteNote.countDocuments({ athleteId: profile._id })).toBe(1);
   });
 
   test("coach cannot comment on unassigned athlete → 403", async () => {

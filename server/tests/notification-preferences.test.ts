@@ -105,6 +105,60 @@ describe("PATCH /api/notification-preferences", () => {
     expect(res.body.quietHours.startMinute).toBe(env.notification.quietHoursDefaultStartMinute);
     expect(res.body.quietHours.endMinute).toBe(env.notification.quietHoursDefaultEndMinute);
   });
+
+  // Voice assistant V2's change_hydration_reminder intent maps to this field
+  // (plan §4.1) — it was previously readable via GET but not settable via PATCH.
+  describe("minIntervalMinutes", () => {
+    test("a valid value persists and is echoed back", async () => {
+      const user = await makeAthlete("alpha");
+      const res = await request(buildApp())
+        .patch("/api/notification-preferences")
+        .set("Authorization", `Bearer ${tokenFor(user._id)}`)
+        .send({ minIntervalMinutes: 90 });
+      expect(res.status).toBe(200);
+      expect(res.body.minIntervalMinutes).toBe(90);
+      const stored = await NotificationPreference.findOne({ userId: user._id }).lean();
+      expect(stored?.minIntervalMinutes).toBe(90);
+    });
+
+    test("out-of-range values are rejected with 400, not silently clamped", async () => {
+      const user = await makeAthlete("alpha");
+      const app = buildApp();
+      const auth = `Bearer ${tokenFor(user._id)}`;
+
+      const tooLow = await request(app).patch("/api/notification-preferences").set("Authorization", auth).send({ minIntervalMinutes: 5 });
+      expect(tooLow.status).toBe(400);
+      expect(tooLow.body.error).toBe("invalid_minIntervalMinutes");
+
+      const tooHigh = await request(app).patch("/api/notification-preferences").set("Authorization", auth).send({ minIntervalMinutes: 1000 });
+      expect(tooHigh.status).toBe(400);
+
+      const notInteger = await request(app).patch("/api/notification-preferences").set("Authorization", auth).send({ minIntervalMinutes: 45.5 });
+      expect(notInteger.status).toBe(400);
+    });
+
+    test("explicit null resets to the global default", async () => {
+      const user = await makeAthlete("alpha");
+      const app = buildApp();
+      const auth = `Bearer ${tokenFor(user._id)}`;
+      await request(app).patch("/api/notification-preferences").set("Authorization", auth).send({ minIntervalMinutes: 120 });
+
+      const res = await request(app).patch("/api/notification-preferences").set("Authorization", auth).send({ minIntervalMinutes: null });
+      expect(res.status).toBe(200);
+      expect(res.body.minIntervalMinutes).toBeNull();
+    });
+
+    test("leaving it out of the body doesn't disturb a previously-set value", async () => {
+      const user = await makeAthlete("alpha");
+      const app = buildApp();
+      const auth = `Bearer ${tokenFor(user._id)}`;
+      await request(app).patch("/api/notification-preferences").set("Authorization", auth).send({ minIntervalMinutes: 60 });
+
+      const res = await request(app).patch("/api/notification-preferences").set("Authorization", auth).send({ enabled: false });
+      expect(res.status).toBe(200);
+      expect(res.body.minIntervalMinutes).toBe(60);
+    });
+  });
 });
 
 describe("POST /api/presence/heartbeat", () => {

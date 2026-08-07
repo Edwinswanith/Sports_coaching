@@ -5,11 +5,16 @@ import { Ionicons } from "@expo/vector-icons";
 import { usePathname, useRouter } from "expo-router";
 import { Text } from "./AppText";
 import { AskAgentControl } from "./AskAgentControl";
+import { AthleteAskAgentOverlayV2 } from "./voiceAssistant/AthleteAskAgentOverlayV2";
 import { apiFetch, apiJson } from "../lib/api";
 import { ROLE_THEMES, colors } from "../lib/theme";
 import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../lib/sessions";
 import { TRAINING_CATEGORIES } from "../lib/trainingCategories";
 import { athleteNavigationReply, parseAthleteNavigationCommand, type AthleteNavigationCommand } from "../lib/athleteAskNavigation";
+
+// Off by default — the current (V1) assistant keeps running unchanged for
+// everyone until this is explicitly turned on for a build (plan §13).
+const VOICE_ASSISTANT_V2 = process.env.EXPO_PUBLIC_VOICE_ASSISTANT_V2 === "true";
 
 type AgentRow = {
   id: string;
@@ -755,6 +760,11 @@ export function CoachAskAgentOverlay() {
 }
 
 export function AthleteAskAgentOverlay() {
+  if (VOICE_ASSISTANT_V2) return <AthleteAskAgentOverlayV2 />;
+  return <AthleteAskAgentOverlayV1 />;
+}
+
+function AthleteAskAgentOverlayV1() {
   const router = useRouter();
   const pathname = usePathname();
   const accent = ROLE_THEMES.athlete.accent;
