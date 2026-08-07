@@ -4500,12 +4500,11 @@ function TodaySection({
   const rpeLoadEntries = SESSION_SLOTS.map((slot) => card.rpeEntries?.[slot]).filter((entry): entry is RpeEntry => Boolean(entry));
   const todayLoad = rpeLoadEntries.reduce((sum, entry) => sum + (entry.calculatedTrainingLoad || 0), 0);
   const compactHero = width < 520;
-  const compactMetrics = width < 390;
-  const metricColumns = compactMetrics ? 2 : 4;
+  const metricColumns = 4;
   const loadCardsSplit = width >= 390;
   const metricBasis = Math.max(0, (width - 32 - (metricColumns - 1) * 10) / metricColumns);
   const loadAttentionCardStyle = loadCardsSplit ? styles.loadAttentionCol : styles.loadAttentionColStacked;
-  const denseMetrics = metricColumns === 4;
+  const denseMetrics = true;
   const nativeCompact = Platform.OS !== "web";
 
   const attentionItems: { id: string; icon: keyof typeof Ionicons.glyphMap; tint: string; title: string; sub: string; onPress: () => void }[] = [];
