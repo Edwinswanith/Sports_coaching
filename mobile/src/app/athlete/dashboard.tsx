@@ -3418,8 +3418,7 @@ export default function AthleteDashboard() {
   const askStatusText = askExecuteActive
     ? askBusy ? "Executing" : null
     : askSpeaking ? "Speaking" : askBusy ? "Working" : askListening ? "Listening" : askConversationActive ? "Tap to stop" : null;
-  const askAgentActiveSurface = askConversationActive || askListening || askSpeaking || askBusy || askExecuteActive;
-  const showAskAgentFloatingButton = !isMessages && !askInputOpen && (section !== "today" || askAgentActiveSurface);
+  const showAskAgentFloatingButton = !isMessages && !askInputOpen;
 
   return (
     <View style={{ flex: 1 }}>
