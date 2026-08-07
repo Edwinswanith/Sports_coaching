@@ -35,6 +35,7 @@ export function PrimaryButton({
   accentInk = "#fff",
   successLabel,
   successDurationMs = 1600,
+  icon,
 }: {
   label: string;
   onPress: () => void | boolean | Promise<void | boolean>;
@@ -44,6 +45,7 @@ export function PrimaryButton({
   accentInk?: string;
   successLabel?: string;
   successDurationMs?: number;
+  icon?: keyof typeof Ionicons.glyphMap;
 }) {
   const [phase, setPhase] = useState<"idle" | "busy" | "done">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -89,6 +91,11 @@ export function PrimaryButton({
         <View style={styles.btnRow}>
           <Ionicons name="checkmark-circle" size={18} color="#fff" />
           <Text style={[styles.btnText, { color: "#fff" }]}>{successLabel}</Text>
+        </View>
+      ) : icon ? (
+        <View style={styles.btnRow}>
+          <Ionicons name={icon} size={17} color={accentInk} />
+          <Text style={[styles.btnText, { color: accentInk }]}>{label}</Text>
         </View>
       ) : (
         <Text style={[styles.btnText, { color: accentInk }]}>{label}</Text>
@@ -138,11 +145,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
     padding: 16,
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 14,
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.024,
+    shadowRadius: 26,
     shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
+    elevation: 1,
   },
   label: {
     fontSize: 11,
@@ -172,6 +179,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     fontSize: 16,
     color: colors.ink,
+    fontFamily: "Inter_400Regular",
+    fontWeight: "normal",
+    includeFontPadding: false,
   },
   eye: { position: "absolute", right: 12, height: 52, width: 32, alignItems: "center", justifyContent: "center" },
   banner: { borderWidth: 1, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10 },

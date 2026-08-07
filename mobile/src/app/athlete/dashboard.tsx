@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, BackHandler, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { Text } from "../../components/AppText";
 import { Ionicons } from "@expo/vector-icons";
@@ -19,7 +19,6 @@ import { DatePickerPill } from "../../components/DatePickerPill";
 import { type MessageParty, type MessageView } from "../../components/MessageCenter";
 import { ChatMediaBubble } from "../../components/ChatMediaBubble";
 import { ProfileMenu } from "../../components/ProfileMenu";
-import { Ring } from "../../components/Ring";
 import { apiFetch, apiJson, API_BASE, getAccessToken, loadSession } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { SESSION_SLOTS, SLOT_LABEL, type SessionSlot } from "../../lib/sessions";
@@ -35,8 +34,6 @@ import {
 } from "../../lib/tour/MobileTourProvider";
 import { SpotlightTarget, useSpotlightRef } from "../../lib/tour/SpotlightTarget";
 import { fireMascotReaction } from "../../lib/tour/reactions";
-import { ContextualHelp } from "../../components/mascot/ContextualHelp";
-import { ATHLETE_TOUR_STEPS } from "../../lib/tour/steps";
 import {
   summarizeTrend,
   fmtValue,
@@ -246,9 +243,7 @@ type WellnessForm = {
 type MessageHeader = { title: string; subtitle?: string };
 
 const theme = ROLE_THEMES.athlete;
-const ATHLETE_QUICK_HELP_STEPS = ATHLETE_TOUR_STEPS.filter((step) =>
-  ["mobile-athlete-readiness", "mobile-athlete-training", "mobile-athlete-agent"].includes(step.id)
-);
+const HERO_RUNNER = require("../../../assets/images/athlete-runner-hero.png");
 const today = () => new Date().toISOString().slice(0, 10);
 const emptyWellness: WellnessForm = {
   sleepHours: "",
@@ -263,7 +258,7 @@ const NAV: NativeNavItem[] = [
   { key: "today", label: "Today", icon: "home-outline" },
   { key: "progress", label: "Progress", icon: "trending-up-outline" },
   { key: "log", label: "Log", icon: "add-outline" },
-  { key: "coach", label: "Coach", icon: "chatbubble-outline" },
+  { key: "coach", label: "Coach", icon: "person-outline" },
   { key: "messages", label: "Chat", icon: "chatbubble-ellipses-outline" },
 ];
 
@@ -281,7 +276,7 @@ const RECOVERY_OPTIONS = ["Stretching", "Ice bath", "Mobility", "Physio", "Hydra
 /**
  * Web-style dropdown for React Native: a compact field showing the selected
  * value that opens a modal option list on tap — mirrors the web app's <select>
- * for workout type / RPM category instead of a long inline list of chips.
+ * for workout type / RPE category instead of a long inline list of chips.
  */
 function Dropdown({
   value,
@@ -289,21 +284,23 @@ function Dropdown({
   onChange,
   placeholder = "Select…",
   title,
+  compact,
 }: {
   value: string;
   options: readonly string[];
   onChange: (v: string) => void;
   placeholder?: string;
   title?: string;
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Pressable onPress={() => setOpen(true)} style={styles.dropdownField} accessibilityRole="button">
-        <Text style={[styles.dropdownValue, !value ? { color: colors.inkFaint } : null]} numberOfLines={1}>
+      <Pressable onPress={() => setOpen(true)} style={[styles.dropdownField, compact ? styles.dropdownFieldCompact : null]} accessibilityRole="button">
+        <Text style={[styles.dropdownValue, compact ? styles.dropdownValueCompact : null, !value ? { color: colors.inkFaint } : null]} numberOfLines={1}>
           {value || placeholder}
         </Text>
-        <Ionicons name="chevron-down" size={16} color={colors.inkMuted} />
+        <Ionicons name="chevron-down" size={compact ? 13 : 16} color={colors.inkMuted} />
       </Pressable>
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.dropdownBackdrop} onPress={() => setOpen(false)}>
@@ -335,6 +332,7 @@ function Dropdown({
     </>
   );
 }
+const WEEKDAY_LETTER = ["S", "M", "T", "W", "T", "F", "S"] as const;
 const WATER_QUICK_ADD = [250, 500, 750];
 const WATER_GOAL_PRESETS = [2000, 2500, 3000, 3500];
 const WATER_REMINDER_KEY = "scp.hydration.reminders";
@@ -376,11 +374,8 @@ function sleepQualityFromDurationHours(hours: number): number {
   return wellnessStoredFromTen(4);
 }
 
-function initialsOf(name: string | null | undefined): string {
-  const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "AT";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+function firstNameOf(name: string | null | undefined): string {
+  return (name ?? "").trim().split(/\s+/).filter(Boolean)[0] ?? "Athlete";
 }
 
 function localDateFromKey(key: string) {
@@ -426,14 +421,6 @@ function parseAskDateCommand(text: string, currentDate: string): string | null {
   return null;
 }
 
-function dayLabel(key: string) {
-  return localDateFromKey(key).toLocaleDateString("en-US", { weekday: "short" });
-}
-
-function dayNumber(key: string) {
-  return String(localDateFromKey(key).getDate());
-}
-
 function bandFor(score: number | null): Band {
   if (score == null) return "amber";
   if (score >= 80) return "green";
@@ -448,11 +435,23 @@ function bandColor(band: Band) {
 }
 
 function readinessGuidance(score: number | null) {
-  if (score === null) return { word: "No check-in", line: "Log today's check-in to see your readiness indicator." };
+  if (score === null) return { word: "No check-in", line: "Complete your check-in to get your readiness score and daily insights." };
   const band = bandFor(score);
-  if (band === "green") return { word: "Ready", line: "Readiness indicator looks strong - cleared for full training." };
+  if (band === "green") return { word: "Ready to train", line: "Readiness indicator looks strong - cleared for full training." };
   if (band === "amber") return { word: "Caution", line: "Moderate readiness - manage load and listen to your body." };
-  return { word: "Recover", line: "Low readiness indicator - prioritise recovery and tell your coach." };
+  return { word: "Needs attention", line: "Low readiness indicator - prioritise recovery and tell your coach." };
+}
+
+function sleepQualityWord(scoreOutOfTen: number) {
+  if (scoreOutOfTen >= 8) return "Good";
+  if (scoreOutOfTen >= 6) return "Fair";
+  return "Low";
+}
+
+function loadBandWord(band: Band) {
+  if (band === "green") return "Low";
+  if (band === "amber") return "Medium";
+  return "High";
 }
 
 function shortDate(date: string) {
@@ -1236,7 +1235,10 @@ export default function AthleteDashboard() {
   const [coachComments, setCoachComments] = useState<CoachComment[]>([]);
   const [announcements, setAnnouncements] = useState<TeamAnnouncement[]>([]);
   const [coachCount, setCoachCount] = useState<number | null>(null);
+  const [messageUnread, setMessageUnread] = useState(0);
   const [rpeEntries, setRpeEntries] = useState<RpeEntry[]>([]);
+  const [water, setWater] = useState<WaterDay | null>(null);
+  const [weekLoad, setWeekLoad] = useState<{ label: string; value: number | null }[]>([]);
   const [activity, setActivity] = useState<FeedItem[]>([]);
   const [achievements, setAchievements] = useState<AchievementsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1266,7 +1268,7 @@ export default function AthleteDashboard() {
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const [daily, commentsRes, rpeRes, activityRes, annRes, achievementsRes] = await Promise.all([
+      const [daily, commentsRes, rpeRes, activityRes, annRes, achievementsRes, waterRes, threadsRes] = await Promise.all([
         apiJson<DailyResponse>(`/api/athlete/daily?date=${date}`),
         apiJson<{ comments: CoachComment[] }>(`/api/athlete/coach-comments?date=${date}`).catch(() => ({ comments: [] })),
         apiJson<{ entries: RpeEntry[] }>(`/api/athlete/rpe-monitoring?date=${date}`).catch(() => ({ entries: [] })),
@@ -1276,14 +1278,18 @@ export default function AthleteDashboard() {
           coachCount: 0,
         })),
         apiJson<AchievementsResponse>("/api/athlete/achievements?days=60").catch(() => null),
+        apiJson<WaterDay>(`/api/athlete/water?date=${date}`).catch(() => null),
+        apiJson<{ threads: MessageThreadSummary[] }>("/api/athlete/messages/threads").catch(() => ({ threads: [] })),
       ]);
 
       setCard(daily.card);
       setCoachComments(commentsRes.comments ?? []);
       setRpeEntries(rpeRes.entries ?? []);
       setActivity(activityRes.items ?? []);
+      setWater(waterRes);
       setAnnouncements(annRes.announcements ?? []);
       setCoachCount(annRes.coachCount ?? null);
+      setMessageUnread((threadsRes.threads ?? []).reduce((sum, thread) => sum + (thread.unreadCount || 0), 0));
       setAchievements(achievementsRes);
       setWellness({
         sleepHours: daily.card.sleep.hours?.toString() ?? "",
@@ -1307,6 +1313,29 @@ export default function AthleteDashboard() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Last 7 days of training load for the mini bar chart on the Today tab.
+  // Fetched separately from the main daily-card load so a slow week-of-history
+  // request never blocks the primary Today content from rendering.
+  useEffect(() => {
+    let cancelled = false;
+    const dates = Array.from({ length: 7 }, (_, index) => addDays(date, index - 6));
+    Promise.all(
+      dates.map((day) =>
+        apiJson<{ entries: RpeEntry[] }>(`/api/athlete/rpe-monitoring?date=${day}`)
+          .then((res) => (res.entries ?? []).reduce((sum, entry) => sum + (entry.calculatedTrainingLoad || 0), 0))
+          .catch(() => null)
+      )
+    ).then((totals) => {
+      if (cancelled) return;
+      setWeekLoad(
+        dates.map((day, index) => ({ label: WEEKDAY_LETTER[new Date(`${day}T00:00:00`).getDay()], value: totals[index] }))
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [date]);
 
   useEffect(() => {
     if (
@@ -1400,8 +1429,15 @@ export default function AthleteDashboard() {
   const latestRpe = latest(rpeEntries);
   const isMessages = section === "messages";
   const nav = useMemo(
-    () => NAV.map((item) => item.key === "coach" ? { ...item, badge: coachComments.length || undefined } : item),
-    [coachComments.length]
+    () =>
+      NAV.map((item) =>
+        item.key === "coach"
+          ? { ...item, badge: coachComments.length || undefined }
+          : item.key === "messages"
+            ? { ...item, badge: messageUnread || undefined }
+            : item
+      ),
+    [coachComments.length, messageUnread]
   );
 
   const [rewardGoal, setRewardGoal] = useState<AchievementGoal | null>(null);
@@ -3382,6 +3418,8 @@ export default function AthleteDashboard() {
   const askStatusText = askExecuteActive
     ? askBusy ? "Executing" : null
     : askSpeaking ? "Speaking" : askBusy ? "Working" : askListening ? "Listening" : askConversationActive ? "Tap to stop" : null;
+  const askAgentActiveSurface = askConversationActive || askListening || askSpeaking || askBusy || askExecuteActive;
+  const showAskAgentFloatingButton = !isMessages && !askInputOpen && (section !== "today" || askAgentActiveSurface);
 
   return (
     <View style={{ flex: 1 }}>
@@ -3415,10 +3453,21 @@ export default function AthleteDashboard() {
           <AthleteMessagesPanel initialCoachId={requestedCoachId} onHeaderChange={setMessageHeader} />
         </SpotlightTarget>
       ) : (
+        <View style={styles.pageShell}>
+        <LinearGradient
+          pointerEvents="none"
+          colors={["#fbfaf6", "#fffefd", "#fbfaf6"]}
+          locations={[0, 0.48, 1]}
+          style={StyleSheet.absoluteFill}
+        />
         <ScrollView
           ref={tourScrollRef}
           key={section}
-          contentContainerStyle={styles.content}
+          style={styles.mainScroll}
+          bounces={section !== "today"}
+          alwaysBounceVertical={section !== "today"}
+          overScrollMode={section === "today" ? "never" : "auto"}
+          contentContainerStyle={[styles.content, section === "log" ? styles.logContent : null]}
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={theme.accent} />}
         >
           {error ? <Notice tone="bad" text={error} /> : null}
@@ -3427,19 +3476,22 @@ export default function AthleteDashboard() {
             <ActivityIndicator color={theme.accentStrong} style={{ marginTop: 40 }} />
           ) : null}
 
-          {section === "today" ? <DateHistoryStrip value={date} onChange={setDate} /> : null}
-
           {!loading && section === "today" && card ? (
             <TodaySection
               card={card}
               readiness={readiness}
               latestRpe={latestRpe}
-              date={date}
-              onRefresh={load}
+              water={water}
+              weekLoad={weekLoad}
+              coachCommentCount={coachComments.length}
               onGoLog={() => setSection("log")}
               onOpenSlot={(slot) => {
                 setLogFocusSlot(slot);
                 setSection("log");
+              }}
+              onGoWater={() => {
+                setSection("progress");
+                setProgressTab("water");
               }}
               onQuickCheckIn={() => setQuickCheckInOpen(true)}
               readinessHighlight={readinessHighlight}
@@ -3491,6 +3543,7 @@ export default function AthleteDashboard() {
             </SpotlightTarget>
           ) : null}
         </ScrollView>
+        </View>
       )}
     </AppFrame>
     </BlurTargetView>
@@ -3517,7 +3570,7 @@ export default function AthleteDashboard() {
       {!isMessages ? (
         <AskAgentConversationLog visible={askLogVisible} entries={askLog} onClose={() => setAskLogVisible(false)} />
       ) : null}
-      {!isMessages && !askInputOpen ? (
+      {showAskAgentFloatingButton ? (
         <>
           <AskAgentStatusPill text={askStatusText} />
           <AskAgentFloatingButton
@@ -3564,25 +3617,25 @@ function AthleteHomeHeader({
   onNotifications: () => void;
   calendarOpenSignal: number;
 }) {
-  const initials = initialsOf(card?.name);
+  const athleteName = firstNameOf(card?.name);
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 60000);
     return () => clearInterval(timer);
   }, []);
+  const nativeCompact = Platform.OS !== "web";
 
   return (
-    <View style={styles.todayHeader}>
+    <View style={[styles.todayHeader, nativeCompact ? styles.todayHeaderNative : null]}>
       <View style={styles.todayHeaderTop}>
-          <ProfileMenu theme={theme} size={50} textSize={19} style={styles.todayAvatar} />
+        <ProfileMenu theme={theme} size={nativeCompact ? 42 : 54} textSize={nativeCompact ? 15 : 19} style={styles.todayAvatar} />
         <View style={styles.todayGreeting}>
           <Text style={[styles.todayRole, { color: theme.accentStrong }]}>Athlete</Text>
-          <Text style={styles.todayGreetingLine}>{indiaGreeting(now)}</Text>
-          <Text style={styles.todayGreetingName}>{initials} 👋</Text>
+          <Text style={[styles.todayGreetingLine, nativeCompact ? styles.todayGreetingLineNative : null]}>{indiaGreeting(now)}</Text>
+          <Text style={[styles.todayGreetingName, nativeCompact ? styles.todayGreetingNameNative : null]} numberOfLines={1}>{athleteName}</Text>
         </View>
         <View style={styles.todayHeaderActions}>
-          <ContextualHelp steps={ATHLETE_QUICK_HELP_STEPS} accent={theme.accentStrong} />
           <HeaderIconButton icon="notifications-outline" onPress={onNotifications} badge={unread} />
           <DatePickerPill value={date} onChange={onDateChange} iconOnly openSignal={calendarOpenSignal} />
         </View>
@@ -3897,49 +3950,16 @@ function HeaderIconButton({
   onPress: () => void;
   badge?: number;
 }) {
+  const nativeCompact = Platform.OS !== "web";
   return (
-    <Pressable onPress={onPress} hitSlop={8} style={({ pressed }) => [styles.todayHeaderButton, pressed ? { opacity: 0.82 } : null]}>
-      <Ionicons name={icon} size={24} color={colors.ink} />
+    <Pressable onPress={onPress} hitSlop={8} style={({ pressed }) => [styles.todayHeaderButton, nativeCompact ? styles.todayHeaderButtonNative : null, pressed ? { opacity: 0.82 } : null]}>
+      <Ionicons name={icon} size={nativeCompact ? 20 : 24} color={colors.ink} />
       {badge ? (
         <View style={styles.todayHeaderBadge}>
           <Text style={styles.todayHeaderBadgeText}>{badge > 9 ? "9+" : badge}</Text>
         </View>
       ) : null}
     </Pressable>
-  );
-}
-
-function DateHistoryStrip({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const days = useMemo(() => Array.from({ length: 8 }, (_, index) => addDays(value, index - 7)), [value]);
-  const todayKey = today();
-
-  return (
-    <Card style={styles.dateHistoryCard}>
-      <View style={styles.dateHistoryTop}>
-        <View style={styles.todayChip}>
-          <Text style={styles.todayChipText}>Today</Text>
-        </View>
-        <Text style={styles.dateHistoryValue}>{value}</Text>
-      </View>
-      <View style={styles.dateHistoryRow}>
-        {days.map((key) => {
-          const selected = key === value;
-          const isToday = key === todayKey;
-          return (
-            <Pressable
-              key={key}
-              onPress={() => onChange(key)}
-              style={[styles.dateHistoryDay, selected ? styles.dateHistoryDaySelected : null]}
-              accessibilityRole="button"
-            >
-              <Text style={[styles.dateHistoryDow, selected ? styles.dateHistorySelectedText : null]}>{dayLabel(key)}</Text>
-              <Text style={[styles.dateHistoryNum, selected ? styles.dateHistorySelectedText : null]}>{dayNumber(key)}</Text>
-              <View style={[styles.dateHistoryDot, isToday || selected ? styles.dateHistoryDotActive : null]} />
-            </Pressable>
-          );
-        })}
-      </View>
-    </Card>
   );
 }
 
@@ -4445,10 +4465,12 @@ function TodaySection({
   card,
   readiness,
   latestRpe,
-  date,
-  onRefresh,
+  water,
+  weekLoad,
+  coachCommentCount,
   onGoLog,
   onOpenSlot,
+  onGoWater,
   onQuickCheckIn,
   readinessHighlight,
   trainingHighlight,
@@ -4456,22 +4478,119 @@ function TodaySection({
   card: DailyCard;
   readiness: number | null;
   latestRpe?: RpeEntry;
-  date: string;
-  onRefresh: () => Promise<void>;
+  water: WaterDay | null;
+  weekLoad: { label: string; value: number | null }[];
+  coachCommentCount: number;
   onGoLog: () => void;
   onOpenSlot: (slot: SessionSlot) => void;
+  onGoWater: () => void;
   onQuickCheckIn: () => void;
   readinessHighlight?: TourHighlightStyle;
   trainingHighlight?: TourHighlightStyle;
 }) {
+  const { width } = useWindowDimensions();
   const guidance = readinessGuidance(readiness);
   const band = bandFor(readiness);
   const hasCheckIn = readiness !== null;
   const heroButtonStyle = hasCheckIn ? styles.heroButtonSecondary : styles.heroButtonPrimary;
   const heroButtonTextStyle = hasCheckIn ? styles.heroButtonSecondaryText : styles.heroButtonPrimaryText;
-  const heroButtonIcon = hasCheckIn ? theme.accentStrong : theme.accentInk;
+  const heroButtonIcon = hasCheckIn ? theme.accentStrong : "#ffffff";
+  const heroHeadline = hasCheckIn ? guidance.word : "No check-in yet";
+  const statusLabel = hasCheckIn ? guidance.word : "Check-in needed";
+  const waterPct = water && water.goalMl ? Math.max(0, Math.min(1, water.totalMl / water.goalMl)) : null;
+  const rpeLoadEntries = SESSION_SLOTS.map((slot) => card.rpeEntries?.[slot]).filter((entry): entry is RpeEntry => Boolean(entry));
+  const todayLoad = rpeLoadEntries.reduce((sum, entry) => sum + (entry.calculatedTrainingLoad || 0), 0);
+  const compactHero = width < 520;
+  const compactMetrics = width < 390;
+  const metricColumns = compactMetrics ? 2 : 4;
+  const loadCardsSplit = width >= 390;
+  const metricBasis = Math.max(0, (width - 32 - (metricColumns - 1) * 10) / metricColumns);
+  const loadAttentionCardStyle = loadCardsSplit ? styles.loadAttentionCol : styles.loadAttentionColStacked;
+  const denseMetrics = metricColumns === 4;
+  const nativeCompact = Platform.OS !== "web";
+
+  const attentionItems: { id: string; icon: keyof typeof Ionicons.glyphMap; tint: string; title: string; sub: string; onPress: () => void }[] = [];
+  if (card.injury.active) {
+    attentionItems.push({
+      id: "injury",
+      icon: "warning-outline",
+      tint: colors.warn,
+      title: card.injury.bodyPart ?? "Injury reported",
+      sub: card.injury.restriction ?? "Report in recovery",
+      onPress: onGoLog,
+    });
+  }
+  if (readiness !== null && readiness < 60) {
+    attentionItems.push({
+      id: "readiness",
+      icon: "pulse-outline",
+      tint: colors.bad,
+      title: "Low readiness",
+      sub: `${readiness}/100 - recovery first`,
+      onPress: onGoLog,
+    });
+  }
+  const sleepQuality = card.sleep.quality === null ? null : Number(wellnessFiveToTen(card.sleep.quality));
+  if ((card.sleep.hours !== null && card.sleep.hours < 6.5) || (sleepQuality !== null && sleepQuality < 6)) {
+    attentionItems.push({
+      id: "sleep",
+      icon: "moon-outline",
+      tint: "#4d5fc7",
+      title: "Poor sleep",
+      sub: card.sleep.hours === null ? `Quality ${sleepQuality}/10` : `${card.sleep.hours} h logged`,
+      onPress: onGoLog,
+    });
+  }
+  const flaggedRpe = rpeLoadEntries.find((entry) => entry.riskFlag === "red")
+    ?? rpeLoadEntries.find((entry) => entry.riskFlag === "amber")
+    ?? rpeLoadEntries.find((entry) => entry.rpe >= 8 || (entry.riskReasons?.length ?? 0) > 0);
+  if (flaggedRpe) {
+    attentionItems.push({
+      id: `rpe-${flaggedRpe.sessionType}`,
+      icon: "trending-up-outline",
+      tint: flaggedRpe.riskFlag === "red" ? colors.bad : colors.warn,
+      title: flaggedRpe.rpe >= 8 ? "Elevated RPE" : "Training load caution",
+      sub: flaggedRpe.riskReasons?.[0] ?? `RPE ${flaggedRpe.rpe} - ${flaggedRpe.calculatedTrainingLoad} AU`,
+      onPress: () => onOpenSlot(flaggedRpe.sessionType),
+    });
+  }
+  if (water && water.goalMl && water.totalMl < water.goalMl) {
+    attentionItems.push({
+      id: "hydration",
+      icon: "water-outline",
+      tint: "#2f7fe0",
+      title: "Hydration below goal",
+      sub: `${litres(water.totalMl)} L / ${litres(water.goalMl)} L`,
+      onPress: onGoWater,
+    });
+  }
+  if (card.recovery.score === null) {
+    attentionItems.push({
+      id: "recovery",
+      icon: "heart-outline",
+      tint: "#7c5cd6",
+      title: "Recovery not logged",
+      sub: "Add recovery details",
+      onPress: onGoLog,
+    });
+  }
+  if (coachCommentCount > 0) {
+    attentionItems.push({
+      id: "coach",
+      icon: "chatbubble-ellipses-outline",
+      tint: "#7c5cd6",
+      title: "Coach feedback",
+      sub: `${coachCommentCount} update${coachCommentCount === 1 ? "" : "s"} today`,
+      onPress: onGoLog,
+    });
+  }
+
+  const loadBand = latestRpe?.riskFlag ?? "green";
+  const loadValue = todayLoad > 0 ? loadBandWord(loadBand) : "--";
+  const loadSub = todayLoad > 0 ? `${todayLoad} AU` : "No RPE today";
+
   return (
-    <View style={styles.stack}>
+    <View style={[styles.todayStack, nativeCompact ? styles.todayStackNative : null]}>
       {card.injury.active ? (
         <View style={styles.warnStrip}>
           <Ionicons name="shield-outline" size={14} color={colors.warn} />
@@ -4483,151 +4602,399 @@ function TodaySection({
       ) : null}
 
       <SpotlightTarget id="mobile-athlete-readiness" style={readinessHighlight}>
-      <LinearGradient
-        colors={["rgba(239,169,78,0.10)", "#ffffff", "rgba(255,126,26,0.06)"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.heroCard}
-      >
-        <View style={styles.heroRingCol}>
-          <Ring score={readiness} size={78} stroke={7} label="readiness" />
-        </View>
-        <View style={styles.heroCopy}>
-          <Chip band={band}>{guidance.word}</Chip>
-          <Text style={styles.heroText}>{guidance.line}</Text>
-          <Pressable onPress={onQuickCheckIn} style={[styles.heroButton, heroButtonStyle]}>
-            <Ionicons name="add" size={16} color={heroButtonIcon} />
-            <Text style={[styles.heroButtonText, heroButtonTextStyle]}>{readiness === null ? "Quick check-in" : "Update check-in"}</Text>
-          </Pressable>
-        </View>
-      </LinearGradient>
+        <LinearGradient
+          colors={["#fffaf1", "#fffefa", "#fff6e9"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={[styles.heroCard, nativeCompact ? styles.heroCardNative : null]}
+        >
+          <View style={[styles.heroRingCol, nativeCompact ? styles.heroRingColNative : null]}>
+            <ReadinessDial score={readiness} color={hasCheckIn ? bandColor(band) : colors.inkFaint} status={statusLabel} compact={nativeCompact} />
+          </View>
+          <View style={[styles.heroCopy, compactHero ? styles.heroCopyCompact : null]}>
+            <Text style={[styles.heroHeadline, nativeCompact ? styles.heroHeadlineNative : null, { color: hasCheckIn ? bandColor(band) : "#d45b00" }]} numberOfLines={2}>
+              {heroHeadline}
+            </Text>
+            <Text style={[styles.heroText, nativeCompact ? styles.heroTextNative : null]}>{guidance.line}</Text>
+            <Pressable onPress={onQuickCheckIn} style={[styles.heroButton, nativeCompact ? styles.heroButtonNative : null, heroButtonStyle]}>
+              <Ionicons name="add" size={nativeCompact ? 16 : 18} color={heroButtonIcon} />
+              <Text style={[styles.heroButtonText, nativeCompact ? styles.heroButtonTextNative : null, heroButtonTextStyle]}>{readiness === null ? "Quick check-in" : "Update check-in"}</Text>
+            </Pressable>
+          </View>
+          <RunnerIllustration
+            style={compactHero ? styles.heroIllustrationCompact : styles.heroIllustration}
+            compact={compactHero}
+          />
+        </LinearGradient>
       </SpotlightTarget>
 
-      <BandLegend />
-
       <View style={styles.statGrid}>
-        <StatTile label="Sleep" value={displayDash(card.sleep.hours)} sub={`qual ${wellnessFiveToTen(card.sleep.quality)}/10`} icon="moon-outline" onPress={onGoLog} />
-        <StatTile label="Recovery" value={displayDash(card.recovery.score)} sub={card.recovery.status ?? "--"} icon="pulse-outline" onPress={onGoLog} />
-        <StatTile label="Load" value={displayDash(latestRpe?.calculatedTrainingLoad)} sub={latestRpe ? `RPM ${latestRpe.rpe}` : "--"} icon="bag-outline" onPress={onGoLog} />
+        <StatTile
+          label="Sleep"
+          value={displayDash(card.sleep.hours)}
+          unit={card.sleep.hours === null ? undefined : "h"}
+          sub={card.sleep.quality === null ? "--" : sleepQualityWord(Number(wellnessFiveToTen(card.sleep.quality)))}
+          icon="moon-outline"
+          tint="#4d5fc7"
+          subTint={card.sleep.quality === null ? undefined : "#7250d8"}
+          onPress={onGoLog}
+          basis={metricBasis}
+          dense={denseMetrics}
+          nativeCompact={nativeCompact}
+        />
+        <StatTile
+          label="Recovery"
+          value={displayDash(card.recovery.score)}
+          unit={card.recovery.score === null ? undefined : "%"}
+          sub={card.recovery.status ?? "--"}
+          icon="heart-outline"
+          tint={colors.ok}
+          subTint={card.recovery.score === null && !card.recovery.status ? undefined : colors.ok}
+          onPress={onGoLog}
+          basis={metricBasis}
+          dense={denseMetrics}
+          nativeCompact={nativeCompact}
+        />
+        <StatTile
+          label="Hydration"
+          value={water ? litres(water.totalMl) : "--"}
+          unit={water ? `L / ${litres(water.goalMl)} L` : undefined}
+          sub={waterPct === null ? "--" : `${Math.round(waterPct * 100)}% of goal`}
+          icon="water-outline"
+          tint="#2f7fe0"
+          onPress={onGoWater}
+          progress={waterPct}
+          progressColor="#2f7fe0"
+          basis={metricBasis}
+          dense={denseMetrics}
+          nativeCompact={nativeCompact}
+        />
+        <StatTile
+          label="Load"
+          value={loadValue}
+          sub={loadSub}
+          icon="bar-chart-outline"
+          tint="#ff7e1a"
+          subTint={todayLoad > 0 ? "#f26a0a" : undefined}
+          onPress={onGoLog}
+          basis={metricBasis}
+          dense={denseMetrics}
+          nativeCompact={nativeCompact}
+        />
       </View>
 
       <SpotlightTarget id="mobile-athlete-training" style={trainingHighlight}>
-      <Card>
-        <CardTitle>Training summary</CardTitle>
-        <View style={styles.trainingSummaryList}>
-          {SESSION_SLOTS.map((slot) => (
+        <Card style={[styles.sessionsCard, nativeCompact ? styles.sessionsCardNative : null]}>
+        <View style={[styles.cardTitleRow, nativeCompact ? styles.cardTitleRowNative : null, nativeCompact ? styles.sessionsHeaderNative : null]}>
+            <CardTitle style={nativeCompact ? styles.sessionsTitleNative : undefined}>Today&apos;s sessions</CardTitle>
+          <Pressable onPress={onGoLog} hitSlop={8}>
+            <Text style={[styles.viewFullPlanLink, nativeCompact ? styles.sessionsViewFullPlanLinkNative : null]}>View full plan →</Text>
+          </Pressable>
+        </View>
+        <View style={[styles.trainingSummaryList, nativeCompact ? styles.trainingSummaryListNative : null]}>
+          {SESSION_SLOTS.map((slot, index) => (
             <TrainingSummaryRow
               key={slot}
               slot={slot}
               session={card.sessions[slot]}
               rpe={card.rpeEntries?.[slot] ?? null}
               isRestDay={Boolean(card.isRestDay)}
+              isNextUp={SESSION_SLOTS.slice(0, index).every((s) => {
+                const status = sessionStatusMeta(card.sessions[s], card.rpeEntries?.[s] ?? null, Boolean(card.isRestDay), false).text;
+                return status === "Completed" || status === "Skipped" || status === "Rest";
+              })}
               onPress={() => onOpenSlot(slot)}
+              compact={nativeCompact}
             />
           ))}
         </View>
-      </Card>
+        </Card>
       </SpotlightTarget>
 
-      <Card>
-        <View style={styles.cardTitleRow}>
-          <CardTitle>Training load</CardTitle>
+      <View style={[styles.loadAttentionRow, loadCardsSplit ? null : styles.loadAttentionRowStacked]}>
+      <Card style={[loadAttentionCardStyle, nativeCompact ? styles.loadAttentionCardNative : null]}>
+        <View style={[styles.cardTitleRow, nativeCompact ? styles.cardTitleRowNative : null]}>
+          <CardTitle style={nativeCompact ? styles.todayCardTitleNative : undefined}>Training load</CardTitle>
           <Ionicons name="flame-outline" size={14} color={colors.inkMuted} />
         </View>
-        {latestRpe ? (
+        {todayLoad > 0 ? (
           <>
-            <View style={styles.loadRow}>
-              <Chip band={latestRpe.riskFlag}>{latestRpe.riskFlag}</Chip>
-              <Text style={styles.loadValue}>{latestRpe.calculatedTrainingLoad}</Text>
-              <Text style={styles.loadMeta}>load · RPM {latestRpe.rpe} · {SLOT_LABEL[latestRpe.sessionType]}</Text>
+            <Text style={[styles.loadLabel, nativeCompact ? styles.loadLabelNative : null]}>{loadBandWord(loadBand)}</Text>
+            <View style={[styles.loadRow, nativeCompact ? styles.loadRowNative : null]}>
+              <Text style={[styles.loadValue, nativeCompact ? styles.loadValueNative : null]}>{todayLoad}</Text>
+              <Text style={[styles.loadUnit, nativeCompact ? styles.loadUnitNative : null]}>AU</Text>
             </View>
-            <Text style={styles.miniMuted}>
-              {latestRpe.trainingCategory} · {latestRpe.plannedIntensityPercent}% intensity
-            </Text>
-            {latestRpe.riskReasons && latestRpe.riskReasons.length > 0 ? (
+            {latestRpe ? (
+              <Text style={[styles.loadMeta, nativeCompact ? styles.loadMetaNative : null]}>
+                RPE {latestRpe.rpe} - {SLOT_LABEL[latestRpe.sessionType]} - {latestRpe.trainingCategory}
+              </Text>
+            ) : null}
+            {latestRpe?.riskReasons && latestRpe.riskReasons.length > 0 ? (
               <View style={styles.riskReasonList}>
-                {latestRpe.riskReasons.map((reason, index) => (
+                {latestRpe.riskReasons.slice(0, 2).map((reason, index) => (
                   <Text key={`${reason}-${index}`} style={styles.riskReasonText}>- {reason}</Text>
                 ))}
               </View>
             ) : null}
           </>
         ) : (
-          <Muted>No RPM logged today.</Muted>
+          <>
+            <Muted style={nativeCompact ? styles.loadMutedNative : undefined}>No RPE logged today.</Muted>
+            <View style={[styles.loadRow, nativeCompact ? styles.loadRowNative : null]}>
+              <Text style={[styles.loadValue, nativeCompact ? styles.loadValueNative : null]}>0</Text>
+              <Text style={[styles.loadUnit, nativeCompact ? styles.loadUnitNative : null]}>AU</Text>
+            </View>
+            <Text style={[styles.loadMeta, nativeCompact ? styles.loadMetaNative : null]}>Today&apos;s Load</Text>
+          </>
         )}
-        <View style={{ marginTop: 12 }}>
-          <PrimaryButton
-            label={latestRpe ? "Edit in Log" : "Log session"}
-            onPress={onGoLog}
-            accent="#ff7e1a"
-            accentInk={theme.accentInk}
-          />
+        <WeekLoadBars data={weekLoad} compact={nativeCompact} />
+        <View style={nativeCompact ? styles.loadButtonWrapNative : styles.loadButtonWrap}>
+          {nativeCompact ? (
+            <Pressable onPress={onGoLog} style={styles.loadButtonNative} accessibilityRole="button">
+              <Text style={styles.loadButtonTextNative}>{todayLoad > 0 ? "Edit in Log" : "Log session"}</Text>
+              <Ionicons name="flame-outline" size={13} color="#ffffff" />
+            </Pressable>
+          ) : (
+            <PrimaryButton
+              label={todayLoad > 0 ? "Edit in Log" : "Log session"}
+              onPress={onGoLog}
+              accent="#ff7e1a"
+              accentInk={theme.accentInk}
+            />
+          )}
         </View>
       </Card>
+
+        <Card style={[loadAttentionCardStyle, nativeCompact ? styles.loadAttentionCardNative : null]}>
+          <View style={[styles.cardTitleRow, nativeCompact ? styles.cardTitleRowNative : null]}>
+            <Text
+              style={[styles.attentionTitle, nativeCompact ? styles.attentionTitleNative : null]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+            >
+              Needs attention
+            </Text>
+          </View>
+          {attentionItems.length > 0 ? (
+            <>
+          <View style={[styles.attentionList, nativeCompact ? styles.attentionListNative : null]}>
+            {attentionItems.map((item) => (
+              <Pressable key={item.id} onPress={item.onPress} style={[styles.attentionRow, nativeCompact ? styles.attentionRowNative : null]}>
+                <View style={[styles.attentionIcon, nativeCompact ? styles.attentionIconNative : null, { backgroundColor: `${item.tint}1a` }]}>
+                  <Ionicons name={item.icon} size={nativeCompact ? 14 : 16} color={item.tint} />
+                </View>
+                <View style={styles.attentionCopy}>
+                  <Text style={[styles.attentionItemTitle, nativeCompact ? styles.attentionItemTitleNative : null]} numberOfLines={2}>{item.title}</Text>
+                  <Text style={[styles.attentionItemSub, nativeCompact ? styles.attentionItemSubNative : null]} numberOfLines={1}>{item.sub}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={colors.inkFaint} />
+              </Pressable>
+            ))}
+          </View>
+          <Pressable onPress={onGoLog} hitSlop={8} style={nativeCompact ? styles.attentionViewAllWrapNative : styles.attentionViewAllWrap}>
+            <Text style={[styles.attentionViewAll, nativeCompact ? styles.attentionViewAllNative : null]}>View all →</Text>
+          </Pressable>
+            </>
+          ) : (
+            <View style={styles.attentionEmpty}>
+              <Ionicons name="checkmark-circle-outline" size={20} color={colors.ok} />
+              <Text style={styles.attentionItemTitle}>No current concerns</Text>
+              <Text style={styles.attentionItemSub}>Keep logging today as usual.</Text>
+            </View>
+          )}
+        </Card>
+      </View>
+
+      <BandLegend compact={nativeCompact} />
     </View>
   );
 }
 
-const BAND_LEGEND_ROWS: { band: Band; label: string; range: string; note: string }[] = [
-  { band: "green", label: "Good", range: "80-100", note: "Ready to train and well recovered." },
-  { band: "amber", label: "Caution", range: "60-79", note: "Manage your load and listen to your body." },
-  { band: "red", label: "Attention", range: "Below 60", note: "Prioritise recovery and tell your coach." },
-];
-
-function BandLegend() {
-  const [open, setOpen] = useState(false);
+function ReadinessDial({ score, color, status, compact }: { score: number | null; color: string; status: string; compact?: boolean }) {
+  const size = compact ? 78 : 112;
+  const stroke = compact ? 7 : 9;
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  const pct = score == null ? 0 : Math.max(0, Math.min(1, score / 100));
+  const showProgress = pct > 0;
 
   return (
-    <Card style={styles.bandLegendCard}>
-      <Pressable
-        onPress={() => setOpen((o) => !o)}
-        style={styles.bandLegendHeader}
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-      >
-        <CardTitle>What the colours mean</CardTitle>
-        <View style={styles.bandLegendHeaderRight}>
-          {BAND_LEGEND_ROWS.map((row) => (
-            <View key={row.band} style={[styles.bandLegendDot, { backgroundColor: bandColor(row.band) }]} />
-          ))}
-          <Ionicons name={open ? "chevron-up" : "chevron-down"} size={14} color={colors.inkFaint} />
+    <View style={styles.readinessDial}>
+      <Text style={[styles.heroRingLabel, compact ? styles.heroRingLabelCompact : null]}>Readiness</Text>
+      <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+        <Svg width={size} height={size} style={StyleSheet.absoluteFill}>
+          <Circle cx={size / 2} cy={size / 2} r={r} stroke="#edf1e9" strokeWidth={stroke} fill="none" />
+          {showProgress ? (
+            <Circle
+              cx={size / 2}
+              cy={size / 2}
+              r={r}
+              stroke={color}
+              strokeWidth={stroke}
+              fill="none"
+              strokeDasharray={circ}
+              strokeDashoffset={circ * (1 - pct)}
+              strokeLinecap="round"
+              transform={`rotate(-90 ${size / 2} ${size / 2})`}
+            />
+          ) : null}
+        </Svg>
+        <View style={styles.readinessScoreRow}>
+          <Text style={[styles.readinessScore, compact ? styles.readinessScoreCompact : null, { color }]}>{score ?? "--"}</Text>
+          <Text style={[styles.readinessMax, compact ? styles.readinessMaxCompact : null]}>/100</Text>
         </View>
-      </Pressable>
+      </View>
+      <View style={[styles.heroStatusPill, compact ? styles.heroStatusPillCompact : null, { backgroundColor: `${color}1a` }]}>
+        <View style={[styles.heroStatusDot, { backgroundColor: color }]} />
+        <Text style={[styles.heroStatusText, compact ? styles.heroStatusTextCompact : null, { color }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
+          {status}
+        </Text>
+      </View>
+    </View>
+  );
+}
 
-      {open ? (
-        <View style={styles.bandLegendRows}>
-          {BAND_LEGEND_ROWS.map((row) => (
-            <View key={row.band} style={styles.bandLegendRow}>
-              <View style={[styles.bandLegendRowDot, { backgroundColor: bandColor(row.band) }]} />
-              <View style={styles.bandLegendText}>
-                <Text style={styles.bandLegendLine}>
-                  <Text style={styles.bandLegendLabel}>{row.label}</Text>
-                  <Text style={styles.bandLegendRange}> · {row.range}</Text>
-                </Text>
-                <Text style={styles.bandLegendNote}>{row.note}</Text>
-              </View>
-            </View>
-          ))}
+const BAND_LEGEND_ROWS: { color: string; label: string }[] = [
+  { color: colors.ok, label: "Good" },
+  { color: colors.warn, label: "Moderate" },
+  { color: colors.bad, label: "High" },
+  { color: "#7c5cd6", label: "Needs attention" },
+];
+
+function BandLegend({ compact }: { compact?: boolean }) {
+  return (
+    <Card style={[styles.bandLegendCard, compact ? styles.bandLegendCardCompact : null]}>
+      <View style={[styles.bandLegendHeader, compact ? styles.bandLegendHeaderCompact : null]}>
+        <CardTitle style={compact ? styles.bandLegendTitleCompact : undefined}>What the colours mean</CardTitle>
+        <View style={[styles.legendLearnPill, compact ? styles.legendLearnPillCompact : null]}>
+          <Ionicons name="book-outline" size={compact ? 11 : 14} color={colors.inkMuted} />
+          <Text style={[styles.legendLearnText, compact ? styles.legendLearnTextCompact : null]}>Learn more</Text>
         </View>
-      ) : null}
+      </View>
+      <View style={[styles.bandLegendInline, compact ? styles.bandLegendInlineCompact : null]}>
+        {BAND_LEGEND_ROWS.map((row) => (
+          <View key={row.label} style={styles.bandLegendInlineItem}>
+            <View style={[styles.bandLegendDot, compact ? styles.bandLegendDotCompact : null, { backgroundColor: row.color }]} />
+            <Text style={[styles.bandLegendInlineText, compact ? styles.bandLegendInlineTextCompact : null]}>{row.label}</Text>
+          </View>
+        ))}
+      </View>
     </Card>
+  );
+}
+
+/** Last 7 days of training load as a tiny bar chart — mirrors WEEKDAY_LETTER order. */
+function WeekLoadBars({ data, compact }: { data: { label: string; value: number | null }[]; compact?: boolean }) {
+  if (data.length === 0) return null;
+  if (compact) {
+    const labels = ["M", "T", "W", "T", "F", "S", "S"];
+    const ticks = [600, 400, 200, 0];
+    const left = 26;
+    const right = 184;
+    const top = 7;
+    const step = 12;
+    return (
+      <View style={styles.weekGridCompact}>
+        <Svg width="100%" height="100%" viewBox="0 0 198 62">
+          {ticks.map((tick, index) => {
+            const y = top + index * step;
+            return (
+              <Fragment key={`tick-${tick}`}>
+                <SvgText x={2} y={y + 4} fill={colors.inkFaint} fontSize="8.5" fontWeight="700">
+                  {tick}
+                </SvgText>
+                <Line x1={left} x2={right} y1={y} y2={y} stroke={colors.lineStrong} strokeWidth={0.8} strokeDasharray="3 3" />
+              </Fragment>
+            );
+          })}
+          {labels.map((label, index) => {
+            const x = left + (index * (right - left)) / (labels.length - 1);
+            return (
+              <SvgText key={`${label}-${index}`} x={x} y={59} fill={colors.inkFaint} fontSize="8.5" fontWeight="800" textAnchor="middle">
+                {label}
+              </SvgText>
+            );
+          })}
+        </Svg>
+      </View>
+    );
+  }
+  const hasHistory = data.some((d) => (d.value ?? 0) > 0);
+  if (!hasHistory) {
+    return <Text style={[styles.weekBarsEmpty, compact ? styles.weekBarsEmptyCompact : null]}>No weekly load history yet.</Text>;
+  }
+  const max = Math.max(1, ...data.map((d) => d.value ?? 0));
+  const axisTicks = [max, max * 0.67, max * 0.33, 0].map((tick) => Math.round(tick));
+  return (
+    <View style={[styles.weekBars, compact ? styles.weekBarsCompact : null]}>
+      <View style={styles.weekBarsAxis}>
+        {axisTicks.map((tick, index) => (
+          <Text key={`${tick}-${index}`} style={styles.weekBarsAxisLabel}>{tick}</Text>
+        ))}
+      </View>
+      <View style={styles.weekBarsColumns}>
+        {data.map((day, index) => {
+          const pct = day.value == null ? 0 : Math.max(0.03, Math.min(1, day.value / max));
+          return (
+            <View key={`${day.label}-${index}`} style={styles.weekBarCol}>
+              <View style={styles.weekBarTrack}>
+                <View style={[styles.weekBarFill, { height: `${pct * 100}%` }]} />
+              </View>
+              <Text style={styles.weekBarLabel}>{day.label}</Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function RunnerIllustration({ style, compact }: { style?: object; compact?: boolean }) {
+  return (
+    <View style={[styles.heroIllustrationFrame, compact ? styles.heroIllustrationFrameCompact : null, style]}>
+      <Image source={HERO_RUNNER} style={styles.heroRunnerImage} resizeMode="contain" />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["#fffaf1", "rgba(255,250,241,0.82)", "rgba(255,250,241,0)"]}
+        locations={[0, 0.42, 1]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={styles.heroIllustrationFade}
+      />
+    </View>
   );
 }
 
 function StatTile({
   label,
   value,
+  unit,
   sub,
   icon,
+  tint,
+  subTint,
   onPress,
+  progress,
+  progressColor,
+  basis,
+  dense,
+  nativeCompact,
 }: {
   label: string;
   value: string;
+  unit?: string;
   sub: string;
   icon: keyof typeof Ionicons.glyphMap;
+  tint: string;
+  subTint?: string;
   onPress?: () => void;
+  progress?: number | null;
+  progressColor?: string;
+  basis: number;
+  dense?: boolean;
+  nativeCompact?: boolean;
 }) {
-  const tint = label === "Sleep" ? "#fbf7ff" : label === "Recovery" ? "#f5fbf8" : "#fff7f1";
   return (
     <Pressable
       onPress={onPress}
@@ -4636,16 +5003,35 @@ function StatTile({
       android_ripple={onPress ? { color: "rgba(0,0,0,0.06)" } : undefined}
       style={({ pressed }) => [
         styles.statTile,
-        { backgroundColor: tint },
+        dense ? styles.statTileDense : null,
+        nativeCompact && dense ? styles.statTileNativeDense : null,
+        { flexBasis: basis },
         onPress && pressed ? { opacity: 0.7 } : null,
       ]}
     >
-      <View style={styles.tileLabelRow}>
-        <Ionicons name={icon} size={13} color={colors.inkFaint} />
-        <Text style={styles.tileLabel}>{label}</Text>
+      <View style={[styles.tileLabelRow, dense ? styles.tileLabelRowDense : null]}>
+        <View style={[styles.tileIcon, dense ? styles.tileIconDense : null, nativeCompact && dense ? styles.tileIconNativeDense : null, { backgroundColor: `${tint}13` }]}>
+          <Ionicons name={icon} size={nativeCompact && dense ? 13 : dense ? 15 : 17} color={tint} />
+        </View>
+        <Text
+          style={[styles.tileLabel, dense ? styles.tileLabelDense : null, { color: tint }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.68}
+        >
+          {label}
+        </Text>
       </View>
-      <Text style={styles.tileValue}>{value}</Text>
-      <Text style={styles.tileSub}>{sub}</Text>
+      <Text style={[styles.tileValue, dense ? styles.tileValueDense : null, nativeCompact && dense ? styles.tileValueNativeDense : null]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.66}>
+        {value}
+        {unit ? <Text style={styles.tileUnit}> {unit}</Text> : null}
+      </Text>
+      <Text style={[styles.tileSub, dense ? styles.tileSubDense : null, nativeCompact && dense ? styles.tileSubNativeDense : null, subTint ? { color: subTint } : null]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.68}>{sub}</Text>
+      {progress != null ? (
+        <View style={[styles.tileProgressTrack, nativeCompact && dense ? styles.tileProgressTrackNativeDense : null]}>
+          <View style={[styles.tileProgressFill, { width: `${Math.round(progress * 100)}%`, backgroundColor: progressColor ?? colors.ok }]} />
+        </View>
+      ) : null}
     </Pressable>
   );
 }
@@ -4666,7 +5052,7 @@ function SlotPill({
   const status = isRestDay ? "rest" : session.status;
   const done = Boolean(rpe || sessionComplete(session));
   const title = isRestDay ? "Rest day" : session.workoutType ?? session.type ?? rpe?.trainingCategory ?? "Open";
-  const sub = isRestDay ? "Recovery available" : rpe ? `Done - RPM ${rpe.rpe}` : status ? status.replace("_", " ") : "Open";
+  const sub = isRestDay ? "Recovery available" : rpe ? `Done - RPE ${rpe.rpe}` : status ? status.replace("_", " ") : "Open";
   return (
     <Pressable onPress={onPress} style={[styles.slotPill, done ? styles.slotPillDone : null]} accessibilityRole="button">
       <Text style={styles.tileLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
@@ -4680,62 +5066,115 @@ function SlotPill({
   );
 }
 
+function sessionStatusMeta(
+  session: DailySession,
+  rpe: RpeEntry | null | undefined,
+  isRestDay: boolean,
+  isNextUp: boolean
+) {
+  if (isRestDay || session.status === "rest") {
+    return { text: "Rest", tone: colors.inkMuted, bg: colors.surfaceInset, icon: "moon-outline" as const };
+  }
+  if (session.status === "skipped") {
+    return { text: "Skipped", tone: colors.bad, bg: `${colors.bad}14`, icon: "close-circle-outline" as const };
+  }
+  if (session.status === "in_progress") {
+    return { text: "Partial", tone: colors.warn, bg: `${colors.warn}18`, icon: "ellipse-outline" as const };
+  }
+  if (rpe || session.status === "completed" || session.attended === true) {
+    return { text: "Completed", tone: colors.ok, bg: `${colors.ok}1a`, icon: "checkmark-circle" as const };
+  }
+  if (isNextUp) {
+    return { text: "Pending", tone: colors.warn, bg: `${colors.warn}1a`, icon: "time-outline" as const };
+  }
+  return { text: "Upcoming", tone: "#2f7fe0", bg: "#2f7fe01a", icon: "arrow-forward-circle-outline" as const };
+}
+
+function workoutIconFor(title: string): keyof typeof Ionicons.glyphMap {
+  const lower = title.toLowerCase();
+  if (/\b(strength|lift|gym|weights?)\b/.test(lower)) return "barbell-outline";
+  if (/\b(mobility|stretch|recovery|yoga)\b/.test(lower)) return "body-outline";
+  if (/\b(sprint|speed|run|conditioning)\b/.test(lower)) return "flash-outline";
+  return "fitness-outline";
+}
+
 function TrainingSummaryRow({
   slot,
   session,
   rpe,
   isRestDay,
+  isNextUp,
   onPress,
+  compact,
 }: {
   slot: SessionSlot;
   session: DailySession;
   rpe?: RpeEntry | null;
   isRestDay: boolean;
+  isNextUp: boolean;
   onPress: () => void;
+  compact?: boolean;
 }) {
-  const status = isRestDay ? "rest" : session.status;
-  const done = Boolean(rpe || sessionComplete(session));
+  const pill = sessionStatusMeta(session, rpe, isRestDay, isNextUp);
+  const done = pill.text === "Completed" || pill.text === "Rest";
   const title = isRestDay ? "Rest day" : session.workoutType ?? session.type ?? rpe?.trainingCategory ?? "Open";
-  const sub = isRestDay ? "Recovery available" : rpe ? `Done - RPM ${rpe.rpe}` : status ? status.replace("_", " ") : "Open";
   const isPm = slot === "PM";
-  const label = slot === "AFT" ? "AFTERNOON" : SLOT_LABEL[slot].toUpperCase();
+
+  const duration = session.actualDurationMin ?? session.durationMin ?? null;
+  const rpeValue = rpe?.rpe ?? null;
+  const effort = session.effortRating ?? null;
+  const metaParts = [
+    "--",
+    duration !== null ? `${duration} min` : "--",
+    `RPE ${rpeValue ?? "--"}`,
+    `Effort ${effort ?? "--"}`,
+  ];
+  const sub = isRestDay ? "Rest day - recovery available" : metaParts.join("  \u2022  ");
+  const workoutIcon = workoutIconFor(title);
 
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [
         styles.trainingSummaryRow,
+        compact ? styles.trainingSummaryRowCompact : null,
         done ? styles.trainingSummaryRowDone : null,
         pressed ? { opacity: 0.86 } : null,
       ]}
       accessibilityRole="button"
     >
-      <View style={[styles.trainingSummaryIcon, isPm ? styles.trainingSummaryIconPm : null]}>
-        <Ionicons name={isPm ? "moon-outline" : "sunny-outline"} size={20} color={isPm ? "#5670ad" : "#e97912"} />
-        <Text style={[styles.trainingSummaryIconText, isPm ? styles.trainingSummaryIconTextPm : null]}>{slot}</Text>
+      <View style={[styles.trainingSummaryIcon, compact ? styles.trainingSummaryIconCompact : null, isPm ? styles.trainingSummaryIconPm : null]}>
+        <Ionicons name={isPm ? "moon-outline" : "sunny-outline"} size={compact ? 16 : 20} color={isPm ? "#5670ad" : "#e97912"} />
+        <Text style={[styles.trainingSummaryIconText, compact ? styles.trainingSummaryIconTextCompact : null, isPm ? styles.trainingSummaryIconTextPm : null]}>{slot}</Text>
       </View>
       <View style={styles.trainingSummaryCopy}>
-        <Text style={styles.trainingSummaryTitle} numberOfLines={1}>
-          {title}
-        </Text>
-        <Text style={styles.trainingSummarySub} numberOfLines={1}>
+        <View style={styles.trainingTitleLine}>
+          <Ionicons name={workoutIcon} size={compact ? 13 : 15} color={colors.inkMuted} />
+          <Text style={[styles.trainingSummaryTitle, compact ? styles.trainingSummaryTitleCompact : null]} numberOfLines={1}>
+            {title}
+          </Text>
+        </View>
+        <Text style={[styles.trainingSummarySub, compact ? styles.trainingSummarySubCompact : null]} numberOfLines={2}>
           {sub}
         </Text>
-        <Text style={styles.trainingSummarySlot} numberOfLines={1}>
-          {label}
-        </Text>
       </View>
-      <Text style={styles.trainingSummaryAction}>{done ? "Edit log" : "Open log"}</Text>
-      <Ionicons name="chevron-forward" size={18} color={colors.inkMuted} />
+      <View style={[styles.sessionStatusPill, compact ? styles.sessionStatusPillCompact : null, { backgroundColor: pill.bg }]}>
+        <Ionicons name={pill.icon} size={compact ? 11 : 12} color={pill.tone} />
+        <Text style={[styles.sessionStatusText, compact ? styles.sessionStatusTextCompact : null, { color: pill.tone }]} numberOfLines={1}>{pill.text}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={compact ? 15 : 18} color={colors.inkMuted} />
     </Pressable>
   );
 }
 
 const MAX_SCALE_METER_SEGMENTS = 10;
+const LOG_SCALE_ORANGE = "#ff6a00";
+const LOG_SCALE_ICON_INK = "#3f464c";
+const COACH_SECTION_ORANGE = "#ff6a00";
 
 /**
  * Bar count for the meter — one bar per value for small ranges (e.g. a 1-10
- * RPM scale gets 10 bars, each an exact integer step) so every bar maps to a
+ * RPE scale gets 10 bars, each an exact integer step) so every bar maps to a
  * distinct reachable value; capped at 10 for wide ranges (e.g. 0-100%, where
  * each bar represents ~10 units).
  */
@@ -4752,6 +5191,11 @@ function CompactScale({
   min = 1,
   max = 5,
   step,
+  icon,
+  iconColor = LOG_SCALE_ICON_INK,
+  accentColor = LOG_SCALE_ORANGE,
+  compactCard,
+  dense,
 }: {
   label: string;
   value: number | null;
@@ -4762,6 +5206,11 @@ function CompactScale({
   max?: number;
   /** Explicit increment between bars (e.g. 5) — overrides the default 10-bar cap. */
   step?: number;
+  icon?: keyof typeof Ionicons.glyphMap;
+  iconColor?: string;
+  accentColor?: string;
+  compactCard?: boolean;
+  dense?: boolean;
 }) {
   const fallback = Math.round((min + max) / 2);
   const current = Math.max(min, Math.min(max, Number.isFinite(Number(value)) ? Number(value) : fallback));
@@ -4774,6 +5223,43 @@ function CompactScale({
   function setSegment(i: number) {
     const raw = min + (i / steps) * (max - min);
     onChange(Math.max(min, Math.min(max, Math.round(raw))));
+  }
+
+  if (compactCard) {
+    return (
+      <View style={[styles.scaleCard, dense ? styles.scaleCardDense : null]}>
+        <View style={styles.scaleCardHeader}>
+          {icon ? (
+            <View style={[styles.scaleIcon, dense ? styles.scaleIconDense : null]}>
+              <Ionicons name={icon} size={dense ? 12 : 14} color={iconColor} />
+            </View>
+          ) : null}
+          <View style={styles.scaleCardCopy}>
+            <Text style={[styles.scaleLabel, styles.scaleLabelCard, dense ? styles.scaleLabelDense : null]} numberOfLines={1}>{label}</Text>
+            <Text style={[styles.scaleHint, styles.scaleHintCard, dense ? styles.scaleHintDense : null]} numberOfLines={1}>{lowHint}</Text>
+          </View>
+          <View style={styles.scaleValueBlock}>
+            <Text style={[styles.scaleValue, styles.scaleValueCard, { color: accentColor }, dense ? styles.scaleValueDense : null]}>{current}</Text>
+            <Text style={[styles.scaleHint, styles.scaleHintCard, dense ? styles.scaleHintDense : null]} numberOfLines={1}>{highHint}</Text>
+          </View>
+        </View>
+        <View style={[styles.meterRow, styles.meterRowCard, dense ? styles.meterRowDense : null]} accessibilityRole="adjustable" accessibilityLabel={label}>
+          {Array.from({ length: segments }).map((_, i) => (
+            <Pressable
+              key={i}
+              onPress={() => setSegment(i)}
+              style={[
+                styles.meterBar,
+                styles.meterBarCard,
+                dense ? styles.meterBarDense : null,
+                i < filled ? styles.meterBarFilledCard : styles.meterBarEmptyCard,
+                i < filled ? { backgroundColor: accentColor } : null,
+              ]}
+            />
+          ))}
+        </View>
+      </View>
+    );
   }
 
   return (
@@ -5907,6 +6393,14 @@ function statusText(session: DailySession): string {
   return session.type ? "planned" : "open";
 }
 
+function sessionVisualStatus(session: DailySession, rpe: RpeEntry | null, isRestDay: boolean): "Open" | "Completed" | "Partial" | "Missed" | "Rest" {
+  if (isRestDay || session.status === "rest") return "Rest";
+  if (session.status === "completed" || session.attended === true || rpe) return "Completed";
+  if (session.status === "in_progress") return "Partial";
+  if (session.status === "skipped") return "Missed";
+  return "Open";
+}
+
 function AnimatedLogProgress({ value }: { value: number }) {
   const progress = Math.max(0, Math.min(100, value));
 
@@ -6165,7 +6659,7 @@ function SessionLogSection({
         moodMotivation: wellnessStoredFromTen(form.moodMotivation),
         ...(restingHeartRate !== undefined ? { restingHeartRate } : {}),
       },
-      `${SLOT_LABEL[slot]} RPM logged.`
+      `${SLOT_LABEL[slot]} RPE logged.`
     );
     return savedRpe.ok;
   }
@@ -6187,31 +6681,38 @@ function SessionLogSection({
   const activeForm = forms[activeSlot];
   const activeRpe = card.rpeEntries?.[activeSlot] ?? null;
   const activeDone = isRestDay || sessionComplete(activeSession);
+  const { width } = useWindowDimensions();
+  const nativeCompact = Platform.OS !== "web";
+  const fieldRow = width >= 380;
+  const notesSideBySide = width >= 360;
 
   return (
-    <View style={styles.stack}>
-      <Card style={styles.logHub}>
-        <View style={styles.logHubHead}>
+    <View style={[styles.stack, nativeCompact ? styles.logStackNative : null]}>
+      <Card style={[styles.logHub, nativeCompact ? styles.logHubNative : null]}>
+        <View style={[styles.logHubHead, nativeCompact ? styles.logHubHeadNative : null]}>
           <View style={{ flex: 1, minWidth: 0 }}>
-            <CardTitle>{"Today's log"}</CardTitle>
-            <View style={styles.logProgressLine}>
+            <CardTitle style={nativeCompact ? styles.logTitleNative : undefined}>{"Today's log"}</CardTitle>
+            <View style={[styles.logProgressLine, nativeCompact ? styles.logProgressLineNative : null]}>
               <AnimatedLogProgress value={progress} />
               <Text style={[styles.logProgressText, progressDone ? styles.logProgressTextDone : null]}>
                 {progress.toFixed(1)}%
               </Text>
             </View>
           </View>
-          <View style={[styles.logProgressPill, progressDone ? styles.logProgressPillDone : null]}>
+          <View style={[styles.logProgressPill, nativeCompact ? styles.logProgressPillNative : null, progressDone ? styles.logProgressPillDone : null]}>
             <Text style={[styles.logProgressText, progressDone ? styles.logProgressTextDone : null]}>
               {progressDone ? "Done" : `${completedWeight}/${requiredWeight}`}
             </Text>
           </View>
         </View>
 
-        <View style={styles.restDayPanel}>
+        <View style={[styles.restDayPanel, nativeCompact ? styles.restDayPanelNative : null]}>
+          <View style={[styles.restIconBadge, isRestDay ? styles.restIconBadgeOn : null]}>
+            <Ionicons name={isRestDay ? "moon" : "moon-outline"} size={nativeCompact ? 17 : 18} color={isRestDay ? "#ffffff" : colors.inkMuted} />
+          </View>
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={styles.restDayTitle}>Rest day</Text>
-            <Text style={styles.restDayText}>Sessions pause; check-in and recovery stay available.</Text>
+            <Text style={[styles.restDayTitle, nativeCompact ? styles.restDayTitleNative : null]}>Rest day</Text>
+            <Text style={[styles.restDayText, nativeCompact ? styles.restDayTextNative : null]}>Sessions pause; check-in and recovery stay available.</Text>
           </View>
           <Pressable
             onPress={() =>
@@ -6221,21 +6722,22 @@ function SessionLogSection({
                 isRestDay ? "Rest day cleared." : "Rest day saved."
               )
             }
-            style={[styles.restToggle, isRestDay ? styles.restToggleOn : null]}
+            style={[styles.restToggle, nativeCompact ? styles.restToggleNative : null, isRestDay ? styles.restToggleOn : null]}
             accessibilityRole="switch"
             accessibilityState={{ checked: isRestDay }}
           >
-            <Ionicons name={isRestDay ? "moon" : "moon-outline"} size={16} color={isRestDay ? theme.accentInk : colors.inkMuted} />
+            <Ionicons name={isRestDay ? "checkmark" : "moon-outline"} size={nativeCompact ? 13 : 16} color={isRestDay ? "#ffffff" : colors.inkMuted} />
           </Pressable>
         </View>
 
-        <View style={styles.sessionTabs}>
+        <View style={[styles.sessionTabs, nativeCompact ? styles.sessionTabsNative : null]}>
           {SESSION_SLOTS.map((slot) => {
             const session = card.sessions[slot];
             const rpe = card.rpeEntries?.[slot] ?? null;
             const selected = activeSlot === slot;
             const done = isRestDay || Boolean(rpe) || sessionComplete(session);
             const title = isRestDay ? "Rest day" : session.workoutType ?? session.type ?? rpe?.trainingCategory ?? "Training";
+            const visualStatus = sessionVisualStatus(session, rpe, isRestDay);
             return (
               <Pressable
                 key={slot}
@@ -6243,28 +6745,40 @@ function SessionLogSection({
                   setActiveSlot(slot);
                   onActiveSlotChange(slot);
                 }}
-                style={[styles.sessionTab, selected ? styles.sessionTabActive : null, done ? styles.sessionTabDone : null]}
+                style={[styles.sessionTab, nativeCompact ? styles.sessionTabNative : null, selected ? styles.sessionTabActive : null, done ? styles.sessionTabDone : null]}
                 accessibilityRole="tab"
                 accessibilityState={{ selected }}
               >
-                <Text style={[styles.sessionTabLabel, selected ? styles.sessionTabLabelActive : null]}>{SLOT_LABEL[slot]}</Text>
+                <View style={styles.sessionTabTop}>
+                  <Text style={[styles.sessionTabLabel, selected ? styles.sessionTabLabelActive : null]}>{SLOT_LABEL[slot]}</Text>
+                  {selected ? (
+                    <View style={styles.sessionTabCheck}>
+                      <Ionicons name="checkmark" size={9} color="#ffffff" />
+                    </View>
+                  ) : null}
+                </View>
                 <Text style={styles.sessionTabTitle} numberOfLines={1}>{title}</Text>
-                <Text style={styles.sessionTabMeta}>{done ? "Done" : "Open"}</Text>
+                <View style={styles.sessionTabStatusPill}>
+                  <Text style={styles.sessionTabMeta}>{visualStatus}</Text>
+                </View>
               </Pressable>
             );
           })}
         </View>
 
         {isRestDay ? (
-          <View style={styles.sessionFormPanel}>
+          <View style={[styles.sessionFormPanel, nativeCompact ? styles.sessionFormPanelNative : null]}>
             <Text style={styles.sessionFormTitle}>Rest day is on</Text>
             <Text style={styles.miniMuted}>AM, Afternoon, and PM training inputs are paused for this date.</Text>
           </View>
         ) : (
-          <View style={styles.sessionFormPanel}>
+          <View style={[styles.sessionFormPanel, nativeCompact ? styles.sessionFormPanelNative : null]}>
             <View style={styles.sessionMetaRow}>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.sessionFormTitle}>{SLOT_LABEL[activeSlot]} session</Text>
+                <View style={styles.sessionFormTitleRow}>
+                  <Ionicons name="partly-sunny-outline" size={nativeCompact ? 14 : 16} color="#ff6b10" />
+                  <Text style={[styles.sessionFormTitle, nativeCompact ? styles.sessionFormTitleNative : null]}>{SLOT_LABEL[activeSlot]} session</Text>
+                </View>
                 <Text style={styles.miniMuted}>
                   Planned: {activeSession.type ?? "open"}
                   {activeSession.durationMin ? ` - ${activeSession.durationMin} min` : ""}
@@ -6274,97 +6788,103 @@ function SessionLogSection({
             </View>
 
             <Text style={styles.inputLabel}>Completion</Text>
-            <View style={styles.choiceGrid}>
+            <View style={[styles.choiceGrid, nativeCompact ? styles.choiceGridCompact : null]}>
               {TRAINING_STATUS.map((o) => (
                 <Choice
                   key={o.value}
                   label={o.label}
                   selected={activeForm.status === o.value}
                   onPress={() => updateSession(activeSlot, { status: o.value })}
+                  compact={nativeCompact}
                 />
               ))}
             </View>
 
-            <Text style={[styles.inputLabel, { marginTop: 14 }]}>Workout type</Text>
-            <Dropdown
-              value={activeForm.workoutType}
-              options={WORKOUT_TYPES}
-              title="Workout type"
-              onChange={(item) => updateSession(activeSlot, { workoutType: item, trainingCategory: item })}
-            />
-
-            <View style={[styles.twoCols, { marginTop: 12 }]}>
-              <View style={{ flex: 1 }}>
+            <View style={[styles.logFieldRow, fieldRow ? null : styles.logFieldRowStacked]}>
+              <View style={fieldRow ? styles.logWorkoutField : styles.logFieldFull}>
+                <Text style={styles.inputLabel}>Workout type</Text>
+                <Dropdown
+                  value={activeForm.workoutType}
+                  options={WORKOUT_TYPES}
+                  title="Workout type"
+                  compact={nativeCompact}
+                  onChange={(item) => updateSession(activeSlot, { workoutType: item, trainingCategory: item })}
+                />
+              </View>
+              <View style={fieldRow ? styles.logSmallField : styles.logFieldFull}>
                 <Text style={styles.inputLabel}>Duration</Text>
                 <TextField
                   value={activeForm.actualDurationMin}
                   onChangeText={(v) => updateSession(activeSlot, { actualDurationMin: v })}
                   placeholder="min"
                   keyboardType="number-pad"
-                  style={styles.compactField}
+                  style={[styles.compactField, nativeCompact ? styles.logTextFieldNative : null]}
                 />
               </View>
-              <View style={{ flex: 1 }}>
+              <View style={fieldRow ? styles.logSmallField : styles.logFieldFull}>
                 <Text style={styles.inputLabel}>Resting HR</Text>
                 <TextField
                   value={activeForm.restingHeartRate}
                   onChangeText={(v) => updateSession(activeSlot, { restingHeartRate: v })}
                   placeholder="optional"
                   keyboardType="number-pad"
-                  style={styles.compactField}
+                  style={[styles.compactField, nativeCompact ? styles.logTextFieldNative : null]}
                 />
               </View>
             </View>
 
-            <View style={{ marginTop: 12 }}>
-              <CompactScale label="Effort" value={activeForm.effortRating} onChange={(v) => updateSession(activeSlot, { effortRating: v })} lowHint="Easy" highHint="Max" min={1} max={10} />
-            </View>
-            <View style={{ marginTop: 12 }}>
-              <CompactScale label="Planned intensity" value={activeForm.plannedIntensityPercent} onChange={(v) => updateSession(activeSlot, { plannedIntensityPercent: v })} lowHint="0%" highHint="100%" min={0} max={100} step={5} />
-            </View>
-            <View style={{ marginTop: 12 }}>
-              <CompactScale label="Session RPM" value={activeForm.rpe} onChange={(v) => updateSession(activeSlot, { rpe: v })} lowHint="Rest" highHint="Max" min={0} max={10} />
+            <View style={styles.logScaleStack}>
+              <CompactScale label="Effort" icon="flash-outline" iconColor={LOG_SCALE_ORANGE} value={activeForm.effortRating} onChange={(v) => updateSession(activeSlot, { effortRating: v })} lowHint="Easy" highHint="Max" min={1} max={10} compactCard={nativeCompact} />
+              <CompactScale label="Planned intensity" icon="bar-chart" value={activeForm.plannedIntensityPercent} onChange={(v) => updateSession(activeSlot, { plannedIntensityPercent: v })} lowHint="0%" highHint="100%" min={0} max={100} step={5} compactCard={nativeCompact} />
+              <CompactScale label="Session RPE" icon="speedometer-outline" value={activeForm.rpe} onChange={(v) => updateSession(activeSlot, { rpe: v })} lowHint="Rest" highHint="Max" min={0} max={10} compactCard={nativeCompact} />
+              <CompactScale label="Mood" icon="happy-outline" value={activeForm.moodMotivation} onChange={(v) => updateSession(activeSlot, { moodMotivation: v })} lowHint="Low" highHint="High" min={1} max={10} compactCard={nativeCompact} />
             </View>
 
-            <View style={{ marginTop: 12 }}>
-              <CompactScale label="Mood" value={activeForm.moodMotivation} onChange={(v) => updateSession(activeSlot, { moodMotivation: v })} lowHint="Low" highHint="High" min={1} max={10} />
-            </View>
-
-            <View style={[styles.twoCols, { marginTop: 12 }]}>
+            <View style={[styles.twoCols, styles.logDenseScaleRow]}>
               <View style={{ flex: 1 }}>
-                <CompactScale label="Soreness" value={activeForm.soreness} onChange={(v) => updateSession(activeSlot, { soreness: v })} lowHint="Fresh" highHint="Sore" min={1} max={10} />
+                <CompactScale label="Soreness" icon="heart-outline" value={activeForm.soreness} onChange={(v) => updateSession(activeSlot, { soreness: v })} lowHint="Fresh" highHint="Sore" min={1} max={10} compactCard={nativeCompact} dense />
               </View>
               <View style={{ flex: 1 }}>
-                <CompactScale label="Fatigue" value={activeForm.fatigue} onChange={(v) => updateSession(activeSlot, { fatigue: v })} lowHint="Rested" highHint="Spent" min={1} max={10} />
+                <CompactScale label="Fatigue" icon="clipboard-outline" value={activeForm.fatigue} onChange={(v) => updateSession(activeSlot, { fatigue: v })} lowHint="Rested" highHint="Spent" min={1} max={10} compactCard={nativeCompact} dense />
               </View>
             </View>
 
-            <TextInput
-              value={activeForm.notes}
-              onChangeText={(v) => updateSession(activeSlot, { notes: v })}
-              placeholder="Session notes"
-              placeholderTextColor={colors.inkFaint}
-              multiline
-              style={[styles.noteBox, { marginTop: 12 }]}
-            />
+            <View style={[styles.logNotesRow, notesSideBySide ? null : styles.logNotesRowStacked]}>
+              <View style={styles.logNotesCol}>
+                <TextInput
+                  value={activeForm.notes}
+                  onChangeText={(v) => updateSession(activeSlot, { notes: v })}
+                  placeholder="Add notes about how you felt, key takeaways, etc."
+                  placeholderTextColor={colors.inkFaint}
+                  multiline
+                  maxLength={500}
+                  style={[styles.noteBox, nativeCompact ? styles.noteBoxNative : null]}
+                />
+                <Text style={styles.noteCount}>{activeForm.notes.length}/500</Text>
+              </View>
+              <View style={styles.logPhotoCol}>
+                <Pressable onPress={() => pickSessionPhoto(activeSlot)} style={styles.sessionPhotoButton}>
+                  {pendingPhoto[activeSlot] ? (
+                    <Image source={{ uri: pendingPhoto[activeSlot]!.uri }} style={styles.sessionPhotoPreviewImage} />
+                  ) : (
+                    <>
+                      <Ionicons name="camera-outline" size={20} color={colors.inkMuted} />
+                      <Text style={styles.sessionPhotoButtonText}>Add photo</Text>
+                    </>
+                  )}
+                </Pressable>
+                {pendingPhoto[activeSlot] ? (
+                  <Pressable onPress={() => clearSessionPhoto(activeSlot)} style={styles.sessionPhotoPreviewRemove} hitSlop={8}>
+                    <Ionicons name="close" size={13} color={colors.inkMuted} />
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
 
             <View style={styles.sessionPhotoRow}>
               {(sessionPhotos[activeSlot] ?? []).map((p) => (
                 <SessionPhotoThumb key={p.id} slot={activeSlot} photoId={p.id} />
               ))}
-              {pendingPhoto[activeSlot] ? (
-                <View style={styles.sessionPhotoPreviewRow}>
-                  <Image source={{ uri: pendingPhoto[activeSlot]!.uri }} style={styles.sessionPhotoPreviewImage} />
-                  <Pressable onPress={() => clearSessionPhoto(activeSlot)} style={styles.sessionPhotoPreviewRemove} hitSlop={8}>
-                    <Ionicons name="close" size={13} color={colors.inkMuted} />
-                  </Pressable>
-                </View>
-              ) : (
-                <Pressable onPress={() => pickSessionPhoto(activeSlot)} style={styles.sessionPhotoButton}>
-                  <Ionicons name="add" size={18} color={colors.inkFaint} />
-                  <Text style={styles.sessionPhotoButtonText}>Photo</Text>
-                </Pressable>
-              )}
               {pendingPhoto[activeSlot] ? (
                 <CompactButton
                   label={uploadingSlot === activeSlot ? "Uploading" : "Save photo"}
@@ -6381,7 +6901,7 @@ function SessionLogSection({
               </Text>
             ) : null}
             {formError ? <Text style={styles.formError}>{formError}</Text> : null}
-            <View style={{ marginTop: 12 }}>
+            <View style={styles.logSaveWrap}>
               <CompactButton label={`Save ${SLOT_LABEL[activeSlot]}`} onPress={() => saveSession(activeSlot)} successLabel="Saved" />
             </View>
           </View>
@@ -6482,11 +7002,11 @@ function SessionLogSection({
                 <CompactScale label="Effort" value={form.effortRating} onChange={(v) => updateSession(slot, { effortRating: v, rpe: v })} lowHint="Easy" highHint="Max" min={1} max={10} />
               </View>
 
-              <Text style={[styles.inputLabel, { marginTop: 14 }]}>RPM category</Text>
+              <Text style={[styles.inputLabel, { marginTop: 14 }]}>RPE category</Text>
               <Dropdown
                 value={form.trainingCategory}
                 options={categoryChoicesFor(form.trainingCategory)}
-                title="RPM category"
+                title="RPE category"
                 onChange={(category) => updateSession(slot, { trainingCategory: category })}
               />
 
@@ -6494,7 +7014,7 @@ function SessionLogSection({
                 <CompactScale label="Planned intensity" value={form.plannedIntensityPercent} onChange={(v) => updateSession(slot, { plannedIntensityPercent: v })} lowHint="0%" highHint="100%" min={0} max={100} />
               </View>
               <View style={{ marginTop: 12 }}>
-                <CompactScale label="Session RPM" value={form.rpe} onChange={(v) => updateSession(slot, { rpe: v, effortRating: v })} lowHint="Rest" highHint="Max" min={0} max={10} />
+                <CompactScale label="Session RPE" value={form.rpe} onChange={(v) => updateSession(slot, { rpe: v, effortRating: v })} lowHint="Rest" highHint="Max" min={0} max={10} />
               </View>
 
               <View style={[styles.twoCols, { marginTop: 12 }]}>
@@ -6653,7 +7173,7 @@ function LogSection({
   const recDone = card.recovery.score !== null || !!card.recovery.status;
   const notesDone = notes.length > 0;
 
-  // Attendance isn't logged here anymore — it's derived from session/RPM activity.
+  // Attendance isn't logged here anymore — it's derived from session/RPE activity.
   const ENTRIES = [checkinDone, trainDone, hrDone, recDone, notesDone];
   const total = ENTRIES.length;
   const doneCount = ENTRIES.filter(Boolean).length;
@@ -6831,43 +7351,121 @@ function CoachSection({
   coachCount: number | null;
   activity: FeedItem[];
 }) {
+  const [activityExpanded, setActivityExpanded] = useState(false);
+  const visibleActivity = activityExpanded ? activity : activity.slice(0, 12);
+  const canExpandActivity = activity.length > visibleActivity.length;
+
   return (
-    <View style={styles.stack}>
-      <Card>
-        <CardTitle>Coach updates</CardTitle>
+    <View style={styles.coachSectionStack}>
+      <Card style={styles.coachPanel}>
+        <CoachPanelHeader icon="clipboard-outline" title="Coach updates" />
         {announcements.length === 0 ? (
-          <Text style={styles.miniMuted}>{coachCount === 0 ? "No coach linked yet. Your personal logs still work here." : "No coach announcements yet."}</Text>
+          <CoachEmptyPanel text={coachCount === 0 ? "No coach linked yet. Your personal logs still work here." : "No coach announcements yet."} icon="megaphone-outline" />
         ) : (
-          <View style={styles.stackSmall}>
+          <View style={styles.coachCardList}>
             {announcements.map((a) => (
-              <View key={a.id} style={styles.accentItem}>
-                <Text style={styles.itemBody}>{a.body}</Text>
-                <Text style={styles.itemMeta}>{a.coachName} · {new Date(a.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</Text>
-              </View>
+              <CoachAnnouncementRow key={a.id} announcement={a} />
             ))}
           </View>
         )}
       </Card>
 
-      <Card>
-        <CardTitle>Coach feedback</CardTitle>
+      <Card style={styles.coachPanel}>
+        <CoachPanelHeader icon="chatbubble-outline" title="Coach feedback" />
         {coachComments.length === 0 ? (
-          <Text style={styles.miniMuted}>{coachCount === 0 ? "Coach feedback appears here after a coach links your profile." : "No coach feedback today."}</Text>
+          <CoachEmptyPanel text={coachCount === 0 ? "Coach feedback appears here after a coach links your profile." : "No coach feedback today."} icon="chatbubble-ellipses-outline" />
         ) : (
-          <View style={styles.stackSmall}>
+          <View style={styles.coachCardList}>
             {coachComments.map((c) => (
-              <View key={c._id} style={styles.insetItem}>
-                <Text style={styles.itemBody}>{c.body}</Text>
-              </View>
+              <CoachFeedbackRow key={c._id} comment={c} />
             ))}
           </View>
         )}
       </Card>
 
-      <Card>
-        <CardTitle>Recent activity</CardTitle>
-        <TimelineFeed items={activity.slice(0, 10)} />
+      <Card style={[styles.coachPanel, styles.coachActivityPanel]}>
+        <View style={styles.coachActivityHeader}>
+          <CoachPanelHeader icon="pulse-outline" title="Recent activity" style={styles.coachActivityHeaderTitle} />
+          {activity.length > 0 ? (
+            <Pressable
+              onPress={() => setActivityExpanded((expanded) => !expanded)}
+              hitSlop={8}
+              style={styles.coachViewAllButton}
+              accessibilityRole="button"
+              accessibilityLabel={activityExpanded ? "Show fewer recent activity items" : "View all recent activity items"}
+            >
+              <Text style={styles.coachViewAllText}>{activityExpanded ? "Show less" : "View all"}</Text>
+              <Ionicons name={activityExpanded ? "chevron-up" : "chevron-forward"} size={12} color={COACH_SECTION_ORANGE} />
+            </Pressable>
+          ) : null}
+        </View>
+        <TimelineFeed items={canExpandActivity ? visibleActivity : activity} compact />
       </Card>
+    </View>
+  );
+}
+
+function CoachPanelHeader({
+  icon,
+  title,
+  style,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  style?: object;
+}) {
+  return (
+    <View style={[styles.coachPanelHeader, style]}>
+      <View style={styles.coachHeaderIcon}>
+        <Ionicons name={icon} size={12} color={COACH_SECTION_ORANGE} />
+      </View>
+      <CardTitle style={styles.coachPanelTitle}>{title}</CardTitle>
+    </View>
+  );
+}
+
+function coachAnnouncementIcon(announcement: TeamAnnouncement): keyof typeof Ionicons.glyphMap {
+  const body = announcement.body.toLowerCase();
+  if (/\bswim|pool|water\b/.test(body)) return "water";
+  if (/\bschedule|session|class|week|updated?\b/.test(body)) return "calendar-outline";
+  return "megaphone-outline";
+}
+
+function CoachAnnouncementRow({ announcement }: { announcement: TeamAnnouncement }) {
+  const created = new Date(announcement.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return (
+    <View style={styles.coachUpdateRow}>
+      <View style={styles.coachUpdateIcon}>
+        <Ionicons name={coachAnnouncementIcon(announcement)} size={15} color={COACH_SECTION_ORANGE} />
+      </View>
+      <View style={styles.coachUpdateCopy}>
+        <Text style={styles.coachUpdateBody} numberOfLines={2}>{announcement.body}</Text>
+        <Text style={styles.coachUpdateMeta} numberOfLines={1}>{announcement.coachName} · {created}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={17} color={colors.inkFaint} />
+    </View>
+  );
+}
+
+function CoachFeedbackRow({ comment }: { comment: CoachComment }) {
+  return (
+    <View style={styles.coachFeedbackRow}>
+      <View style={styles.coachFeedbackIcon}>
+        <Ionicons name="chatbubble-ellipses-outline" size={15} color={COACH_SECTION_ORANGE} />
+      </View>
+      <Text style={styles.coachFeedbackText} numberOfLines={2}>{comment.body}</Text>
+      <Ionicons name="chevron-forward" size={17} color={colors.inkFaint} />
+    </View>
+  );
+}
+
+function CoachEmptyPanel({ text, icon }: { text: string; icon: keyof typeof Ionicons.glyphMap }) {
+  return (
+    <View style={styles.coachEmptyPanel}>
+      <View style={styles.coachEmptyIcon}>
+        <Ionicons name={icon} size={14} color={colors.inkFaint} />
+      </View>
+      <Text style={styles.coachEmptyText} numberOfLines={2}>{text}</Text>
     </View>
   );
 }
@@ -6910,25 +7508,25 @@ function feedIcon(item: FeedItem): { name: keyof typeof Ionicons.glyphMap; tone:
   return { name: "ellipse", tone };
 }
 
-function TimelineFeed({ items }: { items: FeedItem[] }) {
-  if (items.length === 0) return <Text style={styles.miniMuted}>No recent activity.</Text>;
+function TimelineFeed({ items, compact }: { items: FeedItem[]; compact?: boolean }) {
+  if (items.length === 0) return compact ? <CoachEmptyPanel text="No recent activity." icon="pulse-outline" /> : <Text style={styles.miniMuted}>No recent activity.</Text>;
   return (
-    <View style={styles.timeline}>
-      <View style={styles.timelineLine} />
+    <View style={[styles.timeline, compact ? styles.timelineCompact : null]}>
+      <View style={[styles.timelineLine, compact ? styles.timelineLineCompact : null]} />
       {items.map((item) => {
         const icon = feedIcon(item);
         const detail = item.detail ?? item.subtitle;
         return (
-          <View key={item.id} style={styles.timelineItem}>
-            <View style={[styles.timelineIconBadge, { backgroundColor: `${icon.tone}1f` }]}>
-              <Ionicons name={icon.name} size={16} color={icon.tone} />
+          <View key={item.id} style={[styles.timelineItem, compact ? styles.timelineItemCompact : null]}>
+            <View style={[styles.timelineIconBadge, compact ? styles.timelineIconBadgeCompact : null, { backgroundColor: `${icon.tone}1f` }]}>
+              <Ionicons name={icon.name} size={compact ? 10 : 16} color={icon.tone} />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
               <View style={styles.timelineTitleRow}>
-                <Text style={styles.timelineTitle} numberOfLines={1}>{item.title}</Text>
-                <Text style={styles.timelineTime}>{relativeDate(item.at)}</Text>
+                <Text style={[styles.timelineTitle, compact ? styles.timelineTitleCompact : null]} numberOfLines={1}>{item.title}</Text>
+                <Text style={[styles.timelineTime, compact ? styles.timelineTimeCompact : null]}>{relativeDate(item.at)}</Text>
               </View>
-              {detail ? <Text style={styles.timelineDetail} numberOfLines={1}>{detail}</Text> : null}
+              {detail ? <Text style={[styles.timelineDetail, compact ? styles.timelineDetailCompact : null]} numberOfLines={1}>{detail}</Text> : null}
             </View>
           </View>
         );
@@ -7206,8 +7804,8 @@ function AthleteMessagesPanel({
   );
 }
 
-function CardTitle({ children }: { children: React.ReactNode }) {
-  return <Text style={styles.cardTitle}>{children}</Text>;
+function CardTitle({ children, style }: { children: React.ReactNode; style?: object }) {
+  return <Text style={[styles.cardTitle, style]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>{children}</Text>;
 }
 
 function Chip({ band, children, style }: { band: Band; children: React.ReactNode; style?: object }) {
@@ -7219,10 +7817,10 @@ function Chip({ band, children, style }: { band: Band; children: React.ReactNode
   );
 }
 
-function Choice({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
+function Choice({ label, selected, onPress, compact }: { label: string; selected: boolean; onPress: () => void; compact?: boolean }) {
   return (
-    <Pressable onPress={onPress} style={[styles.choice, selected ? styles.choiceOn : null]}>
-      <Text style={[styles.choiceText, selected ? styles.choiceTextOn : null]}>{label}</Text>
+    <Pressable onPress={onPress} style={[styles.choice, compact ? styles.choiceCompact : null, selected ? styles.choiceOn : null]}>
+      <Text style={[styles.choiceText, compact ? styles.choiceTextCompact : null, selected ? styles.choiceTextOn : null]}>{label}</Text>
     </Pressable>
   );
 }
@@ -7469,29 +8067,32 @@ function Legend({ items }: { items: { label: string; color: string }[] }) {
 }
 
 const styles = StyleSheet.create({
-  content: { paddingHorizontal: 16, paddingTop: 0, paddingBottom: 22 },
+  pageShell: { flex: 1, backgroundColor: colors.surface },
+  mainScroll: { flex: 1, backgroundColor: "transparent" },
+  content: { paddingHorizontal: 16, paddingTop: 0, paddingBottom: 16 },
+  logContent: { paddingBottom: 128 },
   stack: { gap: 8 },
+  todayStack: { gap: 14 },
+  todayStackNative: { gap: 7 },
   stackSmall: { gap: 10 },
   todayHeader: {
     paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 4,
+    paddingTop: 10,
+    paddingBottom: 10,
     backgroundColor: colors.surface,
   },
-  todayHeaderTop: { flexDirection: "row", alignItems: "center", gap: 10 },
+  todayHeaderNative: { paddingTop: 0, paddingBottom: 2 },
+  todayHeaderTop: { flexDirection: "row", alignItems: "center", gap: 12 },
   todayAvatar: {
     borderWidth: 0,
     elevation: 0,
   },
   todayGreeting: { flex: 1, minWidth: 0 },
   todayRole: { fontSize: 10, lineHeight: 14, fontWeight: "900", textTransform: "uppercase", letterSpacing: 2 },
-  // lineHeight has extra headroom over fontSize (not the usual ~1.2x) because
-  // the emoji glyph on todayGreetingName renders taller than Latin text at the
-  // same fontSize on Android — too little headroom let it visually overflow
-  // below this row's own measured layout box, which the tour spotlight (sized
-  // from that same measured box) then appeared to cut off.
-  todayGreetingLine: { marginTop: 2, color: colors.ink, fontSize: 18, lineHeight: 24, fontWeight: "500" },
-  todayGreetingName: { color: colors.ink, fontSize: 20, lineHeight: 28, fontWeight: "900" },
+  todayGreetingLine: { marginTop: 2, color: colors.ink, fontSize: 20, lineHeight: 25, fontWeight: "500" },
+  todayGreetingLineNative: { fontSize: 15, lineHeight: 18 },
+  todayGreetingName: { color: colors.ink, fontSize: 27, lineHeight: 32, fontWeight: "900" },
+  todayGreetingNameNative: { fontSize: 20, lineHeight: 23 },
   todayHeaderActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   askWave: { width: 18, height: 18, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 2 },
   askWaveBar: { width: 3, borderRadius: 999 },
@@ -7642,9 +8243,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     color: colors.ink,
     fontSize: 15,
+    fontFamily: "Inter_400Regular",
+    fontWeight: "normal",
+    includeFontPadding: false,
     shadowColor: "#0f172a",
-    shadowOpacity: 0.12,
-    shadowRadius: 18,
+    shadowOpacity: 0.08,
+    shadowRadius: 22,
     shadowOffset: { width: 0, height: 10 },
     elevation: 10,
   },
@@ -7768,12 +8372,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.08,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 2,
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.024,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 1,
   },
+  todayHeaderButtonNative: { height: 40, width: 40, borderRadius: 14 },
   todayHeaderBadge: {
     position: "absolute",
     top: 1,
@@ -7787,38 +8392,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   todayHeaderBadgeText: { color: "#fff", fontSize: 10, fontWeight: "900" },
-  todayDatePillRow: { marginTop: 8, alignItems: "flex-start" },
-  // marginBottom must clear SPOTLIGHT_PADDING (tourConfig.ts) so the "Readiness"
-  // tour step's highlight ring doesn't visually bleed into this card above it.
-  dateHistoryCard: { marginBottom: 14, padding: 6, borderRadius: 18 },
-  dateHistoryTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  todayChip: {
-    height: 24,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: "#ff7e1a",
-    justifyContent: "center",
-    paddingHorizontal: 14,
-    backgroundColor: "#fff7ed",
-  },
-  todayChipText: { color: theme.accentStrong, fontSize: 11, fontWeight: "900" },
-  dateHistoryValue: { color: theme.accentStrong, fontSize: 12, fontWeight: "900" },
-  dateHistoryRow: { flexDirection: "row", gap: 4, marginTop: 4 },
-  dateHistoryDay: {
-    flex: 1,
-    minHeight: 42,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "transparent",
-  },
-  dateHistoryDaySelected: { borderColor: "#ffb179", backgroundColor: "#fff3e8" },
-  dateHistoryDow: { color: colors.inkMuted, fontSize: 9, fontWeight: "700" },
-  dateHistoryNum: { marginTop: 2, color: colors.ink, fontSize: 15, fontWeight: "900" },
-  dateHistorySelectedText: { color: theme.accentStrong },
-  dateHistoryDot: { marginTop: 3, height: 5, width: 5, borderRadius: 3, backgroundColor: "#aeb4af" },
-  dateHistoryDotActive: { backgroundColor: "#e97912" },
   notice: { borderWidth: 1, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12 },
   noticeText: { fontSize: 13, fontWeight: "600" },
   checkInNudge: {
@@ -7868,98 +8441,240 @@ const styles = StyleSheet.create({
   heroCard: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    borderRadius: 18,
+    gap: 12,
+    minHeight: 162,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: "rgba(205,176,132,0.18)",
     backgroundColor: colors.surfaceRaised,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.08,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 2,
-  },
-  heroRingCol: { width: 84, alignItems: "center", justifyContent: "center" },
-  heroCopy: { flex: 1, minWidth: 0, alignItems: "flex-start" },
-  heroText: { marginTop: 5, color: colors.inkMuted, fontSize: 11, lineHeight: 15, textAlign: "left" },
-  heroButton: {
-    marginTop: 6,
-    height: 32,
-    borderRadius: 16,
     paddingHorizontal: 14,
+    paddingVertical: 14,
+    overflow: "hidden",
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.024,
+    shadowRadius: 30,
+    shadowOffset: { width: 0, height: 9 },
+    elevation: 1,
+  },
+  heroCardNative: { minHeight: 118, gap: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  heroRingCol: { width: 116, alignItems: "center", justifyContent: "center" },
+  heroRingColNative: { width: 98 },
+  readinessDial: { alignItems: "center", justifyContent: "center" },
+  readinessScoreRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "center" },
+  readinessScore: { fontSize: 33, lineHeight: 36, fontWeight: "900" },
+  readinessScoreCompact: { fontSize: 25, lineHeight: 28 },
+  readinessMax: { color: colors.inkMuted, fontSize: 14, fontWeight: "800" },
+  readinessMaxCompact: { fontSize: 11 },
+  heroRingLabel: { color: colors.inkMuted, fontSize: 11, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1.1, marginBottom: -2 },
+  heroRingLabelCompact: { fontSize: 8.5, letterSpacing: 0.35 },
+  heroStatusPill: { marginTop: -1, maxWidth: 118, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
+  heroStatusPillCompact: { maxWidth: 106, gap: 5, paddingHorizontal: 8, paddingVertical: 4 },
+  heroStatusDot: { width: 6, height: 6, borderRadius: 3 },
+  heroStatusText: { fontSize: 10, fontWeight: "900", textTransform: "uppercase" },
+  heroStatusTextCompact: { fontSize: 8.5 },
+  heroHeadline: { fontSize: 18, lineHeight: 22, fontWeight: "900" },
+  heroHeadlineNative: { fontSize: 12.5, lineHeight: 16 },
+  heroIllustration: { marginRight: -24 },
+  heroIllustrationFrame: { width: 112, height: 122, borderRadius: 18, overflow: "hidden" },
+  heroIllustrationCompact: { position: "absolute", right: -28, bottom: 2, opacity: 0.96 },
+  heroIllustrationFrameCompact: { width: 202, height: 118, borderRadius: 18 },
+  heroIllustrationFade: { position: "absolute", left: 0, top: 0, bottom: 0, width: "45%" },
+  heroRunnerImage: { width: "100%", height: "100%" },
+  heroCopy: { flex: 1, minWidth: 0, alignItems: "flex-start", zIndex: 2 },
+  heroCopyCompact: { paddingRight: 72 },
+  heroText: { marginTop: 7, color: colors.inkMuted, fontSize: 13, lineHeight: 19, textAlign: "left" },
+  heroTextNative: { marginTop: 4, fontSize: 8.7, lineHeight: 13 },
+  heroButton: {
+    marginTop: 12,
+    minHeight: 44,
+    borderRadius: 22,
+    paddingHorizontal: 16,
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
+    justifyContent: "center",
+    gap: 8,
   },
+  heroButtonNative: { marginTop: 8, minHeight: 30, borderRadius: 15, paddingHorizontal: 14, gap: 5 },
   heroButtonPrimary: { backgroundColor: "#ff7e1a" },
   heroButtonSecondary: {
     borderWidth: 1,
     borderColor: `${theme.accentStrong}33`,
     backgroundColor: `${theme.accent}1a`,
   },
-  heroButtonText: { fontSize: 12, fontWeight: "800" },
-  heroButtonPrimaryText: { color: theme.accentInk },
+  heroButtonText: { fontSize: 14, fontWeight: "900" },
+  heroButtonTextNative: { fontSize: 10.5 },
+  heroButtonPrimaryText: { color: "#ffffff" },
   heroButtonSecondaryText: { color: theme.accentStrong },
-  bandLegendCard: { padding: 7 },
-  bandLegendHeader: { minHeight: 18, flexDirection: "row", alignItems: "center", gap: 10 },
-  bandLegendHeaderRight: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 7 },
-  bandLegendDot: { height: 10, width: 10, borderRadius: 5 },
-  bandLegendRows: { gap: 12, marginTop: 12 },
-  bandLegendRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
-  bandLegendRowDot: { height: 10, width: 10, borderRadius: 5, marginTop: 4 },
-  bandLegendText: { flex: 1, minWidth: 0 },
-  bandLegendLine: { color: colors.ink, fontSize: 13, lineHeight: 18 },
-  bandLegendLabel: { color: colors.ink, fontWeight: "800" },
-  bandLegendRange: { color: colors.inkFaint, fontSize: 11 },
-  bandLegendNote: { marginTop: 1, color: colors.inkMuted, fontSize: 11, lineHeight: 16 },
-  statGrid: { flexDirection: "row", gap: 8 },
-  statTile: { flex: 1, minHeight: 62, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, padding: 8 },
-  tileLabelRow: { flexDirection: "row", alignItems: "center", gap: 5 },
-  tileLabel: { fontSize: 10, fontWeight: "800", color: colors.inkFaint, textTransform: "uppercase", letterSpacing: 1.5 },
-  tileValue: { marginTop: 4, fontSize: 16, fontWeight: "800", color: colors.ink },
-  tileSub: { marginTop: 1, color: colors.inkMuted, fontSize: 10 },
-  cardTitle: { color: colors.inkMuted, fontSize: 13, fontWeight: "800", textTransform: "uppercase", letterSpacing: 2 },
+  bandLegendCard: { paddingHorizontal: 14, paddingVertical: 12, borderRadius: 18 },
+  bandLegendCardCompact: {
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderRadius: 16,
+    shadowOpacity: 0.024,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 7 },
+    elevation: 1,
+  },
+  bandLegendHeader: { minHeight: 34, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  bandLegendHeaderCompact: { minHeight: 22, gap: 8 },
+  bandLegendTitleCompact: { fontSize: 8.8, letterSpacing: 0.7 },
+  legendLearnPill: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 999, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceRaised, paddingHorizontal: 12, paddingVertical: 7 },
+  legendLearnPillCompact: { gap: 4, paddingHorizontal: 8, paddingVertical: 3.5 },
+  legendLearnText: { color: colors.inkMuted, fontSize: 12, fontWeight: "800" },
+  legendLearnTextCompact: { fontSize: 8.2 },
+  bandLegendInline: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 8 },
+  bandLegendInlineCompact: { gap: 7, marginTop: 3.5 },
+  bandLegendInlineItem: { flexDirection: "row", alignItems: "center", gap: 5 },
+  bandLegendDot: { height: 8, width: 8, borderRadius: 4 },
+  bandLegendDotCompact: { height: 7, width: 7, borderRadius: 3.5 },
+  bandLegendInlineText: { color: colors.inkMuted, fontSize: 12, fontWeight: "600" },
+  bandLegendInlineTextCompact: { fontSize: 8 },
+  statGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  statTile: { flexGrow: 1, minWidth: 0, minHeight: 106, borderRadius: 18, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceRaised, padding: 12, shadowColor: "#2b251f", shadowOpacity: 0.022, shadowRadius: 22, shadowOffset: { width: 0, height: 7 }, elevation: 1 },
+  statTileDense: { minHeight: 112, paddingHorizontal: 8, paddingVertical: 10 },
+  statTileNativeDense: { minHeight: 81, borderRadius: 15, paddingHorizontal: 6, paddingVertical: 7 },
+  tileLabelRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  tileLabelRowDense: { gap: 4 },
+  tileIcon: { height: 32, width: 32, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  tileIconDense: { height: 22, width: 22, borderRadius: 8 },
+  tileIconNativeDense: { height: 20, width: 20, borderRadius: 8 },
+  tileLabel: { flex: 1, minWidth: 0, fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.6 },
+  tileLabelDense: { fontSize: 7, letterSpacing: 0 },
+  tileValue: { marginTop: 13, fontSize: 24, lineHeight: 29, fontWeight: "900", color: colors.ink },
+  tileValueDense: { marginTop: 14, fontSize: 22, lineHeight: 26 },
+  tileValueNativeDense: { marginTop: 11, fontSize: 17, lineHeight: 20 },
+  tileUnit: { color: colors.inkMuted, fontSize: 13, fontWeight: "800" },
+  tileSub: { marginTop: 5, color: colors.inkMuted, fontSize: 12, fontWeight: "700" },
+  tileSubDense: { fontSize: 11 },
+  tileSubNativeDense: { marginTop: 3, fontSize: 9 },
+  tileProgressTrackNativeDense: { marginTop: 6 },
+  tileProgressTrack: { marginTop: 10, height: 5, borderRadius: 999, backgroundColor: colors.line, overflow: "hidden" },
+  tileProgressFill: { height: 4, borderRadius: 999 },
+  cardTitle: { color: colors.ink, fontSize: 14, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1.5 },
   cardTitleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  cardTitleRowNative: { marginBottom: 8 },
+  todayCardTitleNative: { fontSize: 10.5, letterSpacing: 0.85 },
+  sessionsHeaderNative: { marginBottom: 7 },
+  sessionsTitleNative: { fontSize: 9, letterSpacing: 0.8 },
+  viewFullPlanLink: { color: "#f26a0a", fontSize: 13, fontWeight: "900" },
+  viewFullPlanLinkNative: { fontSize: 12 },
+  sessionsViewFullPlanLinkNative: { fontSize: 8.8 },
+  loadAttentionRow: { flexDirection: "row", gap: 10, alignItems: "stretch" },
+  loadAttentionRowStacked: { flexDirection: "column" },
+  loadAttentionCol: { flex: 1, minWidth: 0, borderRadius: 18 },
+  loadAttentionColStacked: { minWidth: 0, width: "100%", borderRadius: 18 },
+  loadAttentionCardNative: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 16,
+    shadowOpacity: 0.022,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 7 },
+    elevation: 1,
+  },
+  attentionTitle: { color: colors.bad, fontSize: 14, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1.4 },
+  attentionTitleNative: { fontSize: 10.5, letterSpacing: 0.9 },
+  attentionList: { gap: 10 },
+  attentionListNative: { gap: 7 },
+  attentionRow: { minHeight: 38, flexDirection: "row", alignItems: "center", gap: 6 },
+  attentionRowNative: { minHeight: 32, gap: 5 },
+  attentionIcon: { width: 30, height: 30, borderRadius: 11, alignItems: "center", justifyContent: "center" },
+  attentionIconNative: { width: 26, height: 26, borderRadius: 10 },
+  attentionCopy: { flex: 1, minWidth: 0 },
+  attentionItemTitle: { color: colors.ink, fontSize: 12, lineHeight: 15, fontWeight: "900" },
+  attentionItemTitleNative: { fontSize: 10, lineHeight: 12 },
+  attentionItemSub: { marginTop: 2, color: colors.inkMuted, fontSize: 11, lineHeight: 14 },
+  attentionItemSubNative: { marginTop: 1, fontSize: 9, lineHeight: 11 },
+  attentionFooter: { marginTop: 12, alignSelf: "center" },
+  attentionViewAll: { color: colors.bad, fontSize: 13, fontWeight: "900" },
+  attentionViewAllWrap: { marginTop: 8 },
+  attentionViewAllWrapNative: { marginTop: 22, alignSelf: "center" },
+  attentionViewAllNative: { fontSize: 12 },
+  attentionEmpty: { minHeight: 118, alignItems: "center", justifyContent: "center", gap: 5 },
+  sessionStatusPill: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 999, maxWidth: 106 },
+  sessionStatusText: { fontSize: 11, fontWeight: "900" },
+  weekBars: { flexDirection: "row", gap: 6, marginTop: 12, height: 76 },
+  weekBarsCompact: { gap: 4, marginTop: 6, height: 44 },
+  weekGridCompact: { marginTop: 6, height: 58, width: "100%" },
+  weekBarsEmpty: { marginTop: 14, color: colors.inkFaint, fontSize: 12, fontWeight: "700" },
+  weekBarsEmptyCompact: { marginTop: 8, fontSize: 10 },
+  weekBarsAxis: { justifyContent: "space-between", paddingBottom: 16 },
+  weekBarsAxisLabel: { fontSize: 8, color: colors.inkFaint },
+  weekBarsColumns: { flex: 1, flexDirection: "row", alignItems: "flex-end", gap: 6 },
+  weekBarCol: { flex: 1, alignItems: "center", gap: 4, height: "100%" },
+  weekBarTrack: { flex: 1, width: 10, borderRadius: 5, backgroundColor: colors.surfaceInset, justifyContent: "flex-end", overflow: "hidden" },
+  weekBarFill: { width: "100%", borderRadius: 5, backgroundColor: "#ff7e1a" },
+  weekBarLabel: { fontSize: 9, fontWeight: "700", color: colors.inkFaint },
+  loadButtonWrap: { marginTop: 12 },
+  loadButtonWrapNative: { marginTop: 6 },
+  loadButtonNative: {
+    height: 28,
+    borderRadius: 7,
+    backgroundColor: "#ff7e1a",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  loadButtonTextNative: { color: "#ffffff", fontSize: 10.5, fontWeight: "900" },
   planGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
-  trainingSummaryList: { gap: 6, marginTop: 8 },
+  sessionsCard: { borderRadius: 20, padding: 14 },
+  sessionsCardNative: {
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    borderRadius: 18,
+    shadowOpacity: 0.022,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 1,
+  },
+  trainingSummaryList: { gap: 9, marginTop: 4 },
+  trainingSummaryListNative: { gap: 5.5, marginTop: 0 },
   trainingSummaryRow: {
-    minHeight: 50,
+    minHeight: 78,
     borderRadius: 16,
     backgroundColor: colors.surfaceRaised,
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    gap: 10,
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.04,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: colors.line,
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.016,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 7 },
     elevation: 1,
   },
+  trainingSummaryRowCompact: { minHeight: 52, gap: 6, paddingHorizontal: 6, paddingVertical: 5.5, borderRadius: 14 },
   // Opaque, not alpha-blended — a transparent backgroundColor combined with
   // `elevation` (still active here since this style layers on trainingSummaryRow)
   // makes Android render a hard gray shadow "plate" behind the row instead of a
   // soft one, since the OS shadow renderer expects an opaque surface to cast onto.
   trainingSummaryRowDone: { backgroundColor: "#f5faf6" },
   trainingSummaryIcon: {
-    height: 40,
-    width: 40,
-    borderRadius: 12,
+    height: 56,
+    width: 42,
+    borderRadius: 14,
     backgroundColor: "#fff3df",
     alignItems: "center",
     justifyContent: "center",
   },
+  trainingSummaryIconCompact: { height: 38, width: 33, borderRadius: 12 },
   trainingSummaryIconPm: { backgroundColor: "#f0f2fb" },
-  trainingSummaryIconText: { marginTop: 1, color: "#b85307", fontSize: 11, fontWeight: "900" },
+  trainingSummaryIconText: { marginTop: 2, color: "#b85307", fontSize: 11, fontWeight: "900" },
+  trainingSummaryIconTextCompact: { fontSize: 8 },
   trainingSummaryIconTextPm: { color: "#5670ad" },
   trainingSummaryCopy: { flex: 1, minWidth: 0 },
-  trainingSummaryTitle: { color: colors.ink, fontSize: 13, fontWeight: "900" },
-  trainingSummarySub: { marginTop: 0, color: colors.inkMuted, fontSize: 10, fontWeight: "500" },
-  trainingSummarySlot: { marginTop: 1, color: theme.accentStrong, fontSize: 9, fontWeight: "900" },
+  trainingTitleLine: { flexDirection: "row", alignItems: "center", gap: 7 },
+  trainingSummaryTitle: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 15, fontWeight: "900" },
+  trainingSummaryTitleCompact: { fontSize: 10.5 },
+  trainingSummarySub: { marginTop: 5, color: colors.inkMuted, fontSize: 12, lineHeight: 16, fontWeight: "700" },
+  trainingSummarySubCompact: { marginTop: 2, fontSize: 8.5, lineHeight: 10.5, fontWeight: "600" },
   trainingSummaryAction: { color: theme.accentStrong, fontSize: 11, fontWeight: "900" },
+  sessionStatusPillCompact: { paddingHorizontal: 6, paddingVertical: 4, maxWidth: 80 },
+  sessionStatusTextCompact: { fontSize: 8 },
   slotPill: { flexGrow: 1, flexBasis: 104, minWidth: 104, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, padding: 12 },
   slotPillDone: { borderColor: `${colors.ok}66`, backgroundColor: `${colors.ok}10` },
   slotType: { marginTop: 6, color: colors.ink, fontSize: 16, fontWeight: "800" },
@@ -7987,11 +8702,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 2,
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.045,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 1,
   },
   waterRingPct: { color: colors.ink, fontSize: 28, fontWeight: "900" },
   waterRingLabel: { marginTop: 2, color: colors.inkMuted, fontSize: 11, fontWeight: "700" },
@@ -8050,7 +8765,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceInset,
     color: colors.ink,
     fontSize: 14,
-    fontWeight: "700",
+    fontFamily: "Inter_600SemiBold",
+    fontWeight: "normal",
+    includeFontPadding: false,
     paddingHorizontal: 12,
   },
   waterPrimaryButton: {
@@ -8159,9 +8876,17 @@ const styles = StyleSheet.create({
   },
   waterEntryText: { color: colors.inkMuted, fontSize: 11, fontWeight: "700" },
   miniMuted: { color: colors.inkFaint, fontSize: 12, lineHeight: 17 },
-  loadRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 },
-  loadValue: { color: colors.ink, fontSize: 28, fontWeight: "800" },
-  loadMeta: { flex: 1, color: colors.inkFaint, fontSize: 11 },
+  loadLabel: { color: colors.inkMuted, fontSize: 13, fontWeight: "800" },
+  loadLabelNative: { fontSize: 10 },
+  loadRow: { flexDirection: "row", alignItems: "baseline", gap: 6, marginTop: 8, flexWrap: "wrap" },
+  loadRowNative: { gap: 4, marginTop: 4 },
+  loadValue: { color: colors.ink, fontSize: 31, lineHeight: 36, fontWeight: "900" },
+  loadValueNative: { fontSize: 22, lineHeight: 25 },
+  loadUnit: { color: colors.ink, fontSize: 16, fontWeight: "900" },
+  loadUnitNative: { fontSize: 12 },
+  loadMeta: { color: colors.inkMuted, fontSize: 12, lineHeight: 16, fontWeight: "700" },
+  loadMetaNative: { fontSize: 10, lineHeight: 12 },
+  loadMutedNative: { fontSize: 10, lineHeight: 14 },
   riskReasonList: { gap: 2, marginTop: 7 },
   riskReasonText: { color: colors.inkMuted, fontSize: 11, lineHeight: 15 },
   chip: { alignSelf: "flex-start", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
@@ -8185,10 +8910,10 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     backgroundColor: colors.surfaceRaised,
     padding: 4,
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.024,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 8 },
     elevation: 1,
   },
   progressTab: {
@@ -8361,48 +9086,97 @@ const styles = StyleSheet.create({
   metricTextOn: { color: "#1a0c00" },
   inputLabel: { marginBottom: 7, color: colors.inkFaint, fontSize: 10, fontWeight: "800", letterSpacing: 1.5, textTransform: "uppercase" },
   compactField: { height: 38, borderRadius: radius.sm, fontSize: 13, paddingHorizontal: 12 },
+  logTextFieldNative: { height: 32, borderRadius: 9, fontSize: 10.5, paddingHorizontal: 9, backgroundColor: colors.surfaceInset },
   scaleHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
   scaleLabel: { color: colors.ink, fontSize: 12, fontWeight: "800" },
+  scaleLabelCard: { fontSize: 10.2, lineHeight: 13, fontWeight: "900" },
+  scaleLabelDense: { fontSize: 8.2, lineHeight: 10 },
   scaleValue: { color: theme.accentStrong, fontSize: 11, fontWeight: "800" },
+  scaleValueCard: { fontSize: 10.5, lineHeight: 13, color: LOG_SCALE_ORANGE, fontWeight: "900" },
+  scaleValueDense: { fontSize: 9 },
   meterRow: { flexDirection: "row", alignItems: "flex-end", height: 32, gap: 3 },
+  meterRowCard: { height: 9, gap: 3, marginTop: 3 },
+  meterRowDense: { height: 7, gap: 2, marginTop: 2 },
   meterBar: { flex: 1, borderRadius: 3 },
+  meterBarCard: { height: "100%" },
+  meterBarDense: { borderRadius: 2 },
   meterBarFilled: { backgroundColor: theme.accentStrong },
   meterBarEmpty: { backgroundColor: colors.surfaceInset, borderWidth: 1, borderColor: colors.line },
+  meterBarFilledCard: { backgroundColor: LOG_SCALE_ORANGE },
+  meterBarEmptyCard: { backgroundColor: "#f0f1ec", borderWidth: 0 },
   scaleHints: { flexDirection: "row", justifyContent: "space-between" },
   scaleHint: { color: colors.inkFaint, fontSize: 9, fontWeight: "700", textTransform: "uppercase" },
+  scaleHintCard: { fontSize: 8, lineHeight: 10 },
+  scaleHintDense: { fontSize: 6.7, letterSpacing: 0.2 },
+  scaleCard: {
+    minHeight: 37,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceRaised,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  scaleCardDense: { minHeight: 35, paddingHorizontal: 6, paddingVertical: 4 },
+  scaleCardHeader: { flexDirection: "row", alignItems: "center", gap: 5 },
+  scaleIcon: { height: 20, width: 20, borderRadius: 10, backgroundColor: "#fff4eb", borderWidth: 1, borderColor: "#f5eadf", alignItems: "center", justifyContent: "center" },
+  scaleIconDense: { height: 17, width: 17, borderRadius: 9 },
+  scaleCardCopy: { flex: 1, minWidth: 0 },
+  scaleValueBlock: { alignItems: "flex-end", minWidth: 24 },
   choiceGrid: { flexDirection: "row", gap: 8 },
+  choiceGridCompact: { gap: 0, borderRadius: 9, borderWidth: 1, borderColor: colors.line, overflow: "hidden", backgroundColor: colors.surfaceInset },
   choice: { flex: 1, minHeight: 34, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, alignItems: "center", justifyContent: "center", paddingHorizontal: 8 },
+  choiceCompact: { minHeight: 28, borderRadius: 0, borderTopWidth: 0, borderBottomWidth: 0, borderLeftWidth: 0, borderRightWidth: 1, backgroundColor: colors.surfaceInset, paddingHorizontal: 5 },
   choiceOn: { backgroundColor: "#ff7e1a", borderColor: "#ff7e1a" },
   choiceText: { color: colors.inkMuted, fontSize: 11, fontWeight: "800" },
+  choiceTextCompact: { fontSize: 8.6 },
   choiceTextOn: { color: "#1a0c00" },
   compactButton: {
     marginTop: 4,
-    height: 36,
-    borderRadius: radius.md,
-    backgroundColor: theme.accent,
+    height: 32,
+    borderRadius: 9,
+    backgroundColor: "#ff6b10",
     alignItems: "center",
     justifyContent: "center",
   },
   compactButtonDisabled: { opacity: 0.45 },
   compactButtonDone: { backgroundColor: colors.ok },
   compactButtonRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  compactButtonText: { color: theme.accentInk, fontSize: 12, fontWeight: "800" },
+  compactButtonText: { color: "#ffffff", fontSize: 11.5, fontWeight: "900" },
   // Log checklist hub
   logHub: { padding: 0, overflow: "hidden" },
+  logHubNative: {
+    borderRadius: 18,
+    shadowOpacity: 0.024,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 1,
+  },
   logHubHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
+  logHubHeadNative: { paddingHorizontal: 10, paddingTop: 9, paddingBottom: 6 },
+  logTitleNative: { fontSize: 10.5, letterSpacing: 0.9 },
   logProgressLine: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 },
+  logProgressLineNative: { gap: 7, marginTop: 5 },
   logProgressTrack: { flex: 1, height: 8, borderRadius: 999, backgroundColor: colors.surfaceInset, overflow: "hidden" },
-  logProgressFill: { height: 8, borderRadius: 999, backgroundColor: theme.accentStrong },
+  logProgressFill: { height: 8, borderRadius: 999, backgroundColor: "#ff6b10" },
   logProgressPill: { borderRadius: 999, backgroundColor: colors.surfaceInset, paddingHorizontal: 10, paddingVertical: 4 },
+  logProgressPillNative: { paddingHorizontal: 9, paddingVertical: 4 },
   logProgressPillDone: { backgroundColor: `${colors.ok}1e` },
   logProgressText: { fontSize: 11, fontWeight: "800", color: colors.inkMuted, letterSpacing: 0.3 },
   logProgressTextDone: { color: colors.ok },
   restDayPanel: { marginHorizontal: 16, marginVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, padding: 12, flexDirection: "row", alignItems: "center", gap: 12 },
+  restDayPanelNative: { marginHorizontal: 10, marginVertical: 5, borderRadius: 14, paddingHorizontal: 8, paddingVertical: 5, gap: 8, backgroundColor: colors.surfaceInset },
+  restIconBadge: { height: 31, width: 31, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceRaised, borderWidth: 1, borderColor: colors.line },
+  restIconBadgeOn: { backgroundColor: "#ff7e1a", borderColor: "#ff7e1a" },
   restDayTitle: { color: colors.ink, fontSize: 14, fontWeight: "800" },
+  restDayTitleNative: { fontSize: 11.5, lineHeight: 14 },
   restDayText: { marginTop: 2, color: colors.inkMuted, fontSize: 11, lineHeight: 15 },
+  restDayTextNative: { fontSize: 9.2, lineHeight: 12 },
   restToggle: { height: 36, width: 48, borderRadius: 999, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceRaised, alignItems: "center", justifyContent: "center" },
+  restToggleNative: { height: 26, width: 34 },
   restToggleOn: { borderColor: theme.accentStrong, backgroundColor: theme.accentStrong },
   sessionTabs: { flexDirection: "row", gap: 8, paddingHorizontal: 16, paddingBottom: 12 },
+  sessionTabsNative: { gap: 6, paddingHorizontal: 10, paddingBottom: 7 },
   sessionTab: {
     flex: 1,
     minHeight: 82,
@@ -8414,12 +9188,16 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     justifyContent: "space-between",
   },
-  sessionTabActive: { borderColor: theme.accentStrong, backgroundColor: theme.accentSoft },
+  sessionTabNative: { minHeight: 49, borderRadius: 12, paddingHorizontal: 7, paddingVertical: 5 },
+  sessionTabActive: { borderColor: "#ff7e1a", backgroundColor: "#fff3e8" },
   sessionTabDone: { borderColor: `${colors.ok}55` },
+  sessionTabTop: { minHeight: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 4 },
+  sessionTabCheck: { height: 14, width: 14, borderRadius: 7, backgroundColor: "#ff7e1a", alignItems: "center", justifyContent: "center" },
   sessionTabLabel: { color: colors.inkFaint, fontSize: 10, fontWeight: "900", letterSpacing: 1.3, textTransform: "uppercase" },
-  sessionTabLabelActive: { color: theme.accentStrong },
-  sessionTabTitle: { marginTop: 6, color: colors.ink, fontSize: 13, fontWeight: "800", lineHeight: 17 },
-  sessionTabMeta: { marginTop: 4, color: colors.inkMuted, fontSize: 11, fontWeight: "700" },
+  sessionTabLabelActive: { color: "#f26a0a" },
+  sessionTabTitle: { marginTop: 3, color: colors.ink, fontSize: 10.2, fontWeight: "900", lineHeight: 12 },
+  sessionTabStatusPill: { marginTop: 3, alignSelf: "flex-start", borderRadius: 999, backgroundColor: "#eef0ea", paddingHorizontal: 6, paddingVertical: 2 },
+  sessionTabMeta: { color: colors.inkMuted, fontSize: 8.5, fontWeight: "800" },
   sessionFormPanel: {
     marginHorizontal: 16,
     marginBottom: 10,
@@ -8429,7 +9207,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     padding: 12,
   },
+  sessionFormPanelNative: { marginHorizontal: 10, marginBottom: 8, borderRadius: 14, padding: 8 },
+  sessionFormTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   sessionFormTitle: { color: colors.ink, fontSize: 16, fontWeight: "800" },
+  sessionFormTitleNative: { fontSize: 12.5, lineHeight: 16, textTransform: "uppercase", letterSpacing: 0.2 },
   logRowWrap: { borderTopWidth: 1, borderTopColor: colors.line },
   logRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingVertical: 14 },
   logRowTitle: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: "700", color: colors.ink },
@@ -8437,6 +9218,15 @@ const styles = StyleSheet.create({
   logRowStatusDone: { color: colors.inkMuted },
   logRowBody: { paddingHorizontal: 16, paddingBottom: 16, paddingTop: 2 },
   sessionMetaRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 },
+  logFieldRow: { flexDirection: "row", gap: 7, marginTop: 9, alignItems: "flex-start" },
+  logFieldRowStacked: { flexDirection: "column" },
+  logWorkoutField: { flex: 1.35, minWidth: 0 },
+  logSmallField: { flex: 0.72, minWidth: 0 },
+  logFieldFull: { width: "100%" },
+  logScaleStack: { gap: 4, marginTop: 7 },
+  logDenseScaleRow: { gap: 6, marginTop: 4 },
+  logSaveWrap: { marginTop: 6 },
+  logStackNative: { gap: 6 },
   formError: { marginTop: 8, color: colors.bad, fontSize: 12, fontWeight: "700" },
   segmentRow: { flexDirection: "row", gap: 8, marginTop: 12 },
   estLoad: { color: colors.inkMuted, fontSize: 13, fontWeight: "700" },
@@ -8446,7 +9236,9 @@ const styles = StyleSheet.create({
   trainingTextOn: { color: theme.accentStrong },
   // Web-style dropdown
   dropdownField: { marginTop: 6, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, height: 46, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, paddingHorizontal: 12 },
+  dropdownFieldCompact: { height: 32, marginTop: 0, borderRadius: 9, backgroundColor: colors.surfaceInset, paddingHorizontal: 9, gap: 5 },
   dropdownValue: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14, fontWeight: "700" },
+  dropdownValueCompact: { fontSize: 9.7, fontWeight: "800" },
   dropdownBackdrop: { flex: 1, justifyContent: "center", padding: 24, backgroundColor: "rgba(18,24,22,0.35)" },
   dropdownSheet: { maxHeight: "80%", borderRadius: radius.lg, borderWidth: 1, borderColor: colors.lineStrong, backgroundColor: colors.surfaceRaised, paddingVertical: 8, paddingHorizontal: 6 },
   dropdownSheetTitle: { paddingHorizontal: 10, paddingVertical: 8, fontSize: 11, fontWeight: "800", letterSpacing: 1, textTransform: "uppercase", color: colors.inkFaint },
@@ -8468,23 +9260,130 @@ const styles = StyleSheet.create({
   recoveryChipOn: { borderColor: theme.accentStrong, backgroundColor: theme.accentSoft },
   recoveryText: { color: colors.inkMuted, fontSize: 12, fontWeight: "800" },
   recoveryTextOn: { color: theme.accentStrong },
-  noteBox: { minHeight: 92, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, paddingHorizontal: 12, paddingVertical: 10, color: colors.ink, fontSize: 14, textAlignVertical: "top" },
+  noteBox: { minHeight: 92, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceInset, paddingHorizontal: 12, paddingVertical: 10, color: colors.ink, fontSize: 14, fontFamily: "Inter_400Regular", fontWeight: "normal", includeFontPadding: false, textAlignVertical: "top" },
+  noteBoxNative: { minHeight: 48, borderRadius: 9, backgroundColor: colors.surfaceInset, paddingHorizontal: 9, paddingVertical: 7, paddingBottom: 15, fontSize: 9.5, lineHeight: 12 },
+  noteCount: { position: "absolute", right: 9, bottom: 7, color: colors.inkFaint, fontSize: 7.5, fontWeight: "700" },
   noteItem: { borderLeftWidth: 3, borderLeftColor: theme.accentStrong, backgroundColor: colors.surfaceInset, borderRadius: radius.md, padding: 10 },
   noteText: { color: colors.ink, fontSize: 13 },
-  sessionPhotoRow: { marginTop: 8, flexDirection: "row", flexWrap: "wrap", gap: 8, alignItems: "center" },
-  sessionPhotoThumb: { width: 64, height: 64, borderRadius: radius.sm, backgroundColor: colors.surfaceInset },
-  sessionPhotoButton: { width: 64, height: 64, flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, borderRadius: radius.sm, borderWidth: 1, borderStyle: "dashed", borderColor: colors.line },
-  sessionPhotoButtonText: { fontSize: 9, fontWeight: "700", color: colors.inkFaint, textTransform: "uppercase" },
+  logNotesRow: { flexDirection: "row", gap: 8, marginTop: 6, alignItems: "stretch" },
+  logNotesRowStacked: { flexDirection: "column" },
+  logNotesCol: { flex: 1, minWidth: 0, position: "relative" },
+  logPhotoCol: { width: 76, position: "relative" },
+  sessionPhotoRow: { marginTop: 6, flexDirection: "row", flexWrap: "wrap", gap: 7, alignItems: "center" },
+  sessionPhotoThumb: { width: 42, height: 42, borderRadius: 9, backgroundColor: colors.surfaceInset },
+  sessionPhotoButton: { width: "100%", minHeight: 48, flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, borderRadius: 9, borderWidth: 1, borderStyle: "dashed", borderColor: colors.lineStrong, backgroundColor: colors.surfaceRaised, overflow: "hidden" },
+  sessionPhotoButtonText: { fontSize: 8, fontWeight: "800", color: colors.inkMuted },
   sessionPhotoPreviewRow: { position: "relative" },
-  sessionPhotoPreviewImage: { width: 64, height: 64, borderRadius: radius.sm, backgroundColor: colors.surfaceInset },
+  sessionPhotoPreviewImage: { width: "100%", height: "100%", borderRadius: 9, backgroundColor: colors.surfaceInset },
   sessionPhotoPreviewRemove: { position: "absolute", top: -6, right: -6, height: 20, width: 20, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceRaised, borderWidth: 1, borderColor: colors.line },
+  coachSectionStack: { gap: 8 },
+  coachPanel: {
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 18,
+    shadowOpacity: 0.024,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 1,
+  },
+  coachActivityPanel: { paddingBottom: 8 },
+  coachPanelHeader: { flexDirection: "row", alignItems: "center", gap: 7, marginBottom: 8 },
+  coachActivityHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 },
+  coachActivityHeaderTitle: { marginBottom: 0, flex: 1 },
+  coachHeaderIcon: {
+    height: 18,
+    width: 18,
+    borderRadius: 9,
+    backgroundColor: "#fff3e8",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  coachPanelTitle: { flex: 1, fontSize: 10.5, lineHeight: 13, letterSpacing: 0.9 },
+  coachCardList: { gap: 7 },
+  coachUpdateRow: {
+    minHeight: 58,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderLeftWidth: 3,
+    borderColor: colors.line,
+    borderLeftColor: COACH_SECTION_ORANGE,
+    backgroundColor: colors.surfaceRaised,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  coachUpdateIcon: {
+    height: 30,
+    width: 30,
+    borderRadius: 15,
+    backgroundColor: "#fff3e8",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  coachUpdateCopy: { flex: 1, minWidth: 0 },
+  coachUpdateBody: { color: colors.ink, fontSize: 10.5, lineHeight: 14, fontWeight: "800" },
+  coachUpdateMeta: { marginTop: 4, color: colors.inkFaint, fontSize: 7.4, lineHeight: 9, textTransform: "uppercase", letterSpacing: 0.9, fontWeight: "900" },
+  coachFeedbackRow: {
+    minHeight: 48,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  coachFeedbackIcon: {
+    height: 28,
+    width: 28,
+    borderRadius: 14,
+    backgroundColor: "#fff3e8",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  coachFeedbackText: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 10.5, lineHeight: 14, fontWeight: "800" },
+  coachEmptyPanel: {
+    minHeight: 45,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceInset,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  coachEmptyIcon: {
+    height: 26,
+    width: 26,
+    borderRadius: 13,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.line,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  coachEmptyText: { flex: 1, color: colors.inkMuted, fontSize: 10, lineHeight: 13, fontWeight: "700" },
+  coachViewAllButton: { flexDirection: "row", alignItems: "center", gap: 2, paddingLeft: 8, paddingVertical: 3 },
+  coachViewAllText: { color: COACH_SECTION_ORANGE, fontSize: 7.8, lineHeight: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.8 },
   accentItem: { borderLeftWidth: 3, borderLeftColor: theme.accentStrong, backgroundColor: `${theme.accent}0f`, borderRadius: radius.md, padding: 10 },
   insetItem: { borderLeftWidth: 3, borderLeftColor: colors.inkFaint, backgroundColor: colors.surfaceInset, borderRadius: radius.md, padding: 10 },
   itemBody: { color: colors.ink, fontSize: 13, lineHeight: 18 },
   itemMeta: { marginTop: 5, color: colors.inkFaint, fontSize: 10, textTransform: "uppercase", letterSpacing: 1 },
   timeline: { position: "relative", gap: 14, marginTop: 12 },
+  timelineCompact: { gap: 8, marginTop: 0 },
   timelineLine: { position: "absolute", left: 17, top: 36, bottom: 18, width: 1, backgroundColor: colors.line },
+  timelineLineCompact: { left: 12, top: 26, bottom: 12, backgroundColor: "rgba(17,30,17,0.07)" },
   timelineItem: { position: "relative", flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  timelineItemCompact: { gap: 9, minHeight: 31 },
   timelineIconBadge: {
     height: 36,
     width: 36,
@@ -8493,10 +9392,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexShrink: 0,
   },
+  timelineIconBadgeCompact: { height: 24, width: 24, borderRadius: 12 },
   timelineTitleRow: { flexDirection: "row", alignItems: "baseline", gap: 8 },
   timelineTitle: { flex: 1, color: colors.ink, fontSize: 13, fontWeight: "800", lineHeight: 18 },
+  timelineTitleCompact: { fontSize: 9.5, lineHeight: 12, fontWeight: "900" },
   timelineTime: { color: colors.inkFaint, fontSize: 10, fontWeight: "700", textTransform: "uppercase" },
+  timelineTimeCompact: { fontSize: 7.5, lineHeight: 10, fontWeight: "900" },
   timelineDetail: { color: colors.inkMuted, fontSize: 11, lineHeight: 15 },
+  timelineDetailCompact: { fontSize: 7.8, lineHeight: 10, fontWeight: "600" },
   directChat: { flex: 1, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 10, backgroundColor: colors.surface },
   directTopRow: { minHeight: 42, justifyContent: "center", alignItems: "flex-start" },
   directBack: {
@@ -8546,6 +9449,9 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     color: colors.ink,
     fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    fontWeight: "normal",
+    includeFontPadding: false,
     textAlignVertical: "top",
   },
   directSend: {

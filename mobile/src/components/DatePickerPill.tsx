@@ -135,7 +135,7 @@ export function DatePickerPill({
           accessibilityRole="button"
           accessibilityLabel={accessibilityLabel}
         >
-          <Ionicons name="calendar-outline" size={24} color={colors.ink} />
+          <Ionicons name="calendar-outline" size={20} color={colors.ink} />
         </Pressable>
       ) : (
         <Pressable
@@ -252,25 +252,25 @@ const styles = StyleSheet.create({
   pillCompact: { minWidth: 0, paddingHorizontal: 9 },
   pillText: { fontSize: 12, fontWeight: "800", color: colors.ink },
   iconButton: {
-    height: 44,
-    width: 44,
-    borderRadius: 15,
+    height: 40,
+    width: 40,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.surfaceRaised,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.08,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 2,
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.024,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 1,
   },
   backdrop: {
     flex: 1,
     justifyContent: "center",
     padding: 20,
-    backgroundColor: "rgba(18,24,22,0.32)",
+    backgroundColor: "rgba(28,26,22,0.24)",
   },
   sheet: {
     borderRadius: radius.lg,
@@ -278,11 +278,11 @@ const styles = StyleSheet.create({
     borderColor: colors.lineStrong,
     backgroundColor: colors.surfaceRaised,
     padding: 14,
-    shadowColor: "#000",
-    shadowOpacity: 0.18,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.07,
+    shadowRadius: 30,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 3,
   },
   monthHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
   monthButton: {

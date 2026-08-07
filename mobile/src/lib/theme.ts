@@ -5,14 +5,14 @@
 import type { Role } from "./roles";
 
 export const colors = {
-  surface: "#f6f7f3", // warm off-white page bg
-  surfaceRaised: "#ffffff", // white cards
-  surfaceInset: "#f0f2ec", // pale inset (fields, tiles)
-  ink: "#121816",
-  inkMuted: "#5a645e",
-  inkFaint: "#747e77",
-  line: "rgba(17,30,17,0.08)",
-  lineStrong: "rgba(17,30,17,0.14)",
+  surface: "#fbfaf6", // warm off-white page bg
+  surfaceRaised: "#fffefd", // white cards with a warm paper tint
+  surfaceInset: "#f6f5f0", // pale inset (fields, tiles)
+  ink: "#111514",
+  inkMuted: "#606862",
+  inkFaint: "#818982",
+  line: "rgba(31,35,32,0.042)",
+  lineStrong: "rgba(31,35,32,0.082)",
   ok: "#16a34a",
   warn: "#ca8a04",
   bad: "#dc2626",
@@ -78,5 +78,5 @@ export const ROLE_THEME_LIST: RoleTheme[] = [
   ROLE_THEMES.guardian,
 ];
 
-export const radius = { sm: 10, md: 14, lg: 18, pill: 999 } as const;
+export const radius = { sm: 8, md: 10, lg: 13, pill: 999 } as const;
 export const space = (n: number) => n * 4;

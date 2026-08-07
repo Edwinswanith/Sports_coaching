@@ -160,7 +160,7 @@ export default function Roster() {
             <SpotlightTarget id="mobile-coach-roster" style={[styles.searchBlock, rosterHighlight]}>
               <View style={styles.searchRow}>
                 <View style={styles.searchWrap}>
-                  <Ionicons name="search-outline" size={17} color={colors.inkFaint} />
+                  <Ionicons name="search-outline" size={15} color={colors.inkFaint} />
                   <TextInput
                     value={query}
                     onChangeText={setQuery}
@@ -258,10 +258,9 @@ function RosterRow({
   onPress: () => void;
 }) {
   const readiness = band(summary?.readinessScore);
-  const flagged = attentionRank(summary) < 2;
   return (
     <Pressable onPress={onPress}>
-      <Card style={[styles.row, flagged ? { borderColor: readiness.color + "55" } : null]}>
+      <Card style={styles.row}>
         <View style={styles.avatarWrap}>
           <Avatar
             avatar={athlete.avatar}
@@ -282,7 +281,7 @@ function RosterRow({
             {summary?.rpe ? <Chip label={summary.rpe.riskFlag} color={riskColor(summary.rpe.riskFlag)} /> : null}
           </View>
           <Text style={styles.meta} numberOfLines={1}>
-            {[athlete.sport, athlete.position, summary?.attendance?.status].filter(Boolean).join(" - ") || "-"}
+            {[athlete.sport, athlete.position, summary?.attendance?.status].filter(Boolean).join(" / ") || "-"}
           </Text>
         </View>
         <View style={styles.loadBlock}>
@@ -292,7 +291,7 @@ function RosterRow({
               <Text style={styles.loadLabel}>load</Text>
             </>
           ) : (
-            <Text style={styles.noRpe}>No RPM</Text>
+            <Text style={styles.noRpe}>No RPE</Text>
           )}
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.inkFaint} />
@@ -319,14 +318,14 @@ const styles = StyleSheet.create({
   searchWrap: {
     flex: 1,
     height: 46,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.line,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.lineStrong,
     backgroundColor: colors.surfaceInset,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
   },
   searchInput: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14, paddingVertical: 0 },
   filterMetaRow: { flexDirection: "row", alignItems: "center", gap: 8 },

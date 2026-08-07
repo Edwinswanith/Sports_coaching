@@ -7,7 +7,6 @@ import { AppFrame, type NativeNavItem } from "../../components/AppFrame";
 import { Card, Muted } from "../../components/ui";
 import { DatePickerPill } from "../../components/DatePickerPill";
 import { AskAgentControl } from "../../components/AskAgentControl";
-import { Gauge } from "../../components/Gauge";
 import { apiJson } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { useAutoStartMobileTour, useTourHighlight, useTourScrollView } from "../../lib/tour/MobileTourProvider";
@@ -251,15 +250,18 @@ export default function GuardianDashboard() {
           </Card>
         ) : (
           <View style={styles.stack}>
-            <SpotlightTarget id="mobile-guardian-sleep" style={sleepHighlight}>
-              <SleepCard quality={summary.sleep.quality} hours={summary.sleep.hours} />
-            </SpotlightTarget>
-            <SpotlightTarget id="mobile-guardian-water" style={waterHighlight}>
-              <WaterCard totalMl={summary.water.totalMl} goalMl={summary.water.goalMl} pct={waterPct} hasGoal={hasGoal} />
-            </SpotlightTarget>
-            <SpotlightTarget id="mobile-guardian-attendance" style={attendanceHighlight}>
-              <AttendanceCard status={summary.attendance.status} note={summary.attendance.note} />
-            </SpotlightTarget>
+            <SummaryHeroCard summary={summary} />
+            <View style={styles.grid3}>
+              <SpotlightTarget id="mobile-guardian-sleep" style={[styles.gridSlot, sleepHighlight]}>
+                <SleepCard quality={summary.sleep.quality} hours={summary.sleep.hours} />
+              </SpotlightTarget>
+              <SpotlightTarget id="mobile-guardian-water" style={[styles.gridSlot, waterHighlight]}>
+                <WaterCard totalMl={summary.water.totalMl} goalMl={summary.water.goalMl} pct={waterPct} hasGoal={hasGoal} />
+              </SpotlightTarget>
+              <SpotlightTarget id="mobile-guardian-attendance" style={[styles.gridSlot, attendanceHighlight]}>
+                <AttendanceCard status={summary.attendance.status} note={summary.attendance.note} />
+              </SpotlightTarget>
+            </View>
           </View>
         )}
       </ScrollView>
@@ -268,38 +270,79 @@ export default function GuardianDashboard() {
   );
 }
 
-function MetricIcon({ band, icon }: { band: Band; icon: keyof typeof Ionicons.glyphMap }) {
-  const color = BAND_COLOR[band];
+function SummaryHeroCard({ summary }: { summary: GuardianSummary }) {
+  const hasAnyData = summary.sleep.quality !== null || summary.attendance.status !== null || summary.water.totalMl > 0;
   return (
-    <View style={[styles.metricIcon, { backgroundColor: `${color}1a` }]}>
-      <Ionicons name={icon} size={20} color={color} />
-    </View>
+    <Card style={styles.heroCard}>
+      <View style={styles.heroRow}>
+        <View style={[styles.heroRing, hasAnyData ? { borderColor: theme.accent + "55" } : null]}>
+          <Ionicons
+            name={hasAnyData ? "shield-checkmark-outline" : "shield-outline"}
+            size={22}
+            color={hasAnyData ? theme.accent : colors.inkFaint}
+          />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.heroLabel}>Today's summary</Text>
+          <Text style={styles.heroTitle}>{hasAnyData ? "Checked in today" : "No check-in yet"}</Text>
+          <Text style={styles.heroSub}>
+            {hasAnyData ? "Today's logged updates are below." : "We're waiting for today's update."}
+          </Text>
+        </View>
+      </View>
+    </Card>
   );
 }
 
-function Badge({ band, text }: { band: Band; text: string }) {
-  const color = BAND_COLOR[band];
+function GridMetric({
+  icon,
+  color,
+  label,
+  value,
+  sub,
+  pillText,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  color: string;
+  label: string;
+  value: string;
+  sub?: string;
+  pillText: string;
+}) {
   return (
-    <View style={[styles.badge, { backgroundColor: `${color}1a` }]}>
-      <Text style={[styles.badgeText, { color }]}>{text}</Text>
-    </View>
+    <Card style={styles.gridCard}>
+      <View style={[styles.gridRing, { borderColor: color + "40" }]}>
+        <Ionicons name={icon} size={19} color={color} />
+      </View>
+      <Text style={styles.gridLabel}>{label}</Text>
+      <Text style={styles.gridValue} numberOfLines={1} adjustsFontSizeToFit>
+        {value}
+      </Text>
+      {sub ? (
+        <Text style={styles.gridSub} numberOfLines={1}>
+          {sub}
+        </Text>
+      ) : null}
+      <View style={[styles.gridPill, { backgroundColor: color + "1a" }]}>
+        <Text style={[styles.gridPillText, { color }]} numberOfLines={2}>
+          {pillText}
+        </Text>
+      </View>
+    </Card>
   );
 }
 
 function SleepCard({ quality, hours }: { quality: number | null; hours: number | null }) {
   const band = sleepBand(quality);
-  const pct = quality !== null ? (quality / 5) * 100 : 0;
   return (
-    <Card style={styles.metricCard}>
-      <View style={styles.metricRow}>
-        <Gauge pct={pct} band={band} displayValue={quality != null ? String(quality) : "—"} displayUnit="/ 5" />
-        <View style={styles.metricCopy}>
-          <Text style={styles.metricLabel}>Sleep quality</Text>
-          <Text style={styles.metricValue}>{sleepLabel(quality)}</Text>
-          {hours != null ? <Text style={styles.metricExtra}>{hours}h of sleep logged</Text> : null}
-        </View>
-      </View>
-    </Card>
+    <GridMetric
+      icon="moon"
+      color={BAND_COLOR[band]}
+      label="Sleep quality"
+      value={sleepLabel(quality)}
+      sub={`${quality ?? "—"} / 5${hours != null ? ` · ${hours}h` : ""}`}
+      pillText={quality === null ? "Awaiting update" : "Logged"}
+    />
   );
 }
 
@@ -314,37 +357,30 @@ function WaterCard({
   pct: number;
   hasGoal: boolean;
 }) {
-  const band = waterBand(pct, hasGoal);
+  void hasGoal;
   return (
-    <Card style={styles.metricCard}>
-      <View style={styles.metricRow}>
-        <Gauge pct={pct} band={band} displayValue={`${pct}%`} />
-        <View style={styles.metricCopy}>
-          <Text style={styles.metricLabel}>Water intake</Text>
-          <View style={styles.metricValueRow}>
-            <Text style={styles.metricValue}>{litres(totalMl)}</Text>
-            <Text style={styles.metricUnit}>/ {litres(goalMl)} L goal</Text>
-          </View>
-        </View>
-      </View>
-    </Card>
+    <GridMetric
+      icon="water"
+      color="#2f7df6"
+      label="Water intake"
+      value={`${litres(totalMl)} / ${litres(goalMl)} L goal`}
+      sub={`${litres(totalMl)}L consumed · ${pct}%`}
+      pillText={`Goal: ${litres(goalMl)} Liters`}
+    />
   );
 }
 
 function AttendanceCard({ status, note }: { status: string | null; note: string | null }) {
   const band = attendanceBand(status);
   return (
-    <Card style={styles.metricCard}>
-      <View style={styles.metricRow}>
-        <MetricIcon band={band} icon="checkmark-circle-outline" />
-        <View style={styles.metricCopy}>
-          <Text style={styles.metricLabel}>Attendance</Text>
-          <Text style={styles.attendanceValue}>{attendanceLabel(status)}</Text>
-          {note ? <Text style={styles.metricExtra}>{note}</Text> : null}
-        </View>
-        <Badge band={band} text={status ?? "—"} />
-      </View>
-    </Card>
+    <GridMetric
+      icon="checkmark-circle-outline"
+      color={BAND_COLOR[band]}
+      label="Attendance"
+      value={attendanceLabel(status)}
+      sub={note ?? undefined}
+      pillText={status === null ? "Awaiting update" : "Logged"}
+    />
   );
 }
 
@@ -385,16 +421,35 @@ const styles = StyleSheet.create({
   notice: { borderWidth: 1, borderColor: colors.bad + "55", backgroundColor: colors.bad + "14", borderRadius: radius.md, padding: 10, marginBottom: 12 },
   noticeText: { color: colors.bad, fontSize: 13, fontWeight: "700" },
   emptyTitle: { fontSize: 15, fontWeight: "700", color: colors.ink },
-  metricCard: { padding: 14 },
-  metricRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  metricIcon: { height: 44, width: 44, borderRadius: 16, alignItems: "center", justifyContent: "center" },
-  metricCopy: { flex: 1, minWidth: 0 },
-  metricLabel: { fontSize: 10, fontWeight: "800", color: colors.inkFaint, textTransform: "uppercase", letterSpacing: 1.5 },
-  metricValueRow: { marginTop: 3, flexDirection: "row", alignItems: "baseline", gap: 4, flexWrap: "wrap" },
-  metricValue: { marginTop: 3, fontSize: 17, fontWeight: "800", color: colors.ink },
-  metricUnit: { fontSize: 12, color: colors.inkFaint },
-  metricExtra: { fontSize: 11, color: colors.inkMuted, marginTop: 2 },
-  attendanceValue: { marginTop: 3, fontSize: 17, fontWeight: "800", color: colors.ink },
-  badge: { borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 5 },
-  badgeText: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.5 },
+  heroCard: { padding: 16 },
+  heroRow: { flexDirection: "row", alignItems: "center", gap: 14 },
+  heroRing: {
+    height: 56,
+    width: 56,
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: colors.line,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroLabel: { fontSize: 10, fontWeight: "800", color: colors.inkFaint, textTransform: "uppercase", letterSpacing: 1.5 },
+  heroTitle: { marginTop: 3, fontSize: 18, fontWeight: "800", color: colors.ink },
+  heroSub: { marginTop: 2, fontSize: 12, color: colors.inkMuted },
+  grid3: { flexDirection: "row", gap: 10 },
+  gridSlot: { flex: 1 },
+  gridCard: { flex: 1, alignItems: "center", padding: 12, gap: 4 },
+  gridRing: {
+    height: 48,
+    width: 48,
+    borderRadius: 24,
+    borderWidth: 2,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  gridLabel: { fontSize: 9, fontWeight: "900", color: colors.inkFaint, textTransform: "uppercase", letterSpacing: 1, textAlign: "center" },
+  gridValue: { fontSize: 14, fontWeight: "800", color: colors.ink, textAlign: "center", maxWidth: "100%" },
+  gridSub: { fontSize: 10, color: colors.inkMuted, textAlign: "center" },
+  gridPill: { marginTop: 4, borderRadius: radius.sm, paddingHorizontal: 6, paddingVertical: 4, maxWidth: "100%", alignSelf: "stretch" },
+  gridPillText: { fontSize: 8.5, fontWeight: "800", textAlign: "center", lineHeight: 11 },
 });

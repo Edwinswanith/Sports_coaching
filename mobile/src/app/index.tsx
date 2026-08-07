@@ -1,10 +1,12 @@
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Text } from "../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { ROLE_THEME_LIST, colors, radius } from "../lib/theme";
 import { H1, Muted } from "../components/ui";
+
+const APP_ICON = require("../../assets/images/adaptive-icon.png");
 
 const FEATURES: { icon: keyof typeof Ionicons.glyphMap; title: string; sub: string }[] = [
   { icon: "flash", title: "Daily check-in & RPM", sub: "Log training load, sleep, soreness in seconds" },
@@ -19,13 +21,15 @@ export default function Landing() {
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.brandRow}>
-          <View style={styles.mark}>
-            <Ionicons name="ellipse-outline" size={20} color={colors.surface} />
+          <View style={styles.markWrap}>
+            <Image source={APP_ICON} style={styles.mark} resizeMode="contain" />
           </View>
           <Text style={styles.brand}>APEX</Text>
         </View>
 
-        <H1 style={{ marginTop: 24 }}>Train by the numbers.</H1>
+        <H1 style={{ marginTop: 24 }}>
+          Train by the numbers<Text style={styles.dot}>.</Text>
+        </H1>
         <Muted style={{ marginTop: 10, maxWidth: 300 }}>
           One performance OS. Choose how you are signing in.
         </Muted>
@@ -49,12 +53,21 @@ export default function Landing() {
           ))}
         </View>
 
-        <Muted style={{ marginTop: 22, fontSize: 12 }}>
-          Existing accounts keep their saved role. New Google users are created from the role they pick.
-        </Muted>
+        <View style={styles.noticeRow}>
+          <View style={styles.noticeIcon}>
+            <Ionicons name="shield-checkmark-outline" size={16} color={colors.inkMuted} />
+          </View>
+          <Muted style={{ flex: 1, minWidth: 0, fontSize: 12 }}>
+            Existing accounts keep their saved role. New Google users are created from the role they pick.
+          </Muted>
+        </View>
 
         <View style={styles.featureSection}>
-          <Text style={styles.sectionLabel}>What you get</Text>
+          <View style={styles.sectionLabelRow}>
+            <View style={styles.sectionDivider} />
+            <Text style={styles.sectionLabel}>What you get</Text>
+            <View style={styles.sectionDivider} />
+          </View>
           <View style={styles.featureCard}>
             {FEATURES.map((feature, index) => (
               <View
@@ -81,15 +94,28 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
   content: { padding: 24, paddingTop: 32, flexGrow: 1 },
   brandRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  mark: {
+  markWrap: {
     height: 32,
     width: 32,
     borderRadius: 9,
-    backgroundColor: colors.ink,
+    backgroundColor: "#0f1410",
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
+  mark: { height: 22, width: 22 },
   brand: { fontSize: 14, fontWeight: "700", letterSpacing: 4, color: colors.inkMuted },
+  dot: { color: "#ff7e1a" },
+  noticeRow: { marginTop: 22, flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  noticeIcon: {
+    height: 26,
+    width: 26,
+    borderRadius: 13,
+    backgroundColor: colors.surfaceInset,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+  },
   roleCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -104,6 +130,8 @@ const styles = StyleSheet.create({
   roleLabel: { fontSize: 17, fontWeight: "700", color: colors.ink },
   roleTag: { fontSize: 13, color: colors.inkMuted, marginTop: 2 },
   featureSection: { marginTop: 28 },
+  sectionLabelRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  sectionDivider: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.lineStrong },
   sectionLabel: {
     fontSize: 11,
     fontWeight: "800",

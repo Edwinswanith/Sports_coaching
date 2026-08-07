@@ -265,6 +265,7 @@ export default function AthleteDetail() {
                 perfEntries={perfEntries}
                 chartTab={chartTab}
                 setChartTab={setChartTab}
+                onLogRpm={() => setTab("rpe")}
               />
             ) : tab === "training" ? (
               <TrainingTab card={card} athleteId={athleteId} date={date} accent={accent} onSaved={load} />
@@ -316,6 +317,7 @@ function OverviewTab({
   perfEntries,
   chartTab,
   setChartTab,
+  onLogRpm,
 }: {
   card: DailyCard;
   trends: TrendPoint[];
@@ -323,6 +325,7 @@ function OverviewTab({
   perfEntries: PerfEntry[];
   chartTab: ChartTab;
   setChartTab: (tab: ChartTab) => void;
+  onLogRpm: () => void;
 }) {
   return (
     <View style={styles.stack}>
@@ -355,9 +358,10 @@ function OverviewTab({
           {SESSION_SLOTS.map((slot) => (
             <InfoTile
               key={slot}
-              label={SLOT_LABEL[slot]}
+              icon={slot === "PM" ? "moon-outline" : "sunny-outline"}
+              label={slot === "AFT" ? SLOT_LABEL[slot] : `${SLOT_LABEL[slot]} session`}
               value={dash(card.sessions[slot]?.status)}
-              sub={card.sessions[slot]?.type ?? undefined}
+              sub={card.sessions[slot]?.type ?? "No session"}
             />
           ))}
         </View>
@@ -372,7 +376,7 @@ function OverviewTab({
         ) : null}
       </Card>
 
-      <TrainingLoadCard card={card} />
+      <TrainingLoadCard card={card} onLogRpm={onLogRpm} />
 
       <Card style={styles.chartCard}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chartTabRow}>
@@ -404,12 +408,14 @@ function OverviewTab({
   );
 }
 
-function TrainingLoadCard({ card }: { card: DailyCard }) {
+function TrainingLoadCard({ card, onLogRpm }: { card: DailyCard; onLogRpm: () => void }) {
   return (
     <Card style={styles.loadCard}>
       <View style={styles.sectionHeader}>
-        <Text style={styles.cardTitle}>Training load</Text>
-        <Ionicons name="flame-outline" size={15} color={colors.inkMuted} />
+        <View style={styles.loadTitleRow}>
+          <Ionicons name="swap-horizontal-outline" size={14} color={colors.inkMuted} />
+          <Text style={styles.cardTitle}>Training load</Text>
+        </View>
       </View>
       {card.rpe ? (
         <>
@@ -434,7 +440,12 @@ function TrainingLoadCard({ card }: { card: DailyCard }) {
           ) : null}
         </>
       ) : (
-        <Text style={styles.emptyText}>No RPM logged for this date.</Text>
+        <View style={styles.loadEmptyRow}>
+          <Text style={[styles.emptyText, { flex: 1, minWidth: 0 }]}>No RPM logged for this date.</Text>
+          <Pressable onPress={onLogRpm} style={styles.logRpmButton}>
+            <Text style={styles.logRpmButtonText}>Log RPM</Text>
+          </Pressable>
+        </View>
       )}
     </Card>
   );
@@ -1299,6 +1310,16 @@ const styles = StyleSheet.create({
   injuryText: { flex: 1, color: colors.warn, fontSize: 12, fontWeight: "700" },
   loadCard: { gap: 10 },
   sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  loadTitleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  loadEmptyRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  logRpmButton: {
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: ROLE_THEMES.coach.accent,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  logRpmButtonText: { color: ROLE_THEMES.coach.accent, fontSize: 12, fontWeight: "800" },
   cardTitle: { color: colors.inkMuted, fontSize: 11, fontWeight: "900", letterSpacing: 1.6, textTransform: "uppercase" },
   loadTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   loadNumber: { color: colors.ink, fontSize: 24, fontWeight: "900" },

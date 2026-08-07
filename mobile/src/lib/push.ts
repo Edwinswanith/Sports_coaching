@@ -25,7 +25,6 @@ async function ensureChannel(): Promise<void> {
   await Notifications.setNotificationChannelAsync(PUSH_CHANNEL_ID, {
     name: "Apex popup alerts",
     importance: Notifications.AndroidImportance.MAX,
-    sound: "default",
     vibrationPattern: [0, 300, 200, 300],
     enableVibrate: true,
     enableLights: true,

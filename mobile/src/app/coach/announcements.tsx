@@ -14,6 +14,13 @@ type Announcement = { id?: string; body: string; recipientCount?: number; create
 type AnnouncementsResponse = { announcements: Announcement[] };
 type RosterResponse = { athletes: { athleteId: string }[] };
 
+function announcementIcon(body: string): keyof typeof Ionicons.glyphMap {
+  const lower = body.toLowerCase();
+  if (/\b(schedule|training|session|plan)\b/.test(lower)) return "clipboard-outline";
+  if (/\b(class|practice|\d{1,2}(:\d{2})?\s*(am|pm)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lower)) return "calendar-outline";
+  return "megaphone-outline";
+}
+
 function timeAgo(iso?: string): string {
   if (!iso) return "";
   const then = new Date(iso).getTime();
@@ -102,21 +109,32 @@ export default function Announcements() {
 
           <SpotlightTarget id="mobile-coach-announce" style={announceHighlight}>
           <Card style={styles.composeCard}>
-            <Text style={styles.cardTitle}>Message your squad</Text>
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              placeholder='e.g. "Sunday swimming class starts at 7:00 AM."'
-              placeholderTextColor={colors.inkFaint}
-              multiline
-              maxLength={1000}
-              editable={!posting}
-              style={styles.compose}
-            />
+            <View style={styles.cardTitleRow}>
+              <View style={styles.cardTitleIcon}>
+                <Ionicons name="megaphone-outline" size={15} color={accent} />
+              </View>
+              <Text style={[styles.cardTitle, { color: accent }]}>Message your squad</Text>
+            </View>
+            <View style={styles.composeWrap}>
+              <TextInput
+                value={draft}
+                onChangeText={setDraft}
+                placeholder='e.g. "Sunday swimming class starts at 7:00 AM."'
+                placeholderTextColor={colors.inkFaint}
+                multiline
+                maxLength={1000}
+                editable={!posting}
+                style={styles.compose}
+              />
+              <Ionicons name="pencil-outline" size={15} color={colors.inkFaint} style={styles.composeEditIcon} />
+            </View>
             <View style={styles.composeMeta}>
-              <Text style={styles.helper}>
-                Goes to all {recipientCount} assigned athlete{recipientCount === 1 ? "" : "s"}
-              </Text>
+              <View style={styles.composeMetaLeft}>
+                <Ionicons name="people-outline" size={14} color={accent} />
+                <Text style={styles.helper}>
+                  Goes to all {recipientCount} assigned athlete{recipientCount === 1 ? "" : "s"}
+                </Text>
+              </View>
               <Text style={styles.helper}>{1000 - draft.length}</Text>
             </View>
             {postError ? <Banner kind="error">{postError}</Banner> : null}
@@ -126,13 +144,23 @@ export default function Announcements() {
               loading={posting}
               disabled={!draft.trim() || recipientCount === 0}
               successLabel="Sent"
-              accent="#9bcfbe"
+              accent={accent}
               accentInk="#fff"
+              icon="paper-plane"
             />
           </Card>
           </SpotlightTarget>
 
-          <Text style={styles.sentLabel}>Sent</Text>
+          <View style={styles.sentHeaderRow}>
+            <Text style={styles.sentLabel}>Sent</Text>
+            <View style={styles.sentDivider} />
+            {items && items.length > 0 ? (
+              <View style={styles.sentViewAllRow}>
+                <Text style={styles.sentViewAll}>View all</Text>
+                <Ionicons name="chevron-forward" size={14} color={accent} />
+              </View>
+            ) : null}
+          </View>
 
           {loading && !items ? (
             <ActivityIndicator color={accent} style={{ marginTop: 40 }} />
@@ -143,14 +171,20 @@ export default function Announcements() {
           ) : items && items.length > 0 ? (
             <View style={{ gap: 10 }}>
               {items.map((a, i) => (
-                <Card key={a.id ?? i}>
-                  <Text style={styles.body}>{a.body}</Text>
-                  <View style={styles.metaRow}>
-                    <Text style={styles.meta}>{timeAgo(a.createdAt)}</Text>
-                    {typeof a.recipientCount === "number" ? (
-                      <Text style={styles.meta}>- {a.recipientCount} recipients</Text>
-                    ) : null}
+                <Card key={a.id ?? i} style={styles.sentCard}>
+                  <View style={styles.sentIconTile}>
+                    <Ionicons name={announcementIcon(a.body)} size={16} color={accent} />
                   </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.body}>{a.body}</Text>
+                    <View style={styles.metaRow}>
+                      <Text style={styles.meta}>{timeAgo(a.createdAt)}</Text>
+                      {typeof a.recipientCount === "number" ? (
+                        <Text style={styles.meta}>• {a.recipientCount} recipients</Text>
+                      ) : null}
+                    </View>
+                  </View>
+                  <Ionicons name="ellipsis-horizontal" size={16} color={colors.inkFaint} style={styles.sentMenuIcon} />
                 </Card>
               ))}
             </View>
@@ -171,37 +205,63 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
   content: { padding: 20, paddingTop: 12 },
   composeCard: { marginBottom: 20, gap: 10 },
+  cardTitleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  cardTitleIcon: {
+    height: 30,
+    width: 30,
+    borderRadius: 15,
+    backgroundColor: ROLE_THEMES.coach.accent + "16",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   cardTitle: {
     color: colors.inkMuted,
     fontSize: 15,
     fontWeight: "900",
-    letterSpacing: 2,
+    letterSpacing: 1.6,
     textTransform: "uppercase",
   },
+  composeWrap: { position: "relative", justifyContent: "flex-end" },
   compose: {
     minHeight: 80,
     borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.line,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.lineStrong,
     backgroundColor: colors.surfaceInset,
     padding: 12,
+    paddingRight: 34,
     fontSize: 15,
     color: colors.ink,
     textAlignVertical: "top",
   },
+  composeEditIcon: { position: "absolute", right: 10, bottom: 10 },
   composeMeta: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  helper: { color: colors.inkMuted, fontSize: 12 },
+  composeMetaLeft: { flexDirection: "row", alignItems: "center", gap: 6 },
+  helper: { color: colors.inkMuted, fontSize: 13, fontWeight: "500" },
+  sentHeaderRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
   sentLabel: {
-    marginBottom: 8,
-    color: colors.inkMuted,
-    fontSize: 11,
+    color: colors.ink,
+    fontSize: 12,
     fontWeight: "900",
     letterSpacing: 1.6,
     textTransform: "uppercase",
   },
-  body: { fontSize: 15, color: colors.ink, lineHeight: 21 },
+  sentDivider: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.lineStrong },
+  sentViewAllRow: { flexDirection: "row", alignItems: "center", gap: 2 },
+  sentViewAll: { color: ROLE_THEMES.coach.accent, fontSize: 12, fontWeight: "900" },
+  sentCard: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  sentMenuIcon: { marginTop: 2 },
+  sentIconTile: {
+    height: 34,
+    width: 34,
+    borderRadius: 17,
+    backgroundColor: ROLE_THEMES.coach.accent + "16",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  body: { fontSize: 15, fontWeight: "600", color: colors.ink, lineHeight: 21 },
   metaRow: { flexDirection: "row", gap: 6, marginTop: 8 },
-  meta: { fontSize: 12, color: colors.inkFaint },
+  meta: { fontSize: 12, fontWeight: "500", color: colors.inkFaint },
   emptyCard: { minHeight: 140, alignItems: "center", justifyContent: "center" },
   emptyTitle: { marginTop: 8, fontSize: 15, fontWeight: "700", color: colors.ink },
   emptyCopy: { marginTop: 4, textAlign: "center" },

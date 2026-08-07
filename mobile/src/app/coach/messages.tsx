@@ -17,10 +17,11 @@ import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { apiFetch, apiJson } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
-import { Banner, Card, Muted } from "../../components/ui";
+import { Card, Muted } from "../../components/ui";
 import { ChatMediaBubble, type ChatMedia, type WorkoutTableRow } from "../../components/ChatMediaBubble";
 import type { MessageView } from "../../components/MessageCenter";
 import { ScreenHeader } from "../../components/ScreenHeader";
+import { Avatar as PhotoAvatar, type AvatarInfo } from "../../components/Avatar";
 import { useTourHighlight, useTourScrollView } from "../../lib/tour/MobileTourProvider";
 import { SpotlightTarget } from "../../lib/tour/SpotlightTarget";
 
@@ -32,7 +33,24 @@ type Athlete = {
   email: string;
   sport: string;
   position: string | null;
+  avatar?: AvatarInfo;
 };
+
+const AVATAR_PALETTE = [
+  { bg: "#e3f5ea", fg: "#188a4e" },
+  { bg: "#e7f0ff", fg: "#2f6fe0" },
+  { bg: "#fdf3e3", fg: "#b2790a" },
+  { bg: "#f2eafb", fg: "#7c4fd6" },
+  { bg: "#fdecec", fg: "#c2382f" },
+];
+
+function paletteFor(id: string): { bg: string; fg: string } {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+}
+
+type HomeFilter = "all" | "unread" | "recent" | "archived";
 
 type ThreadSummary = {
   partyId: string;
@@ -99,7 +117,8 @@ export default function CoachMessages() {
   const [threadError, setThreadError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [showStarters, setShowStarters] = useState(false);
+  const [query, setQuery] = useState("");
+  const [homeFilter, setHomeFilter] = useState<HomeFilter>("all");
 
   // Coach image compose: the uploaded-but-not-yet-sent media, and a busy flag
   // covering upload/convert/send — mirrors the web app's flow exactly.
@@ -493,19 +512,16 @@ export default function CoachMessages() {
           </Card>
         ) : (
           <>
-            {unreadTotal > 0 ? (
-              <Banner kind="ok">
-                {unreadTotal} unread message{unreadTotal === 1 ? "" : "s"}
-              </Banner>
-            ) : null}
-            <View style={{ height: unreadTotal > 0 ? 12 : 0 }} />
-
             <SpotlightTarget id="mobile-coach-messages" style={messagesHighlight}>
             <MessagesHome
               threads={threads}
+              athletes={athletes}
               starters={starters}
-              showStarters={showStarters}
-              onToggleStarters={() => setShowStarters((value) => !value)}
+              unreadTotal={unreadTotal}
+              query={query}
+              onQueryChange={setQuery}
+              filter={homeFilter}
+              onFilterChange={setHomeFilter}
               onSelect={setSelectedId}
             />
             </SpotlightTarget>
@@ -600,21 +616,101 @@ function EditableWorkoutTable({
   );
 }
 
+const HOME_FILTERS: { key: HomeFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "unread", label: "Unread" },
+  { key: "recent", label: "Recent" },
+  { key: "archived", label: "Archived" },
+];
+
 function MessagesHome({
   threads,
+  athletes,
   starters,
-  showStarters,
-  onToggleStarters,
+  unreadTotal,
+  query,
+  onQueryChange,
+  filter,
+  onFilterChange,
   onSelect,
 }: {
   threads: ThreadSummary[];
+  athletes: Athlete[];
   starters: Athlete[];
-  showStarters: boolean;
-  onToggleStarters: () => void;
+  unreadTotal: number;
+  query: string;
+  onQueryChange: (value: string) => void;
+  filter: HomeFilter;
+  onFilterChange: (value: HomeFilter) => void;
   onSelect: (id: string) => void;
 }) {
+  const athleteById = useMemo(() => new Map(athletes.map((athlete) => [athlete.athleteId, athlete])), [athletes]);
+
+  const filteredThreads = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return threads
+      .filter((thread) => {
+        if (filter === "unread") return thread.unreadCount > 0;
+        if (filter === "archived") return false; // no archiving feature yet — always empty, never fabricated
+        return true;
+      })
+      .filter((thread) => {
+        if (!q) return true;
+        return thread.partyName.toLowerCase().includes(q) || thread.lastMessage.toLowerCase().includes(q);
+      })
+      .sort((a, b) => (filter === "recent" || filter === "all" ? new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime() : 0));
+  }, [threads, filter, query]);
+
+  const filteredStarters = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return starters;
+    return starters.filter(
+      (athlete) => athlete.name.toLowerCase().includes(q) || athleteMeta(athlete).toLowerCase().includes(q)
+    );
+  }, [starters, query]);
+
   return (
     <View style={styles.home}>
+      <View style={styles.searchRow}>
+        <View style={styles.searchWrap}>
+          <Ionicons name="search-outline" size={15} color={colors.inkFaint} />
+          <TextInput
+            value={query}
+            onChangeText={onQueryChange}
+            placeholder="Search athlete or message"
+            placeholderTextColor={colors.inkFaint}
+            style={styles.searchInput}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        </View>
+        <View style={styles.filterButton}>
+          <Ionicons name="options-outline" size={17} color={colors.inkMuted} />
+        </View>
+      </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.homeFilterRow}>
+        {HOME_FILTERS.map((item) => {
+          const active = item.key === filter;
+          return (
+            <Pressable
+              key={item.key}
+              onPress={() => onFilterChange(item.key)}
+              style={[styles.homeFilterChip, active ? styles.homeFilterChipActive : null]}
+            >
+              <Text style={[styles.homeFilterText, active ? { color: theme.accentStrong } : null]}>
+                {item.label}
+              </Text>
+              {item.key === "unread" && unreadTotal > 0 ? (
+                <View style={styles.homeFilterBadge}>
+                  <Text style={styles.homeFilterBadgeText}>{unreadTotal}</Text>
+                </View>
+              ) : null}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+
       {threads.length === 0 ? (
         <Card style={styles.emptyCard}>
           <Ionicons name="chatbubble-outline" size={19} color={colors.inkFaint} />
@@ -622,69 +718,132 @@ function MessagesHome({
           <Text style={styles.emptySub}>Start one with an athlete below.</Text>
         </Card>
       ) : (
-        <View style={styles.threadList}>
-          {threads.map((thread) => (
-            <Pressable key={thread.partyId} onPress={() => onSelect(thread.partyId)} style={styles.threadRow}>
-              <Avatar name={thread.partyName} />
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <View style={styles.threadTop}>
-                  <Text style={styles.threadName} numberOfLines={1}>{thread.partyName || "Athlete"}</Text>
-                  <Text style={styles.threadTime}>{messageTime(thread.lastAt)}</Text>
-                </View>
-                <Text style={styles.threadPreview} numberOfLines={1}>
-                  {thread.lastSenderRole === "coach" ? "You: " : ""}
-                  {thread.lastMessage}
-                </Text>
-              </View>
-              {thread.unreadCount > 0 ? (
-                <View style={styles.unreadBadge}>
-                  <Text style={styles.unreadText}>{thread.unreadCount}</Text>
-                </View>
-              ) : null}
-            </Pressable>
-          ))}
-        </View>
-      )}
-
-      {starters.length > 0 ? (
         <View>
-          <Pressable onPress={onToggleStarters} style={styles.startHeader}>
-            <Text style={styles.startLabel}>Start a conversation</Text>
-            <Text style={styles.startCount}>{showStarters ? "Hide" : starters.length}</Text>
-          </Pressable>
-          {showStarters ? (
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionHeaderLabel}>Recent conversations</Text>
+            <View style={styles.sectionHeaderRight}>
+              <Text style={styles.sectionHeaderCount}>{filteredThreads.length}</Text>
+              <Ionicons name="chevron-forward" size={14} color={colors.inkFaint} />
+            </View>
+          </View>
+          {filteredThreads.length === 0 ? (
+            <Card style={styles.emptyCard}>
+              <Muted>No conversations match.</Muted>
+            </Card>
+          ) : (
             <View style={styles.threadList}>
-              {starters.map((athlete) => (
-                <Pressable key={athlete.athleteId} onPress={() => onSelect(athlete.athleteId)} style={styles.threadRow}>
-                  <Avatar name={athlete.name} />
+              {filteredThreads.map((thread) => (
+                <Pressable key={thread.partyId} onPress={() => onSelect(thread.partyId)} style={styles.threadRow}>
+                  <PersonAvatar id={thread.partyId} name={thread.partyName} avatar={athleteById.get(thread.partyId)?.avatar} />
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={styles.threadName} numberOfLines={1}>{athlete.name || "Athlete"}</Text>
-                    <Text style={styles.threadPreview} numberOfLines={1}>{athleteMeta(athlete)}</Text>
+                    <View style={styles.threadTop}>
+                      <Text style={styles.threadName} numberOfLines={1}>{thread.partyName || "Athlete"}</Text>
+                      <Text style={styles.threadTime}>{messageTime(thread.lastAt)}</Text>
+                    </View>
+                    <Text style={styles.threadPreview} numberOfLines={1}>
+                      {thread.lastSenderRole === "coach" ? "You: " : ""}
+                      {thread.lastMessage}
+                    </Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={18} color={colors.inkFaint} />
+                  {thread.unreadCount > 0 ? (
+                    <View style={styles.unreadBadge}>
+                      <Text style={styles.unreadText}>{thread.unreadCount}</Text>
+                    </View>
+                  ) : null}
                 </Pressable>
               ))}
             </View>
-          ) : null}
+          )}
+        </View>
+      )}
+
+      {filteredStarters.length > 0 ? (
+        <View>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionHeaderLabel}>Start a conversation</Text>
+            <Text style={styles.sectionHeaderCount}>{filteredStarters.length}</Text>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.starterRow}>
+            {filteredStarters.map((athlete) => (
+              <Pressable key={athlete.athleteId} onPress={() => onSelect(athlete.athleteId)} style={styles.starterCard}>
+                <PersonAvatar id={athlete.athleteId} name={athlete.name} avatar={athlete.avatar} size={52} />
+                <Text style={styles.starterName} numberOfLines={1}>{athlete.name || "Athlete"}</Text>
+                <Text style={styles.starterMeta} numberOfLines={1}>{athlete.position || athlete.sport || "Athlete"}</Text>
+                <View style={styles.starterChatButton}>
+                  <Ionicons name="chatbubble-outline" size={14} color={theme.accent} />
+                </View>
+              </Pressable>
+            ))}
+          </ScrollView>
         </View>
       ) : null}
     </View>
   );
 }
 
-function Avatar({ name }: { name: string }) {
-  const initial = (name || "?").charAt(0).toUpperCase();
+function PersonAvatar({ id, name, avatar, size = 40 }: { id: string; name: string; avatar?: AvatarInfo; size?: number }) {
+  const { bg, fg } = paletteFor(id);
   return (
-    <View style={styles.avatar}>
-      <Text style={styles.avatarText}>{initial}</Text>
-    </View>
+    <PhotoAvatar
+      avatar={avatar}
+      name={name || "Athlete"}
+      size={size}
+      accentSoft={bg}
+      accentStrong={fg}
+      photoPath={`/api/coach/athletes/${id}/avatar/file`}
+    />
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
   content: { padding: 20, paddingTop: 12, paddingBottom: 28 },
-  home: { gap: 18 },
+  home: { gap: 16 },
+  searchRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  searchWrap: {
+    flex: 1,
+    height: 46,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.surfaceInset,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+  },
+  searchInput: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14, paddingVertical: 0 },
+  filterButton: {
+    height: 46,
+    width: 46,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.surfaceInset,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  homeFilterRow: { gap: 6, paddingRight: 2 },
+  homeFilterChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    minHeight: 32,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceRaised,
+    paddingHorizontal: 12,
+    justifyContent: "center",
+  },
+  homeFilterChipActive: { backgroundColor: theme.accentSoft, borderColor: theme.accent + "55" },
+  homeFilterText: { color: colors.inkMuted, fontSize: 12, fontWeight: "700" },
+  homeFilterBadge: { minWidth: 18, height: 18, borderRadius: 9, backgroundColor: theme.accent, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
+  homeFilterBadgeText: { color: "#fff", fontSize: 10, fontWeight: "900" },
+  sectionHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  sectionHeaderLabel: { color: colors.inkMuted, fontSize: 11, fontWeight: "900", letterSpacing: 1.6, textTransform: "uppercase" },
+  sectionHeaderRight: { flexDirection: "row", alignItems: "center", gap: 4 },
+  sectionHeaderCount: { color: colors.inkFaint, fontSize: 11, fontWeight: "900" },
   emptyCard: { minHeight: 142, alignItems: "center", justifyContent: "center", gap: 6 },
   emptyTitle: { color: colors.inkMuted, fontSize: 17, fontWeight: "600" },
   emptySub: { color: colors.inkFaint, fontSize: 13 },
@@ -700,17 +859,34 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 12,
   },
-  avatar: { height: 40, width: 40, borderRadius: 20, backgroundColor: theme.accentSoft, alignItems: "center", justifyContent: "center" },
-  avatarText: { color: theme.accentStrong, fontSize: 14, fontWeight: "900" },
   threadTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   threadName: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14, fontWeight: "800" },
   threadTime: { color: colors.inkFaint, fontSize: 10, fontWeight: "700" },
   threadPreview: { marginTop: 2, color: colors.inkMuted, fontSize: 12 },
-  unreadBadge: { minWidth: 22, height: 22, borderRadius: 11, backgroundColor: colors.bad, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 },
+  unreadBadge: { minWidth: 22, height: 22, borderRadius: 11, backgroundColor: theme.accent, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 },
   unreadText: { color: "#fff", fontSize: 10, fontWeight: "900" },
-  startHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
-  startLabel: { color: colors.inkMuted, fontSize: 11, fontWeight: "900", letterSpacing: 1.6, textTransform: "uppercase" },
-  startCount: { color: colors.inkFaint, fontSize: 11, fontWeight: "900" },
+  starterRow: { gap: 10, paddingRight: 2 },
+  starterCard: {
+    width: 108,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surfaceRaised,
+    alignItems: "center",
+    padding: 12,
+    gap: 6,
+  },
+  starterName: { color: colors.ink, fontSize: 12, fontWeight: "800" },
+  starterMeta: { color: colors.inkFaint, fontSize: 10, marginTop: -4 },
+  starterChatButton: {
+    height: 26,
+    width: 26,
+    borderRadius: 13,
+    backgroundColor: theme.accentSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
 
   // Full-screen chat thread — mirrors the web app's dedicated conversation page.
   chatHeader: {

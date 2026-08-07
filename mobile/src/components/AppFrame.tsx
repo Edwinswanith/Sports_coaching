@@ -42,9 +42,12 @@ export function AppFrame({
   const router = useRouter();
   const [unread, setUnread] = useState(0);
   const insets = useSafeAreaInsets();
+  const athleteNav = theme.role === "athlete";
+  const navActiveColor = athleteNav ? "#f26a0a" : theme.accentStrong;
+  const navPrimaryColor = athleteNav ? "#ff7e1a" : theme.accent;
   const openNotifications = () => router.push("/notifications" as never);
-  const topChrome = useReportChrome("top");
-  const bottomChrome = useReportChrome("bottom");
+  const { ref: topChromeRef, onLayout: onTopChromeLayout } = useReportChrome("top");
+  const { ref: bottomChromeRef, onLayout: onBottomChromeLayout } = useReportChrome("bottom");
 
   useEffect(() => {
     let active = true;
@@ -59,11 +62,11 @@ export function AppFrame({
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       {renderHeader ? (
-        <View ref={topChrome.ref} onLayout={topChrome.onLayout} collapsable={false}>
+        <View ref={topChromeRef} onLayout={onTopChromeLayout} collapsable={false}>
           {renderHeader({ theme, unread, openNotifications })}
         </View>
       ) : (
-        <View ref={topChrome.ref} onLayout={topChrome.onLayout} collapsable={false} style={styles.header}>
+        <View ref={topChromeRef} onLayout={onTopChromeLayout} collapsable={false} style={styles.header}>
           <View style={styles.headerLeft}>
             <Text style={[styles.role, { color: theme.accentStrong }]}>{theme.label}</Text>
             <Text style={styles.title} numberOfLines={1}>{title}</Text>
@@ -80,23 +83,33 @@ export function AppFrame({
       <View style={styles.body}>{children}</View>
 
       <View
-        ref={bottomChrome.ref}
-        onLayout={bottomChrome.onLayout}
+        ref={bottomChromeRef}
+        onLayout={onBottomChromeLayout}
         collapsable={false}
-        style={[styles.tabBar, { paddingBottom: Math.max(8, insets.bottom + 8) }]}
+        style={[styles.tabBar, { paddingBottom: Math.max(4, insets.bottom) }]}
       >
         {nav.map((item) => {
           const active = item.key === activeKey;
+          const primary = item.key === "log";
+          const icon = active && !primary && item.icon.endsWith("-outline")
+            ? (item.icon.replace(/-outline$/, "") as keyof typeof Ionicons.glyphMap)
+            : item.icon;
           return (
             <Pressable
               key={item.key}
               onPress={() => onNavigate(item.key)}
-              style={styles.tab}
+              style={[styles.tab, primary ? styles.tabPrimary : null]}
               accessibilityRole="tab"
               accessibilityState={{ selected: active }}
             >
-              <View style={[styles.tabIconWrap, active ? { backgroundColor: theme.accentSoft } : null]}>
-                <Ionicons name={item.icon} size={18} color={active ? theme.accentStrong : colors.inkFaint} />
+              <View
+                style={[
+                  styles.tabIconWrap,
+                  primary ? { backgroundColor: navPrimaryColor } : active && !athleteNav ? { backgroundColor: theme.accentSoft } : null,
+                  primary ? styles.tabIconPrimary : null,
+                ]}
+              >
+                <Ionicons name={icon} size={primary ? 24 : 17} color={primary ? "#ffffff" : active ? navActiveColor : colors.inkFaint} />
                 {item.badge ? (
                   <View style={styles.tabBadge}>
                     <Text style={styles.tabBadgeText}>{item.badge}</Text>
@@ -104,7 +117,7 @@ export function AppFrame({
                 ) : null}
               </View>
               <Text
-                style={[styles.tabText, active ? { color: theme.accentStrong } : null]}
+                style={[styles.tabText, active ? { color: navActiveColor } : null, primary ? styles.tabTextPrimary : null]}
                 numberOfLines={1}
                 adjustsFontSizeToFit
                 minimumFontScale={0.8}
@@ -147,9 +160,9 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 16,
     paddingVertical: 10,
-    borderBottomWidth: 1,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.line,
-    backgroundColor: "rgba(246,247,243,0.96)",
+    backgroundColor: colors.surface,
   },
   headerLeft: { flex: 1, minWidth: 0 },
   role: { fontSize: 10, fontWeight: "800", textTransform: "uppercase", letterSpacing: 2.2 },
@@ -165,6 +178,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.024,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 1,
   },
   dot: { position: "absolute", top: 7, right: 7, height: 10, width: 10, borderRadius: 5 },
   body: { flex: 1 },
@@ -173,47 +191,61 @@ const styles = StyleSheet.create({
     alignItems: "stretch",
     gap: 4,
     marginHorizontal: 10,
-    marginBottom: 6,
-    paddingTop: 6,
-    paddingHorizontal: 10,
+    marginBottom: 3,
+    paddingTop: 2,
+    paddingHorizontal: 9,
     paddingBottom: 8,
     borderWidth: 1,
     borderColor: colors.line,
-    borderRadius: 26,
-    backgroundColor: "rgba(255,255,255,0.97)",
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: -6 },
-    elevation: 8,
+    borderRadius: 28,
+    backgroundColor: "rgba(255,254,253,0.992)",
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.026,
+    shadowRadius: 26,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 1,
   },
-  tab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 1, minHeight: 48 },
+  tab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 1, minHeight: 38 },
+  tabPrimary: { justifyContent: "center" },
   tabIconWrap: {
     position: "relative",
-    height: 30,
-    minWidth: 48,
+    height: 28,
+    minWidth: 44,
     borderRadius: radius.sm,
     alignItems: "center",
     justifyContent: "center",
   },
+  tabIconPrimary: {
+    height: 42,
+    width: 42,
+    minWidth: 42,
+    borderRadius: 21,
+    marginTop: 12,
+    shadowColor: "#2b251f",
+    shadowOpacity: 0.075,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
+  },
   tabText: {
-    fontSize: 10,
+    fontSize: 9.3,
     fontWeight: "800",
     color: colors.inkFaint,
     textTransform: "uppercase",
-    letterSpacing: 0.6,
+    letterSpacing: 0.55,
   },
+  tabTextPrimary: { height: 0, opacity: 0 },
   tabBadge: {
     position: "absolute",
-    top: -2,
-    right: 3,
-    minWidth: 16,
-    height: 16,
-    borderRadius: 8,
+    top: -3,
+    right: 2,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
     backgroundColor: colors.bad,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 3,
   },
-  tabBadgeText: { color: "#fff", fontSize: 9, fontWeight: "800" },
+  tabBadgeText: { color: "#fff", fontSize: 9, fontWeight: "900" },
 });

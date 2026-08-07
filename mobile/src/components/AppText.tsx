@@ -14,8 +14,8 @@ const WEIGHT_TO_FAMILY: Record<string, string> = {
   "600": "Inter_600SemiBold",
   "700": "Inter_700Bold",
   bold: "Inter_700Bold",
-  "800": "Inter_800ExtraBold",
-  "900": "Inter_900Black",
+  "800": "Inter_700Bold",
+  "900": "Inter_800ExtraBold",
 };
 
 function familyForWeight(weight: TextStyle["fontWeight"]): string {
@@ -33,5 +33,5 @@ function familyForWeight(weight: TextStyle["fontWeight"]): string {
 export function Text({ style, ...props }: TextProps) {
   const flat = StyleSheet.flatten(style) ?? {};
   const fontFamily = familyForWeight(flat.fontWeight);
-  return <RNText {...props} style={[style, { fontFamily, fontWeight: "normal" }]} />;
+  return <RNText {...props} style={[style, { fontFamily, fontWeight: "normal", includeFontPadding: false }]} />;
 }

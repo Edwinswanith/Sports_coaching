@@ -4,10 +4,12 @@ import { Text } from "../../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import Svg, { Circle, Path, Text as SvgText } from "react-native-svg";
 import { apiJson } from "../../lib/api";
 import { ROLE_THEMES, colors, radius } from "../../lib/theme";
 import { SESSION_SLOTS, type SessionSlot } from "../../lib/sessions";
 import { Card, Muted } from "../../components/ui";
+import { Avatar } from "../../components/Avatar";
 import { ScreenHeader } from "../../components/ScreenHeader";
 import { DatePickerPill } from "../../components/DatePickerPill";
 import { useAutoStartMobileTour, useTourHighlight, useTourScrollView } from "../../lib/tour/MobileTourProvider";
@@ -58,11 +60,11 @@ type CoachAskReport = {
   rows: CoachAskReportRow[];
 };
 
-const ROSTER_FILTERS: { key: RosterFilter; label: string }[] = [
+const ROSTER_FILTERS: { key: RosterFilter; label: string; icon?: keyof typeof Ionicons.glyphMap; color?: string }[] = [
   { key: "all", label: "All" },
-  { key: "attention", label: "Attention" },
-  { key: "injury", label: "Injury" },
-  { key: "nocheck", label: "No check-in" },
+  { key: "attention", label: "Attention", icon: "megaphone-outline", color: colors.warn },
+  { key: "injury", label: "Injury", icon: "bandage-outline", color: colors.bad },
+  { key: "nocheck", label: "No check-in", icon: "time-outline", color: colors.inkMuted },
 ];
 
 function today() {
@@ -102,6 +104,8 @@ function isDateOnlyCommand(command: string): boolean {
     /\b(next|previous|prev|back) day\b/.test(lower)
   );
 }
+
+const DANGER = { bg: "#fdecec", border: "#f7c9c9", chipBg: "#fbd9d9", chipBorder: "#f3b3b3" };
 
 function shortDate(value: string): string {
   const date = new Date(`${value}T00:00:00`);
@@ -554,10 +558,39 @@ export default function CoachDashboard() {
         ) : (
           <>
             <SpotlightTarget id="mobile-coach-kpis" style={[styles.statGrid, kpiHighlight]}>
-              <Stat label="Athletes" value={String(data?.count ?? 0)} />
-              <Stat label="Present" value={String(present)} />
-              <Stat label="Sessions done" value={String(completed)} />
-              <Stat label="Avg readiness" value={avg == null ? "-" : String(avg)} highlight={band(avg).color} />
+              <Stat
+                label="Athletes"
+                value={String(data?.count ?? 0)}
+                caption="Total"
+                icon="people"
+                iconColor={colors.ok}
+                iconBg={colors.ok + "16"}
+              />
+              <Stat
+                label="Present"
+                value={String(present)}
+                caption="Today"
+                icon="checkmark-circle"
+                iconColor={colors.ok}
+                iconBg={colors.ok + "16"}
+              />
+              <Stat
+                label="Sessions done"
+                value={String(completed)}
+                caption="Today"
+                icon="calendar"
+                iconColor="#2f7df6"
+                iconBg="#2f7df616"
+              />
+              <Stat
+                label="Avg readiness"
+                value={avg == null ? "-" : String(avg)}
+                caption={avg == null ? "No data" : "Today"}
+                icon="trending-up"
+                iconColor={colors.warn}
+                iconBg={colors.warn + "16"}
+                highlight={band(avg).color}
+              />
             </SpotlightTarget>
 
             {cards.length > 0 ? (
@@ -566,15 +599,25 @@ export default function CoachDashboard() {
                   <SpotlightTarget id="mobile-coach-attention" style={attentionHighlight}>
                   <Card style={styles.attentionCard}>
                     <View style={styles.sectionRow}>
-                      <Text style={[styles.sectionLabel, { color: colors.bad }]}>Needs attention</Text>
-                      <Text style={styles.sectionCount}>{attentionCards.length}</Text>
+                      <View style={styles.attentionLabelRow}>
+                        <View style={styles.attentionIconTile}>
+                          <Ionicons name="warning" size={13} color="#fff" />
+                        </View>
+                        <Text style={[styles.sectionLabel, { color: colors.bad }]}>Needs attention</Text>
+                      </View>
+                      <View style={styles.attentionCountBadge}>
+                        <Text style={styles.attentionCountText}>{attentionCards.length}</Text>
+                      </View>
                     </View>
                     <View style={styles.attentionList}>
                       {attentionCards.map((card) => (
                         <Pressable key={card.athleteId} onPress={() => openAthlete(card)} style={styles.attentionPill}>
-                          <View style={[styles.attentionDot, { backgroundColor: band(card.readinessScore).color }]} />
-                          <Text style={styles.attentionName} numberOfLines={1}>{card.name || "Athlete"}</Text>
-                          <Text style={styles.attentionReason} numberOfLines={1}>{attentionReason(card)}</Text>
+                          <Avatar avatar={null} name={card.name || "Athlete"} size={30} accentSoft={DANGER.chipBg} accentStrong={colors.bad} />
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={styles.attentionName} numberOfLines={1}>{card.name || "Athlete"}</Text>
+                            <Text style={styles.attentionReason} numberOfLines={1}>{attentionReason(card).replace(" - ", " • ")}</Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={16} color={colors.inkFaint} />
                         </Pressable>
                       ))}
                     </View>
@@ -583,10 +626,14 @@ export default function CoachDashboard() {
                 ) : null}
 
                 <SpotlightTarget id="mobile-coach-notes" style={notesHighlight}>
-                <CoachNotesInbox inbox={notesInbox} onOpen={(athleteId) => {
-                  const card = cards.find((item) => item.athleteId === athleteId);
-                  if (card) openAthlete(card);
-                }} />
+                <CoachNotesInbox
+                  inbox={notesInbox}
+                  onOpen={(athleteId) => {
+                    const card = cards.find((item) => item.athleteId === athleteId);
+                    if (card) openAthlete(card);
+                  }}
+                  onViewAll={() => showAskReport(buildCoachReport("notes"))}
+                />
                 </SpotlightTarget>
 
                 <SpotlightTarget id="mobile-coach-analytics" style={analyticsHighlight}>
@@ -594,13 +641,13 @@ export default function CoachDashboard() {
                 </SpotlightTarget>
 
                 <View style={styles.rosterHeader}>
-                  <Text style={styles.rosterTitle}>Full roster</Text>
+                  <Text style={styles.rosterHeaderTitle}>Full Roster</Text>
                   <Text style={styles.rosterMeta}>{filteredCards.length} of {cards.length}</Text>
                 </View>
 
                 <View style={styles.searchBlock}>
                   <View style={styles.searchWrap}>
-                    <Ionicons name="search-outline" size={17} color={colors.inkFaint} />
+                    <Ionicons name="search-outline" size={15} color={colors.inkFaint} />
                     <TextInput
                       value={query}
                       onChangeText={setQuery}
@@ -628,7 +675,13 @@ export default function CoachDashboard() {
                           onPress={() => setFilter(item.key)}
                           style={[styles.filterChip, active ? { backgroundColor: accent, borderColor: accent } : null]}
                         >
-                          <Text style={[styles.filterText, active ? { color: "#fff" } : null]}>
+                          {item.icon && !active ? <Ionicons name={item.icon} size={13} color={item.color ?? colors.inkMuted} /> : null}
+                          <Text
+                            style={[
+                              styles.filterText,
+                              active ? { color: "#fff" } : item.color ? { color: item.color } : null,
+                            ]}
+                          >
                             {item.label}
                             {item.key !== "all" && count > 0 ? ` ${count}` : ""}
                           </Text>
@@ -664,7 +717,15 @@ export default function CoachDashboard() {
   );
 }
 
-function CoachNotesInbox({ inbox, onOpen }: { inbox: NotesInbox | null; onOpen: (athleteId: string) => void }) {
+function CoachNotesInbox({
+  inbox,
+  onOpen,
+  onViewAll,
+}: {
+  inbox: NotesInbox | null;
+  onOpen: (athleteId: string) => void;
+  onViewAll: () => void;
+}) {
   const notes = inbox?.notes ?? [];
   const open = inbox?.openCount ?? 0;
   return (
@@ -681,18 +742,28 @@ function CoachNotesInbox({ inbox, onOpen }: { inbox: NotesInbox | null; onOpen: 
       ) : notes.length === 0 ? (
         <Text style={styles.noteEmpty}>No athlete notes in the last 14 days.</Text>
       ) : (
-        <View style={styles.notesList}>
-          {notes.slice(0, 4).map((note) => (
-            <Pressable key={note.noteId} onPress={() => onOpen(note.athleteId)} style={styles.noteRow}>
-              <View style={styles.noteTop}>
-                <Text style={styles.noteName} numberOfLines={1}>{note.athleteName}</Text>
-                <Chip label={note.needsReply ? "needs reply" : "replied"} color={note.needsReply ? colors.warn : colors.ok} />
-                <Text style={styles.noteDate}>{shortDate(note.date)}</Text>
-              </View>
-              <Text style={styles.noteBody} numberOfLines={2}>{note.body}</Text>
-            </Pressable>
-          ))}
-        </View>
+        <>
+          <View style={styles.notesList}>
+            {notes.slice(0, 4).map((note) => (
+              <Pressable key={note.noteId} onPress={() => onOpen(note.athleteId)} style={styles.noteRow}>
+                <Avatar avatar={null} name={note.athleteName} size={30} accentSoft={colors.ok + "16"} accentStrong={colors.ok} style={styles.noteAvatar} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <View style={styles.noteTop}>
+                    <Text style={styles.noteName} numberOfLines={1}>{note.athleteName}</Text>
+                    <Chip label={note.needsReply ? "needs reply" : "replied"} color={note.needsReply ? colors.warn : colors.ok} />
+                    <Text style={styles.noteDate}>{shortDate(note.date)}</Text>
+                  </View>
+                  <Text style={styles.noteBody} numberOfLines={2}>{note.body}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={15} color={colors.inkFaint} />
+              </Pressable>
+            ))}
+          </View>
+          <Pressable onPress={onViewAll} style={styles.noteViewAll}>
+            <Text style={styles.noteViewAllText}>View all notes</Text>
+            <Ionicons name="chevron-forward" size={14} color={ROLE_THEMES.coach.accent} />
+          </Pressable>
+        </>
       )}
     </Card>
   );
@@ -773,16 +844,15 @@ function CoachAskReportSheet({
 }
 
 function SquadTrendCard({ series }: { series: SquadPoint[] }) {
-  const points = series.slice(-14);
+  const points = series;
   const latest = series.length > 0 ? series[series.length - 1] : null;
-  const maxLoad = Math.max(1, ...points.map((point) => point.avgLoad ?? 0));
   return (
     <Card style={styles.trendCard}>
       <View style={styles.sectionRow}>
         <View>
           <Text style={styles.rosterTitle}>Squad analytics</Text>
           <Text style={styles.trendSubtitle}>
-            {latest ? `${latest.athleteCount} logging - ${latest.redFlags} red flag${latest.redFlags === 1 ? "" : "s"}` : "Across assigned athletes"}
+            {latest ? `${latest.athleteCount} logging • ${latest.redFlags} red flag${latest.redFlags === 1 ? "" : "s"}` : "Across assigned athletes"}
           </Text>
         </View>
         <Text style={styles.sectionCount}>30d</Text>
@@ -792,24 +862,29 @@ function SquadTrendCard({ series }: { series: SquadPoint[] }) {
       ) : (
         <>
           <View style={styles.trendTiles}>
-            <MiniMetric label="Readiness" value={latest?.avgReadiness == null ? "-" : String(Math.round(latest.avgReadiness))} color={colors.ok} />
-            <MiniMetric label="Attendance" value={latest?.attendanceRate == null ? "-" : `${Math.round(latest.attendanceRate)}%`} color="#2f7df6" />
-            <MiniMetric label="Avg load" value={latest?.avgLoad == null ? "-" : String(Math.round(latest.avgLoad))} color={colors.warn} />
+            <MiniMetric
+              label="Readiness"
+              value={latest?.avgReadiness == null ? "-" : String(Math.round(latest.avgReadiness))}
+              caption={latest?.avgReadiness == null ? "No data" : undefined}
+              color={colors.ok}
+              icon="trending-up"
+            />
+            <MiniMetric
+              label="Attendance"
+              value={latest?.attendanceRate == null ? "-" : `${Math.round(latest.attendanceRate)}%`}
+              caption={latest?.attendanceRate == null ? "No data" : undefined}
+              color="#2f7df6"
+              icon="trending-up"
+            />
+            <MiniMetric
+              label="Avg load"
+              value={latest?.avgLoad == null ? "-" : String(Math.round(latest.avgLoad))}
+              caption={latest?.avgLoad == null ? "No data" : undefined}
+              color={colors.warn}
+              icon="trending-up"
+            />
           </View>
-          <View style={styles.chart}>
-            {points.map((point) => {
-              const readiness = Math.max(4, Math.round(((point.avgReadiness ?? 0) / 100) * 72));
-              const attendance = Math.max(4, Math.round(((point.attendanceRate ?? 0) / 100) * 72));
-              const load = Math.max(4, Math.round(((point.avgLoad ?? 0) / maxLoad) * 72));
-              return (
-                <View key={point.date} style={styles.chartGroup}>
-                  <View style={[styles.chartBar, { height: load, backgroundColor: colors.warn + "55" }]} />
-                  <View style={[styles.chartBar, { height: readiness, backgroundColor: colors.ok + "88" }]} />
-                  <View style={[styles.chartBar, { height: attendance, backgroundColor: "#2f7df688" }]} />
-                </View>
-              );
-            })}
-          </View>
+          <SquadLineChart points={points} />
           <View style={styles.legendRow}>
             <Legend color={colors.warn} label="Load" />
             <Legend color={colors.ok} label="Readiness" />
@@ -821,11 +896,83 @@ function SquadTrendCard({ series }: { series: SquadPoint[] }) {
   );
 }
 
-function MiniMetric({ label, value, color }: { label: string; value: string; color: string }) {
+function SquadLineChart({ points }: { points: SquadPoint[] }) {
+  const [width, setWidth] = useState(0);
+  const height = 96;
+  const top = 8;
+  const bottom = 20;
+  const plotH = height - top - bottom;
+  const maxLoad = Math.max(1, ...points.map((point) => point.avgLoad ?? 0));
+
+  function x(index: number) {
+    return points.length <= 1 ? 0 : (index / (points.length - 1)) * width;
+  }
+  function yPct(value: number | null) {
+    const pct = Math.max(0, Math.min(100, value ?? 0));
+    return top + plotH * (1 - pct / 100);
+  }
+  function yLoad(value: number | null) {
+    const pct = Math.max(0, Math.min(1, (value ?? 0) / maxLoad));
+    return top + plotH * (1 - pct);
+  }
+  function pathFor(getY: (point: SquadPoint) => number) {
+    return points.map((point, index) => `${index === 0 ? "M" : "L"} ${x(index).toFixed(1)} ${getY(point).toFixed(1)}`).join(" ");
+  }
+
+  const labelStep = Math.max(1, Math.round(points.length / 5));
+
+  return (
+    <View style={styles.chart} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
+      {width > 0 ? (
+        <Svg width={width} height={height}>
+          <Path d={pathFor((point) => yLoad(point.avgLoad))} stroke={colors.warn} strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          <Path d={pathFor((point) => yPct(point.attendanceRate))} stroke="#2f7df6" strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          <Path d={pathFor((point) => yPct(point.avgReadiness))} stroke={colors.ok} strokeWidth={2.2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          {points.map((point, index) => (
+            <Circle key={`dot-${point.date}`} cx={x(index)} cy={yPct(point.avgReadiness)} r={2.4} fill={colors.ok} />
+          ))}
+          {points.map((point, index) =>
+            index % labelStep === 0 || index === points.length - 1 ? (
+              <SvgText
+                key={`label-${point.date}`}
+                x={Math.min(width - 16, Math.max(16, x(index)))}
+                y={height - 6}
+                fill={colors.inkFaint}
+                fontSize="9"
+                fontWeight="700"
+                textAnchor="middle"
+              >
+                {shortDate(point.date)}
+              </SvgText>
+            ) : null
+          )}
+        </Svg>
+      ) : null}
+    </View>
+  );
+}
+
+function MiniMetric({
+  label,
+  value,
+  caption,
+  color,
+  icon,
+}: {
+  label: string;
+  value: string;
+  caption?: string;
+  color: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}) {
   return (
     <View style={styles.miniMetric}>
-      <Text style={styles.miniMetricLabel}>{label}</Text>
+      <View style={styles.miniMetricTop}>
+        <Ionicons name={icon} size={12} color={color} />
+        <Text style={styles.miniMetricLabel}>{label}</Text>
+      </View>
       <Text style={[styles.miniMetricValue, { color }]}>{value}</Text>
+      {caption ? <Text style={styles.miniMetricCaption}>{caption}</Text> : null}
     </View>
   );
 }
@@ -839,32 +986,50 @@ function Legend({ color, label }: { color: string; label: string }) {
   );
 }
 
-function Stat({ label, value, highlight }: { label: string; value: string; highlight?: string }) {
+function Stat({
+  label,
+  value,
+  caption,
+  icon,
+  iconColor,
+  iconBg,
+  highlight,
+}: {
+  label: string;
+  value: string;
+  caption?: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  iconColor: string;
+  iconBg: string;
+  highlight?: string;
+}) {
   return (
     <Card style={styles.stat}>
-      <Text style={styles.statLabel}>{label}</Text>
+      <View style={styles.statTop}>
+        <View style={[styles.statIcon, { backgroundColor: iconBg }]}>
+          <Ionicons name={icon} size={15} color={iconColor} />
+        </View>
+        <Text style={styles.statLabel}>{label}</Text>
+      </View>
       <Text style={[styles.statValue, highlight ? { color: highlight } : null]}>{value}</Text>
+      {caption ? <Text style={styles.statCaption}>{caption}</Text> : null}
     </Card>
   );
 }
 
 function RosterRow({ card, onPress }: { card: DailyCard; onPress: () => void }) {
-  const readiness = band(card.readinessScore);
-  const flagged = attentionRank(card) < 2;
   return (
     <Pressable onPress={onPress}>
-      <Card style={[styles.athleteCard, flagged ? { borderColor: readiness.color + "55" } : null]}>
-        <View style={[styles.scoreDot, { borderColor: readiness.color + "66" }]}>
-          <Text style={[styles.scoreText, { color: readiness.color }]}>{readiness.label}</Text>
-        </View>
+      <Card style={styles.athleteCard}>
+        <Avatar avatar={null} name={card.name || "Athlete"} size={42} accentSoft={colors.ok + "16"} accentStrong={colors.ok} />
         <View style={{ flex: 1, minWidth: 0 }}>
           <View style={styles.nameRow}>
             <Text style={styles.athleteName} numberOfLines={1}>{card.name || "Athlete"}</Text>
-            {card.injury?.active ? <Chip label="Injury" color={colors.bad} /> : null}
+            {card.injury?.active ? <Chip label="Injury" color={colors.bad} mixedCase /> : null}
             {card.rpe ? <Chip label={card.rpe.riskFlag} color={riskColor(card.rpe.riskFlag)} /> : null}
           </View>
           <Text style={styles.athleteSport} numberOfLines={1}>
-            {[card.sport, card.position, card.attendance?.status].filter(Boolean).join(" - ") || "-"}
+            {[card.sport, card.position, card.attendance?.status].filter(Boolean).join(" • ") || "-"}
           </Text>
         </View>
         <View style={styles.loadBlock}>
@@ -874,7 +1039,7 @@ function RosterRow({ card, onPress }: { card: DailyCard; onPress: () => void }) 
               <Text style={styles.loadLabel}>load</Text>
             </>
           ) : (
-            <Text style={styles.noRpe}>No RPM</Text>
+            <Text style={styles.noRpe}>No RPE</Text>
           )}
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.inkFaint} />
@@ -883,10 +1048,10 @@ function RosterRow({ card, onPress }: { card: DailyCard; onPress: () => void }) 
   );
 }
 
-function Chip({ label, color }: { label: string; color: string }) {
+function Chip({ label, color, mixedCase }: { label: string; color: string; mixedCase?: boolean }) {
   return (
     <View style={[styles.chip, { backgroundColor: color + "18" }]}>
-      <Text style={[styles.chipText, { color }]}>{label}</Text>
+      <Text style={[styles.chipText, mixedCase ? { textTransform: "none" } : null, { color }]}>{label}</Text>
     </View>
   );
 }
@@ -997,41 +1162,48 @@ const styles = StyleSheet.create({
   askReportStatusText: { fontSize: 11, fontWeight: "900" },
   statGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 16 },
   stat: { flexGrow: 1, flexBasis: "47%", padding: 12 },
+  statTop: { flexDirection: "row", alignItems: "center", gap: 8 },
+  statIcon: { height: 26, width: 26, borderRadius: 13, alignItems: "center", justifyContent: "center" },
   statLabel: { fontSize: 10, color: colors.inkMuted, fontWeight: "800", letterSpacing: 1.2, textTransform: "uppercase" },
-  statValue: { fontSize: 24, fontWeight: "800", color: colors.ink, marginTop: 4 },
-  attentionCard: { marginBottom: 16, gap: 10 },
+  statValue: { fontSize: 24, fontWeight: "800", color: colors.ink, marginTop: 8 },
+  statCaption: { fontSize: 11, color: colors.inkFaint, fontWeight: "700", marginTop: 2 },
+  attentionCard: { marginBottom: 16, gap: 10, backgroundColor: DANGER.bg, borderColor: DANGER.border },
   sectionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  attentionLabelRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  attentionIconTile: { height: 26, width: 26, borderRadius: 13, backgroundColor: colors.bad, alignItems: "center", justifyContent: "center" },
+  attentionCountBadge: { minWidth: 22, height: 22, borderRadius: 11, backgroundColor: DANGER.chipBg, borderWidth: 1, borderColor: DANGER.chipBorder, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 },
+  attentionCountText: { color: colors.bad, fontSize: 11, fontWeight: "900" },
   sectionLabel: { fontSize: 11, fontWeight: "900", letterSpacing: 1.4, textTransform: "uppercase" },
   sectionCount: { color: colors.inkFaint, fontSize: 12, fontWeight: "800" },
   attentionList: { gap: 8 },
   attentionPill: {
-    minHeight: 38,
-    borderRadius: radius.pill,
+    minHeight: 44,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.line,
-    backgroundColor: colors.surfaceInset,
+    backgroundColor: colors.surfaceRaised,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
+    gap: 10,
+    paddingHorizontal: 10,
   },
-  attentionDot: { height: 8, width: 8, borderRadius: 4 },
-  attentionName: { maxWidth: 110, color: colors.ink, fontSize: 12, fontWeight: "800" },
-  attentionReason: { flex: 1, color: colors.inkMuted, fontSize: 11 },
+  attentionName: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  attentionReason: { marginTop: 1, color: colors.inkMuted, fontSize: 11 },
   rosterHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
   rosterTitle: { color: colors.inkMuted, fontSize: 11, fontWeight: "900", letterSpacing: 1.6, textTransform: "uppercase" },
+  rosterHeaderTitle: { color: colors.ink, fontSize: 19, fontWeight: "800" },
   rosterMeta: { color: colors.inkFaint, fontSize: 11, fontWeight: "700" },
   searchBlock: { gap: 8, marginBottom: 12 },
   searchWrap: {
     height: 46,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.line,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.lineStrong,
     backgroundColor: colors.surfaceInset,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
   },
   searchInput: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14, paddingVertical: 0 },
   filterRow: { gap: 6, paddingRight: 2 },
@@ -1041,11 +1213,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.surfaceRaised,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 5,
   },
-  filterText: { color: colors.inkMuted, fontSize: 10, fontWeight: "900", textTransform: "uppercase" },
+  filterText: { color: colors.inkMuted, fontSize: 11, fontWeight: "800" },
   notesCard: { marginBottom: 16, gap: 10 },
   notesList: { gap: 8 },
   noteEmpty: { color: colors.inkFaint, fontSize: 12, lineHeight: 18 },
@@ -1055,11 +1229,17 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     backgroundColor: colors.surfaceInset,
     padding: 10,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
   },
+  noteAvatar: { marginTop: 1 },
   noteTop: { flexDirection: "row", alignItems: "center", gap: 6 },
   noteName: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 12, fontWeight: "800" },
   noteDate: { color: colors.inkFaint, fontSize: 10, fontWeight: "700" },
   noteBody: { color: colors.inkMuted, fontSize: 12, lineHeight: 17, marginTop: 5 },
+  noteViewAll: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingTop: 4 },
+  noteViewAllText: { color: ROLE_THEMES.coach.accent, fontSize: 12, fontWeight: "900" },
   trendCard: { marginBottom: 16, gap: 12 },
   trendSubtitle: { color: colors.inkFaint, fontSize: 11, marginTop: 3 },
   trendTiles: { flexDirection: "row", gap: 8 },
@@ -1071,29 +1251,24 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceInset,
     padding: 10,
   },
+  miniMetricTop: { flexDirection: "row", alignItems: "center", gap: 5 },
   miniMetricLabel: { color: colors.inkFaint, fontSize: 9, fontWeight: "900", textTransform: "uppercase" },
-  miniMetricValue: { fontSize: 18, fontWeight: "900", marginTop: 2 },
+  miniMetricValue: { fontSize: 18, fontWeight: "900", marginTop: 4 },
+  miniMetricCaption: { fontSize: 10, color: colors.inkFaint, fontWeight: "700", marginTop: 1 },
   chart: {
-    height: 86,
+    height: 96,
     borderRadius: radius.md,
     backgroundColor: colors.surfaceInset,
     borderWidth: 1,
     borderColor: colors.line,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 4,
+    overflow: "hidden",
   },
-  chartGroup: { flex: 1, minWidth: 8, height: 72, flexDirection: "row", alignItems: "flex-end", justifyContent: "center", gap: 2 },
-  chartBar: { width: 3, borderTopLeftRadius: 3, borderTopRightRadius: 3 },
   legendRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   legend: { flexDirection: "row", alignItems: "center", gap: 5 },
   legendDot: { height: 8, width: 8, borderRadius: 4 },
   legendText: { color: colors.inkFaint, fontSize: 10, fontWeight: "800" },
   athleteCard: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14 },
-  scoreDot: { height: 42, width: 42, borderRadius: 21, borderWidth: 2, alignItems: "center", justifyContent: "center" },
-  scoreText: { fontSize: 13, fontWeight: "900" },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 },
   athleteName: { fontSize: 16, fontWeight: "700", color: colors.ink },
   athleteSport: { fontSize: 13, color: colors.inkMuted, marginTop: 2, textTransform: "capitalize" },

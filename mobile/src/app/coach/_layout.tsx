@@ -35,7 +35,7 @@ export default function CoachLayout() {
           options={{
             title: "Squad",
             tabBarIcon: ({ color, focused }) => (
-              <TabIcon name="speedometer-outline" label="Squad" color={String(color)} focused={focused} />
+              <TabIcon name="people-outline" label="Squad" color={String(color)} focused={focused} />
             ),
           }}
         />
@@ -44,7 +44,7 @@ export default function CoachLayout() {
           options={{
             title: "Roster",
             tabBarIcon: ({ color, focused }) => (
-              <TabIcon name="people-outline" label="Roster" color={String(color)} focused={focused} />
+              <TabIcon name="clipboard-outline" label="Roster" color={String(color)} focused={focused} />
             ),
           }}
         />
@@ -92,6 +92,7 @@ function TabIcon({
       <Text style={[styles.tabLabel, { color }]} numberOfLines={1}>
         {label}
       </Text>
+      <View style={[styles.tabIndicator, focused ? { backgroundColor: ROLE_THEMES.coach.accent } : null]} />
     </View>
   );
 }
@@ -100,4 +101,5 @@ const styles = StyleSheet.create({
   tabIcon: { minWidth: 58, alignItems: "center", justifyContent: "center", gap: 3 },
   iconBubble: { height: 30, minWidth: 42, borderRadius: 9, alignItems: "center", justifyContent: "center" },
   tabLabel: { height: 14, fontSize: 10, lineHeight: 14, fontWeight: "600" },
+  tabIndicator: { marginTop: 2, height: 2, width: 16, borderRadius: 1, backgroundColor: "transparent" },
 });
