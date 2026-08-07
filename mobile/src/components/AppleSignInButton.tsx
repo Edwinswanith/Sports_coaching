@@ -63,18 +63,19 @@ export function AppleSignInButton({
         appleFullName(credential.fullName)
       );
       if (!result.ok) {
+        // Clean, non-technical messages only — the specific failure reason
+        // (audience mismatch, expired token, etc.) is in the server's own
+        // logs, never exposed to the end user.
         if (result.error === "self_signup_role_not_supported") {
           onError("Apple sign-in for this role requires an existing account.");
         } else if (result.status === 403) {
-          onError("That Apple account cannot sign in right now.");
+          onError("That Apple account can't sign in right now.");
         } else if (result.status === 429) {
           onError("Too many attempts. Wait a minute and try again.");
-        } else if (result.status === 401 && result.error === "invalid_apple_token") {
-          onError("Apple token was rejected by the API. Check the iOS bundle ID and server Apple client ID.");
         } else if (result.status === 0) {
-          onError("Unable to reach the API server. Check your connection.");
+          onError("Unable to reach the server. Check your connection.");
         } else {
-          onError(`Apple sign-in failed (${result.error}).`);
+          onError("Unable to sign in with Apple. Please try again.");
         }
         return;
       }
@@ -84,7 +85,7 @@ export function AppleSignInButton({
     } catch (error) {
       const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
       if (code !== "ERR_REQUEST_CANCELED") {
-        onError(code ? `Apple sign-in failed on this device (${code}).` : "Could not sign in with Apple.");
+        onError("Unable to sign in with Apple. Please try again.");
       }
     } finally {
       setLoading(false);

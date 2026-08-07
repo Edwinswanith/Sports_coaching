@@ -495,6 +495,93 @@ describe("POST /api/auth/apple self-signup roles", () => {
     expect(res.status).toBe(401);
     expect(res.body).toEqual({ error: "invalid_apple_token" });
   });
+
+  test("prefix/suffix near-misses of the real bundle ID are rejected — only an exact match is accepted", async () => {
+    const suffixTrick = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({ identityToken: appleToken("suffix@test.io", "app.apex.coaching.evil"), requestedRole: "athlete" });
+    const prefixTrick = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({ identityToken: appleToken("prefix@test.io", "evil.app.apex.coaching"), requestedRole: "athlete" });
+
+    expect(suffixTrick.status).toBe(401);
+    expect(suffixTrick.body).toEqual({ error: "invalid_apple_token" });
+    expect(prefixTrick.status).toBe(401);
+    expect(prefixTrick.body).toEqual({ error: "invalid_apple_token" });
+  });
+
+  test("expired Apple token is rejected safely, not a 500", async () => {
+    const expiredToken = jwt.sign(
+      {
+        iss: "https://appleid.apple.com",
+        aud: "app.apex.coaching",
+        email: "expired@test.io",
+        email_verified: "true",
+        sub: "expired-subject",
+      },
+      privateKey,
+      { algorithm: "RS256", keyid: "apple-test-key", expiresIn: -10 }
+    );
+    const res = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({ identityToken: expiredToken, requestedRole: "athlete" });
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "invalid_apple_token" });
+  });
+
+  test("the real native bundle ID is always accepted, even if APPLE_CLIENT_ID is misconfigured to a different (e.g. web Services ID) value", async () => {
+    // Simulates the exact App Store rejection risk: an env var set to
+    // something other than the native bundle ID must never lock out the
+    // native app's own tokens, which always carry the bundle ID as `aud`.
+    env.appleClientIds = ["com.apex.coaching.webservice"];
+
+    const res = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({
+        identityToken: appleToken("native.user@test.io", "app.apex.coaching"),
+        requestedRole: "athlete",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user).toMatchObject({ email: "native.user@test.io" });
+  });
+
+  test("an existing email/password account signing in with Apple links by email, without creating a duplicate", async () => {
+    const passwordUser = await User.create({
+      email: "linked.account@test.io",
+      passwordHash: await bcrypt.hash("s3cret!", 10),
+      role: "athlete",
+      name: "Password First",
+    });
+    await AthleteProfile.create({ userId: passwordUser._id, sport: "Football" });
+
+    const res = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({
+        identityToken: appleToken("linked.account@test.io", "app.apex.coaching", "linking-subject"),
+        requestedRole: "athlete",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.id).toBe(passwordUser._id.toString());
+    expect(await User.countDocuments({ email: "linked.account@test.io" })).toBe(1);
+    const updated = await User.findById(passwordUser._id).lean();
+    expect(updated?.appleSubject).toBe("linking-subject");
+
+    // A second Apple sign-in now finds the account purely by subject, even
+    // if Apple stops disclosing the email on this later authorization.
+    const tokenWithoutEmail = jwt.sign(
+      { iss: "https://appleid.apple.com", aud: "app.apex.coaching", sub: "linking-subject" },
+      privateKey,
+      { algorithm: "RS256", keyid: "apple-test-key", expiresIn: "5m" }
+    );
+    const second = await request(buildApp())
+      .post("/api/auth/apple")
+      .send({ identityToken: tokenWithoutEmail, requestedRole: "athlete" });
+    expect(second.status).toBe(200);
+    expect(second.body.user.id).toBe(passwordUser._id.toString());
+  });
 });
 
 describe("DELETE /api/auth/account", () => {

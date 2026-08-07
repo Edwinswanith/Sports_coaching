@@ -17,6 +17,67 @@ import { permanentlyDeleteAccount } from "../services/accountDeletion";
 
 const router = Router();
 
+/**
+ * The iOS app's real, permanent bundle identifier (mobile/app.json's
+ * ios.bundleIdentifier). A native Sign in with Apple identity token's `aud`
+ * claim is ALWAYS this bundle ID, never a web "Services ID" — so this must
+ * be an unconditionally accepted audience regardless of how APPLE_CLIENT_ID
+ * happens to be configured in any given environment. A misconfigured or
+ * web-Services-ID-only APPLE_CLIENT_ID must never be able to lock out the
+ * native app.
+ *
+ * No web "Sign in with Apple" flow exists anywhere in this codebase (no
+ * appleid.apple.com/auth/authorize usage, no redirect_uri handling, no
+ * AppleID JS SDK) — confirmed by search, not assumed. There is therefore no
+ * separate Services ID to add here; inventing one would be exactly the kind
+ * of loose acceptance this allowlist exists to prevent.
+ */
+const APPLE_NATIVE_BUNDLE_ID = "app.apex.coaching";
+
+/**
+ * Explicit allowlist of audiences an Apple identity token's `aud` claim may
+ * equal. Built once per process: the real native bundle ID, plus whatever
+ * (if anything) is configured via APPLE_CLIENT_ID for additional Apple
+ * client audiences (e.g. a future web Services ID) — never anything else,
+ * never a pattern/prefix/suffix match. Exported for direct unit testing.
+ */
+export function appleAllowedAudiences(): [string, ...string[]] {
+  const additional = env.appleClientIds.filter((id) => id !== APPLE_NATIVE_BUNDLE_ID);
+  return [APPLE_NATIVE_BUNDLE_ID, ...additional];
+}
+
+/** True only for an exact string match against the allowlist — no substring, prefix, or suffix matching. */
+function isAllowedAppleAudience(aud: unknown, allowed: readonly string[]): boolean {
+  if (typeof aud === "string") return allowed.includes(aud);
+  if (Array.isArray(aud)) return aud.some((a) => typeof a === "string" && allowed.includes(a));
+  return false;
+}
+
+/**
+ * `fetch` has no built-in timeout. This is a real reliability defect
+ * regardless of any specific incident: an unbounded call to an external
+ * service (Apple's/Google's key-verification endpoints) can run arbitrarily
+ * long on a cold serverless invocation. Whether this was THE cause of any
+ * particular App Review failure is unproven (no request logs from that
+ * session exist to confirm it) — but a bounded, fail-fast timeout that
+ * always leaves time to return a real, specific JSON error is correct
+ * regardless, so it stays.
+ */
+async function fetchWithTimeout(url: string, timeoutMs = 6000): Promise<globalThis.Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Never log full tokens/secrets — only enough shape to diagnose where a flow failed. */
+function logAuthEvent(event: string, fields: Record<string, unknown> = {}): void {
+  console.log(`[auth] ${event}`, fields);
+}
+
 const ACCESS_COOKIE = "accessToken";
 const REFRESH_COOKIE = "refreshToken";
 const LOGIN_WINDOW_MS = 60_000;
@@ -232,6 +293,7 @@ async function findOrCreateSocialUser(input: {
 
 router.post("/login", async (req: Request, res: Response) => {
   if (!checkLoginRateLimit(req)) {
+    logAuthEvent("login.rate_limited");
     res.status(429).json({ error: "too_many_login_attempts" });
     return;
   }
@@ -240,21 +302,26 @@ router.post("/login", async (req: Request, res: Response) => {
   const password = typeof req.body?.password === "string" ? req.body.password : "";
 
   if (!email || !password) {
+    logAuthEvent("login.missing_fields", { hasEmail: Boolean(email), hasPassword: Boolean(password) });
     res.status(400).json({ error: "invalid_credentials" });
     return;
   }
 
+  // Never log the email itself (PII) or the password — only whether lookup/compare succeeded.
   const user = await User.findOne({ email });
   if (!user || !user.isActive) {
+    logAuthEvent("login.user_not_found_or_inactive");
     res.status(401).json({ error: "invalid_credentials" });
     return;
   }
 
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) {
+    logAuthEvent("login.password_mismatch", { userId: user._id.toString() });
     res.status(401).json({ error: "invalid_credentials" });
     return;
   }
+  logAuthEvent("login.success", { userId: user._id.toString() });
 
   const tokens = await issueTokensForUser(user, res);
   res.json(authResponsePayload(req, tokens, user));
@@ -297,15 +364,17 @@ router.post("/google", async (req: Request, res: Response) => {
   // then assert the audience/issuer/verification ourselves.
   let info: GoogleTokenInfo;
   try {
-    const r = await fetch(
+    const r = await fetchWithTimeout(
       `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`
     );
     if (!r.ok) {
+      logAuthEvent("google.verify_failed", { httpStatus: r.status });
       res.status(401).json({ error: "invalid_google_token" });
       return;
     }
     info = (await r.json()) as GoogleTokenInfo;
-  } catch {
+  } catch (err) {
+    logAuthEvent("google.verify_error", { name: (err as Error).name, message: (err as Error).message });
     res.status(502).json({ error: "google_verification_failed" });
     return;
   }
@@ -316,6 +385,7 @@ router.post("/google", async (req: Request, res: Response) => {
   // Accept any configured client as the audience (web/PWA + native Android).
   const audOk = typeof info.aud === "string" && env.googleClientIds.includes(info.aud);
   if (!audOk || !issuerOk || !emailVerified || !info.email) {
+    logAuthEvent("google.rejected", { audOk, issuerOk, emailVerified, hasEmail: Boolean(info.email) });
     res.status(401).json({ error: "invalid_google_token" });
     return;
   }
@@ -326,10 +396,12 @@ router.post("/google", async (req: Request, res: Response) => {
     requestedRole: req.body?.requestedRole,
   });
   if (error || !user) {
+    logAuthEvent("google.user_resolution_failed", { code: error?.code });
     res.status(error?.status ?? 500).json({ error: error?.code ?? "signup_failed" });
     return;
   }
 
+  logAuthEvent("google.success", { userId: user._id.toString(), newAccount: !error });
   const tokens = await issueTokensForUser(user, res);
   res.json(authResponsePayload(req, tokens, user));
 });
@@ -348,7 +420,7 @@ async function applePublicKeys(): Promise<AppleJwk[]> {
   const now = Date.now();
   if (appleJwksCache && appleJwksCache.expiresAt > now) return appleJwksCache.keys;
 
-  const response = await fetch("https://appleid.apple.com/auth/keys");
+  const response = await fetchWithTimeout("https://appleid.apple.com/auth/keys");
   if (!response.ok) throw new Error("apple_jwks_fetch_failed");
   const body = (await response.json()) as AppleJwks;
   const keys = Array.isArray(body.keys) ? body.keys : [];
@@ -365,16 +437,22 @@ async function verifyAppleIdentityToken(identityToken: string): Promise<AppleTok
   if (!key) throw new Error("unknown_apple_key_id");
 
   const publicKey = createPublicKey({ key, format: "jwk" });
-  const audience =
-    env.appleClientIds.length > 0
-      ? (env.appleClientIds as [string, ...string[]])
-      : "app.apex.coaching";
+  const allowedAudiences = appleAllowedAudiences();
+  // jsonwebtoken's own `audience` option already enforces exact string
+  // equality (no substring/prefix/suffix matching, since these are plain
+  // strings rather than RegExp) — this second, explicit check is deliberate
+  // defense-in-depth so the allowlist enforcement is visible and testable in
+  // this file's own code, not solely trusted to a third-party library's
+  // internal behavior.
   const payload = jwt.verify(identityToken, publicKey, {
     algorithms: ["RS256"],
     issuer: "https://appleid.apple.com",
-    audience,
-  });
-  return payload as AppleTokenPayload;
+    audience: allowedAudiences,
+  }) as AppleTokenPayload;
+  if (!isAllowedAppleAudience(payload.aud, allowedAudiences)) {
+    throw new Error("audience_not_allowlisted");
+  }
+  return payload;
 }
 
 /**
@@ -386,7 +464,10 @@ async function verifyAppleIdentityToken(identityToken: string): Promise<AppleTok
  * athlete/coach accounts based on the selected role.
  */
 router.post("/apple", async (req: Request, res: Response) => {
+  logAuthEvent("apple.request_received");
+
   if (!checkLoginRateLimit(req)) {
+    logAuthEvent("apple.rate_limited");
     res.status(429).json({ error: "too_many_login_attempts" });
     return;
   }
@@ -394,6 +475,7 @@ router.post("/apple", async (req: Request, res: Response) => {
   const identityToken =
     typeof req.body?.identityToken === "string" ? req.body.identityToken : "";
   if (!identityToken) {
+    logAuthEvent("apple.missing_identity_token");
     res.status(400).json({ error: "missing_credential" });
     return;
   }
@@ -401,12 +483,19 @@ router.post("/apple", async (req: Request, res: Response) => {
   let info: AppleTokenPayload;
   try {
     info = await verifyAppleIdentityToken(identityToken);
-  } catch {
+    logAuthEvent("apple.token_verified", { hasSub: Boolean(info.sub), hasEmail: Boolean(info.email) });
+  } catch (err) {
+    // NEVER log the identity token itself — only the failure shape.
+    logAuthEvent("apple.token_verification_failed", {
+      name: (err as Error).name,
+      message: (err as Error).message,
+    });
     res.status(401).json({ error: "invalid_apple_token" });
     return;
   }
 
   if (!info.sub) {
+    logAuthEvent("apple.missing_subject_claim");
     res.status(401).json({ error: "invalid_apple_token" });
     return;
   }
@@ -414,18 +503,22 @@ router.post("/apple", async (req: Request, res: Response) => {
   // Apple may omit profile claims after the first authorization. Existing
   // accounts therefore authenticate by Apple's stable subject, not by email.
   const existingAppleUser = await User.findOne({ appleSubject: info.sub });
+  logAuthEvent("apple.existing_user_lookup", { found: Boolean(existingAppleUser) });
   if (existingAppleUser) {
     if (!existingAppleUser.isActive) {
+      logAuthEvent("apple.account_disabled", { userId: existingAppleUser._id.toString() });
       res.status(403).json({ error: "account_disabled" });
       return;
     }
     const tokens = await issueTokensForUser(existingAppleUser, res);
+    logAuthEvent("apple.success", { userId: existingAppleUser._id.toString(), newAccount: false });
     res.json(authResponsePayload(req, tokens, existingAppleUser));
     return;
   }
 
   const emailVerified = info.email_verified === true || info.email_verified === "true";
   if (!emailVerified || !info.email) {
+    logAuthEvent("apple.no_usable_email_for_new_account", { emailVerified, hasEmail: Boolean(info.email) });
     res.status(401).json({ error: "invalid_apple_token" });
     return;
   }
@@ -437,11 +530,13 @@ router.post("/apple", async (req: Request, res: Response) => {
     appleSubject: info.sub,
   });
   if (error || !user) {
+    logAuthEvent("apple.user_resolution_failed", { code: error?.code });
     res.status(error?.status ?? 500).json({ error: error?.code ?? "signup_failed" });
     return;
   }
 
   const tokens = await issueTokensForUser(user, res);
+  logAuthEvent("apple.success", { userId: user._id.toString(), newAccount: true });
   res.json(authResponsePayload(req, tokens, user));
 });
 

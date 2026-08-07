@@ -11,6 +11,10 @@ import { Banner, Card, H1, Label, Muted, PrimaryButton, TextField } from "../com
 
 const theme = ROLE_THEMES.athlete;
 
+// Mirrors the backend's REG_EMAIL_RE (server/src/routes/auth.ts) so obviously
+// invalid addresses are caught before a round trip, not just re-validated.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export default function Register() {
   const router = useRouter();
   const { signUp } = useAuth();
@@ -22,25 +26,39 @@ export default function Register() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /** Field-specific, checked in the order a user fills the form — required before any request is sent. */
+  function validate(): string | null {
+    if (!name.trim()) return "Full name is required.";
+    if (!email.trim()) return "Email is required.";
+    if (!EMAIL_RE.test(email.trim())) return "Enter a valid email address.";
+    if (!password) return "Password is required.";
+    if (password.length < 8) return "Password must be at least 8 characters.";
+    if (!sport.trim()) return "Sport is required.";
+    return null;
+  }
+
   async function submit() {
     setError(null);
-    if (!name.trim() || !email.trim() || !sport.trim()) {
-      setError("Name, email and sport are required.");
-      return;
-    }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
+    const validationError = validate();
+    if (validationError) {
+      setError(validationError);
       return;
     }
     setSaving(true);
     const result = await signUp({ name: name.trim(), email: email.trim(), password, sport: sport.trim(), position: position.trim() || undefined });
     setSaving(false);
     if (!result.ok) {
+      // Map every backend error code we can to a specific, actionable
+      // message — a server/network failure must never be presented as if
+      // the athlete's own input was the problem.
       if (result.status === 409) setError("That email already has an account.");
       else if (result.error === "weak_password") setError("Password must be at least 8 characters.");
+      else if (result.error === "invalid_email") setError("Enter a valid email address.");
+      else if (result.error === "invalid_name") setError("Full name is required.");
+      else if (result.error === "invalid_sport") setError("Sport is required.");
       else if (result.status === 429) setError("Too many attempts. Wait a minute and try again.");
       else if (result.status === 0) setError("Unable to reach the server. Check your connection.");
-      else setError("Couldn't create your account. Check the details and try again.");
+      else setError("Something went wrong creating your account. Please try again.");
       return;
     }
     const dest = dashboardPathForRole(result.user.role) ?? "/athlete/dashboard";

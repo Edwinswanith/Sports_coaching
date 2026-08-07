@@ -33,9 +33,14 @@ export default function LoginScreen() {
     const result = await signIn(email, password);
     setLoading(false);
     if (!result.ok) {
+      // Only report "wrong credentials" for the specific case the server
+      // actually reported — a server/network failure must never be
+      // misreported as a bad password (it isn't one, and it hides the
+      // real problem from anyone diagnosing it).
       if (result.status === 429) setError("Too many sign-in attempts. Wait a minute and try again.");
       else if (result.status === 0) setError("Unable to reach the server. Check your connection.");
-      else setError("Invalid email or password.");
+      else if (result.status === 401) setError("Invalid email or password.");
+      else setError("Something went wrong signing in. Please try again.");
       return;
     }
     const dest = dashboardPathForRole(result.user.role);

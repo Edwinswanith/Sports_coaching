@@ -27,6 +27,7 @@ const exportDir = resolve(mobileDir, "dist");
 const publicDir = resolve(root, "public");
 const privacyPolicy = resolve(root, "legal/privacy.html");
 const deleteAccountPolicy = resolve(root, "legal/delete-account.html");
+const supportPage = resolve(root, "legal/support.html");
 const pagesLink = resolve(root, "pages");
 const nextConfig = resolve(root, "next.config.js");
 
@@ -44,6 +45,7 @@ mkdirSync(publicDir, { recursive: true });
 cpSync(exportDir, publicDir, { recursive: true });
 cpSync(privacyPolicy, resolve(publicDir, "privacy.html"));
 cpSync(deleteAccountPolicy, resolve(publicDir, "delete-account.html"));
+cpSync(supportPage, resolve(publicDir, "support.html"));
 
 removePath(pagesLink);
 symlinkSync("backend/pages", pagesLink, "dir");
