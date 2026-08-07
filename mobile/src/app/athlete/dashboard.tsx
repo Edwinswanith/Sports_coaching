@@ -8463,7 +8463,7 @@ const styles = StyleSheet.create({
   readinessScoreCompact: { fontSize: 25, lineHeight: 28 },
   readinessMax: { color: colors.inkMuted, fontSize: 14, fontWeight: "800" },
   readinessMaxCompact: { fontSize: 11 },
-  heroRingLabel: { color: colors.inkMuted, fontSize: 11, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1.1, marginBottom: -2 },
+  heroRingLabel: { color: colors.inkMuted, fontSize: 11, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1.1, marginBottom: 8 },
   heroRingLabelCompact: { fontSize: 8.5, letterSpacing: 0.35 },
   heroStatusPill: { marginTop: -1, maxWidth: 118, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
   heroStatusPillCompact: { maxWidth: 106, gap: 5, paddingHorizontal: 8, paddingVertical: 4 },
